@@ -28,7 +28,7 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 - **P02.2:** im Review – öffentlicher Status, Laufzustandsautomat, Revision, Redaction und Recovery-CLI.
 - **P02.3:** im Review – deny-first Schreibpfad-Policy und initiale CODEOWNERS-Grenzen.
 - **Fortschritt:** 6 von 60 Arbeitspaketen umgesetzt; 3 im Review; 51 offen.
-- Die P02-Checkboxen bleiben bis Merge, grünem CI und vollständiger Evidenz offen.
+- Die P02-Checkboxen bleiben bis Merge, grünem CI, aufgelösten Reviewthreads und vollständiger Evidenz offen.
 
 ## Arbeitspakete
 

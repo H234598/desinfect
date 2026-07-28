@@ -23,6 +23,7 @@
 python3 scripts/validate_all_baseline.py
 python3 scripts/validate_p01_foundation.py
 python3 scripts/validate_p02_contracts.py
+python3 -m scripts.rki_pipeline.runtime_status_cli --help
 python3 -m compileall -q scripts tests
 python3 -m unittest discover -s tests -p "test_*.py"
 python3 -m pytest -q
@@ -33,4 +34,4 @@ P01 legt Python 3.12+, Node 24/npm 11, exakt aufgelöste Python-Locks, sichere a
 
 P02 ergänzt zwölf strikte Draft-2020-12-Datenverträge, eine deterministische Statusmigration, getrennte Commit-/Lauf-/Schreibuhren, ein redigiertes Lauf-/Recoverymodell und eine deny-first Schreibpfad-Policy mit `@H234598` als initialem CODEOWNER.
 
-Ein Arbeitspaket wird erst nach Merge, grüner CI und vollständiger Evidenz als `umgesetzt` geführt.
+Ein Arbeitspaket wird erst nach Merge, grüner CI, aufgelösten Reviewthreads und vollständiger Evidenz als `umgesetzt` geführt.

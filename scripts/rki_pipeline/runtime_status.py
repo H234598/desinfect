@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """Strict run lifecycle, recovery, public-status projection, and redaction."""
 from __future__ import annotations
@@ -73,32 +72,47 @@ def sanitize_url(value: str) -> str:
     """Drop credentials, query strings, and fragments from diagnostic URLs."""
 
     parsed = urlsplit(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username:
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
         return "[REDACTED-URL]"
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
 
 
 def redact_text(value: Any, *, limit: int = 2000) -> tuple[str, bool]:
-    """Redact token families, bearer values, password assignments, and e-mail addresses."""
+    """Redact credential URLs, tokens, assignments, and e-mail addresses."""
 
     text = str(value or "").replace("\x00", "")[: max(limit * 2, limit)]
     changed = False
-    for pattern in _TOKEN_PATTERNS:
-        replacement = r"\1[REDACTED]" if pattern.groups >= 1 and "bearer" in pattern.pattern.lower() else "[REDACTED]"
-        updated, count = pattern.subn(replacement, text)
-        if count:
-            changed = True
-            text = updated
-    # Strip signed query strings from URL-looking tokens without mutating prose.
+
+    # Sanitize complete URLs before generic e-mail/secret patterns can make
+    # their authority component syntactically invalid.
     def replace_url(match: re.Match[str]) -> str:
         nonlocal changed
         raw = match.group(0)
-        sanitized = sanitize_url(raw.rstrip(".,;)"))
-        if sanitized != raw.rstrip(".,;)"):
+        stripped = raw.rstrip(".,;)")
+        try:
+            sanitized = sanitize_url(stripped)
+        except ValueError:
+            sanitized = "[REDACTED-URL]"
+        if sanitized != stripped:
             changed = True
         return sanitized
 
     text = re.sub(r"https?://[^\s<>]+", replace_url, text)
+    for pattern in _TOKEN_PATTERNS:
+        replacement = (
+            r"\1[REDACTED]"
+            if pattern.groups >= 1 and "bearer" in pattern.pattern.lower()
+            else "[REDACTED]"
+        )
+        updated, count = pattern.subn(replacement, text)
+        if count:
+            changed = True
+            text = updated
     return text[:limit], changed
 
 

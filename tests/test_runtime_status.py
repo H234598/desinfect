@@ -1,7 +1,5 @@
-
 from __future__ import annotations
 
-from copy import deepcopy
 import json
 from pathlib import Path
 
@@ -94,3 +92,9 @@ def test_redact_text_strips_signed_url_query() -> None:
     text, changed = redact_text("see https://example.org/path?sig=secret#x")
     assert changed
     assert text == "see https://example.org/path"
+
+
+def test_sanitize_url_rejects_password_without_username() -> None:
+    text, changed = redact_text("see http://:secret@example.org/path")
+    assert changed
+    assert text == "see [REDACTED-URL]"

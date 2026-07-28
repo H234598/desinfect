@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """Versioned JSON-Schema registry and deterministic one-version migrations."""
 from __future__ import annotations

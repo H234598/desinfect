@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """Validate the public status and the strict three-clock contract."""
 from __future__ import annotations
