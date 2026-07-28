@@ -1,10 +1,10 @@
 ---
 title: Implementierungsplan V3 – Steuerung
-status: P02 in Umsetzung
+status: P02 im Review
 source_plan_sha256: aa50863cde1313a7039691b4ca596c1ab498d0fab0008da324de5cb69f12ffc4
 repository: H234598/desinfect
 branch: agent/p02-data-contracts
-pull_request: null
+pull_request: 5
 ---
 
 # Implementierungsplan V3 – Steuerung
@@ -22,11 +22,12 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 
 ## Aktive Phase P02
 
+- **PR:** #5
 - **Branch:** `agent/p02-data-contracts`
-- **P02.1:** in Arbeit – zwölf versionierte Draft-2020-12-Verträge und deterministische Statusmigration.
-- **P02.2:** in Arbeit – öffentlicher Status, Laufzustandsautomat, Revision, Redaction und Recovery-CLI.
-- **P02.3:** in Arbeit – deny-first Schreibpfad-Policy und initiale CODEOWNERS-Grenzen.
-- **Fortschritt:** 6 von 60 Arbeitspaketen umgesetzt; 3 in Arbeit; 51 offen.
+- **P02.1:** im Review – zwölf versionierte Draft-2020-12-Verträge und deterministische Statusmigration.
+- **P02.2:** im Review – öffentlicher Status, Laufzustandsautomat, Revision, Redaction und Recovery-CLI.
+- **P02.3:** im Review – deny-first Schreibpfad-Policy und initiale CODEOWNERS-Grenzen.
+- **Fortschritt:** 6 von 60 Arbeitspaketen umgesetzt; 3 im Review; 51 offen.
 - Die P02-Checkboxen bleiben bis Merge, grünem CI und vollständiger Evidenz offen.
 
 ## Arbeitspakete
@@ -37,9 +38,9 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 - [x] **P01.1** Python-/Node-Paketfundament _(umgesetzt, PR #3, Merge `4fc4aca667ce1b7a9529cc49e4e81fc373f75da2`)_
 - [x] **P01.2** Sichere Datei-, Hash- und Stagingprimitive _(umgesetzt, PR #3, Merge `4fc4aca667ce1b7a9529cc49e4e81fc373f75da2`)_
 - [x] **P01.3** Offline-Fixtures und Testdatenpolicy _(umgesetzt, PR #3, Merge `4fc4aca667ce1b7a9529cc49e4e81fc373f75da2`)_
-- [ ] **P02.1** Schemafamilie und Versionsstrategie _(in Arbeit, Branch `agent/p02-data-contracts`)_
-- [ ] **P02.2** Öffentlicher Status und Lauf-/Recovery-Modell _(in Arbeit, Branch `agent/p02-data-contracts`)_
-- [ ] **P02.3** Automatische Schreibpfad-Policy _(in Arbeit, Branch `agent/p02-data-contracts`)_
+- [ ] **P02.1** Schemafamilie und Versionsstrategie _(im Review, PR #5)_
+- [ ] **P02.2** Öffentlicher Status und Lauf-/Recovery-Modell _(im Review, PR #5)_
+- [ ] **P02.3** Automatische Schreibpfad-Policy _(im Review, PR #5)_
 - [ ] **P03.1** Grabber in Parser, HTTP und Orchestrierung schneiden
 - [ ] **P03.2** Netzwerk-, Robots- und Downloadhärtung
 - [ ] **P03.3** Stabile CLI, API und Resultvertrag

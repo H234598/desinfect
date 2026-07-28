@@ -7,7 +7,7 @@
 
 | Gesamt | Offen | In Arbeit | Im Review | Umgesetzt | Blockiert |
 |---:|---:|---:|---:|---:|---:|
-| 60 | 51 | 3 | 0 | 6 | 0 |
+| 60 | 51 | 0 | 3 | 6 | 0 |
 
 ## Abgeschlossene Phase P00
 
@@ -35,13 +35,15 @@
 
 ## Aktive Phase P02
 
-**Branch:** `agent/p02-data-contracts`
+**PR: #5**  
+**Branch:** `agent/p02-data-contracts`  
+**Basis:** `main@7257f06f472df9529a0099427b1ccdcf67ac0c53`
 
 | ID | Titel | Status | Evidenzstand |
 |---|---|---|---|
-| P02.1 | Schemafamilie und Versionsstrategie | in_arbeit | zwölf strikte Schemas, Registry und Statusmigration implementiert |
-| P02.2 | Öffentlicher Status und Lauf-/Recovery-Modell | in_arbeit | Statusprojektion, Zustandsautomat, Revision, Redaction und CLI implementiert |
-| P02.3 | Automatische Schreibpfad-Policy | in_arbeit | deny-first Policy, Indexprüfung und CODEOWNERS implementiert |
+| P02.1 | Schemafamilie und Versionsstrategie | im_review | PR #5; zwölf strikte Schemas, Registry und Statusmigration implementiert |
+| P02.2 | Öffentlicher Status und Lauf-/Recovery-Modell | im_review | PR #5; Statusprojektion, Zustandsautomat, Revision, Redaction und CLI implementiert |
+| P02.3 | Automatische Schreibpfad-Policy | im_review | PR #5; deny-first Policy, Indexprüfung und CODEOWNERS implementiert |
 
 Die P02-Pakete bleiben bis zum tatsächlichen Merge, grüner CI, aufgelösten Reviewthreads und eingetragener Abnahmeevidenz offen.
 
