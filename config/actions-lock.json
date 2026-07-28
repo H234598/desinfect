@@ -6,7 +6,33 @@
       "repository": "actions/checkout",
       "tag": "v7",
       "sha": "3d3c42e5aac5ba805825da76410c181273ba90b1",
-      "used_by": [".github/workflows/p00-baseline.yml"]
+      "used_by": [
+        ".github/workflows/p00-baseline.yml"
+      ]
+    },
+    {
+      "repository": "actions/setup-node",
+      "tag": "v6",
+      "sha": "249970729cb0ef3589644e2896645e5dc5ba9c38",
+      "used_by": [
+        ".github/workflows/p00-baseline.yml"
+      ]
+    },
+    {
+      "repository": "actions/setup-python",
+      "tag": "v6",
+      "sha": "ece7cb06caefa5fff74198d8649806c4678c61a1",
+      "used_by": [
+        ".github/workflows/p00-baseline.yml"
+      ]
+    },
+    {
+      "repository": "actions/upload-artifact",
+      "tag": "v7",
+      "sha": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+      "used_by": [
+        ".github/workflows/p00-baseline.yml"
+      ]
     }
   ]
 }

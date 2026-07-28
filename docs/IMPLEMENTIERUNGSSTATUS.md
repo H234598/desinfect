@@ -7,7 +7,7 @@
 
 | Gesamt | Offen | In Arbeit | Im Review | Umgesetzt | Blockiert |
 |---:|---:|---:|---:|---:|---:|
-| 60 | 57 | 0 | 0 | 3 | 0 |
+| 60 | 54 | 0 | 3 | 3 | 0 |
 
 ## Abgeschlossene Phase P00
 
@@ -21,18 +21,30 @@
 | P00.2 | Anforderungs- und Entscheidungstraceability | umgesetzt | PR #1, Merge `c4996105f6d6`, Actions `30331599906` |
 | P00.3 | Fortschritts- und Evidenzvertrag | umgesetzt | PR #1, Merge `c4996105f6d6`, Actions `30331599906` |
 
-## Abnahme
+## Aktiver Durchlauf P01
 
-- GitHub Actions: erfolgreich
-- CodeRabbit: erfolgreich
-- qlty: erfolgreich
-- ungelöste Reviewthreads: 0
-- Abgenommen am: `2026-07-28T05:34:53Z`
-- Abgenommen durch: `H234598`
+**PR: #3**  
+**Branch:** `agent/p01-foundation`  
+**Basis:** `main@68f1c73d043abd4a778cf3ee0dfa3cf857330efe`
 
-## Nächster Schritt
+| ID | Titel | Status |
+|---|---|---|
+| P01.1 | Python-/Node-Paketfundament | im_review |
+| P01.2 | Sichere Datei-, Hash- und Stagingprimitive | im_review |
+| P01.3 | Offline-Fixtures und Testdatenpolicy | im_review |
 
-P01.1 bis P01.3 bleiben `offen`, bis ihr eigener Implementierungs-PR vorliegt.
+Geplante blockierende Prüfungen:
+
+```bash
+python3 scripts/validate_all_baseline.py
+python3 scripts/validate_p01_foundation.py
+python3 -m compileall -q scripts tests
+python3 -m unittest discover -s tests -p "test_*.py"
+python3 -m pytest -q
+npm test
+```
+
+Die P01-Pakete decken `V2-03-TREE-001` bis `V2-03-TREE-005` und `V2-26-TEST-001` bis `V2-26-TEST-008` ab. Der Code liegt in PR #3. Merge-, finale CI- und Abnahmeevidenz stehen noch aus; die Plan-Checkboxen bleiben offen.
 
 ## Gesperrte Architekturentscheidungen
 
