@@ -1,0 +1,39 @@
+name: P00 baseline
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/p00-baseline.yml"
+      - "config/**"
+      - "docs/**"
+      - "schemas/**"
+      - "scripts/**"
+      - "tests/**"
+      - "README.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p00-baseline-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  baseline:
+    name: Validate P00 governance baseline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Validate baseline contracts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/validate_all_baseline.py
+          python3 -m unittest discover -s tests -p "test_*.py"

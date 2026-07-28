@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0.0",
+  "verified_at": "2026-07-28",
+  "actions": [
+    {
+      "repository": "actions/checkout",
+      "tag": "v7",
+      "sha": "3d3c42e5aac5ba805825da76410c181273ba90b1",
+      "used_by": [".github/workflows/p00-baseline.yml"]
+    }
+  ]
+}
