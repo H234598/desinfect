@@ -16,7 +16,7 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 
 ## Aktueller Durchlauf
 
-- **Draft-PR:** #1
+- **PR:** #1
 - **Branch:** `agent/p00-governance-baseline`
 - **P00.1 Revisionsblatt und Analysefreeze:** im Review
 - **P00.2 Anforderungs- und Entscheidungstraceability:** im Review

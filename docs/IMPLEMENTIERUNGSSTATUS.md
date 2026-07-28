@@ -11,7 +11,7 @@
 
 ## Aktiver Durchlauf
 
-**Draft-PR: #1** – `chore(plan): P00-Revisionsbaseline und ADR-Sperren`  
+**PR: #1** – `chore(plan): P00-Revisionsbaseline und ADR-Sperren`  
 **Branch:** `agent/p00-governance-baseline`  
 **Basis:** `main@fbcc6e850fec1f4592ca519fa3e5141b11a95e60`
 
