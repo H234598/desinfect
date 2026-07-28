@@ -1,19 +1,18 @@
 # Implementierungsstatus
 
 > [!important]
-> Ein Arbeitspaket wird erst nach Merge, grüner CI und vollständiger Evidenz als `umgesetzt` geführt.
+> Ein Arbeitspaket wird erst nach Merge, grüner CI, aufgelösten Reviewthreads und vollständiger Evidenz als `umgesetzt` geführt.
 
 ## Zusammenfassung
 
 | Gesamt | Offen | In Arbeit | Im Review | Umgesetzt | Blockiert |
 |---:|---:|---:|---:|---:|---:|
-| 60 | 51 | 0 | 3 | 6 | 0 |
+| 60 | 51 | 0 | 0 | 9 | 0 |
 
 ## Abgeschlossene Phase P00
 
 **PR:** #1 — `chore(plan): P00-Revisionsbaseline und ADR-Sperren`  
-**Merge:** `c4996105f6d683c2c4d342df6ee43b74dbcb64a6`  
-**Geprüfter Head:** `c61581842415da4d5c2e81ae7e28fbe7f4165a8f`
+**Merge:** `c4996105f6d683c2c4d342df6ee43b74dbcb64a6`
 
 | ID | Titel | Status | Evidenz |
 |---|---|---|---|
@@ -24,8 +23,7 @@
 ## Abgeschlossene Phase P01
 
 **PR:** #3 — `feat(p01): Paket-, IO- und Offline-Testfundament`  
-**Merge:** `4fc4aca667ce1b7a9529cc49e4e81fc373f75da2`  
-**Geprüfter Head:** `a0b6d26ee91ba0e1c6d531c6b7fd2ab6058393aa`
+**Merge:** `4fc4aca667ce1b7a9529cc49e4e81fc373f75da2`
 
 | ID | Titel | Status | Evidenz |
 |---|---|---|---|
@@ -33,19 +31,31 @@
 | P01.2 | Sichere Datei-, Hash- und Stagingprimitive | umgesetzt | PR #3, Merge `4fc4aca667ce`, Actions `30336885794` |
 | P01.3 | Offline-Fixtures und Testdatenpolicy | umgesetzt | PR #3, Merge `4fc4aca667ce`, Actions `30336885794` |
 
-## Aktive Phase P02
+## Abgeschlossene Phase P02
 
-**PR: #5**  
-**Branch:** `agent/p02-data-contracts`  
-**Basis:** `main@7257f06f472df9529a0099427b1ccdcf67ac0c53`
+**PR:** #5 — `feat(p02): Datenverträge, Status und Schreibgrenzen`  
+**Merge:** `947b2ba86792d5a84e0f2fd972cfbe554c156afc`  
+**Geprüfter Head:** `923975c7ba81dc73f68d838b85b8b5fdcbe05e72`
 
-| ID | Titel | Status | Evidenzstand |
+| ID | Titel | Status | Evidenz |
 |---|---|---|---|
-| P02.1 | Schemafamilie und Versionsstrategie | im_review | PR #5; zwölf strikte Schemas, Registry und Statusmigration implementiert |
-| P02.2 | Öffentlicher Status und Lauf-/Recovery-Modell | im_review | PR #5; Statusprojektion, Zustandsautomat, Revision, Redaction und CLI implementiert |
-| P02.3 | Automatische Schreibpfad-Policy | im_review | PR #5; deny-first Policy, Indexprüfung und CODEOWNERS implementiert |
+| P02.1 | Schemafamilie und Versionsstrategie | umgesetzt | PR #5, Merge `947b2ba86792`, Actions `30342761383` |
+| P02.2 | Öffentlicher Status und Lauf-/Recovery-Modell | umgesetzt | PR #5, Merge `947b2ba86792`, Actions `30342761383` |
+| P02.3 | Automatische Schreibpfad-Policy | umgesetzt | PR #5, Merge `947b2ba86792`, Actions `30342761383` |
 
-Die P02-Pakete bleiben bis zum tatsächlichen Merge, grüner CI, aufgelösten Reviewthreads und eingetragener Abnahmeevidenz offen.
+## Abnahme P02
+
+- GitHub Actions: erfolgreich
+- CodeRabbit: erfolgreich
+- qlty: erfolgreich
+- ungelöste Reviewthreads: 0
+- behobene Reviewthreads: 9
+- Abgenommen am: `2026-07-28T08:34:46Z`
+- Abgenommen durch: `H234598`
+
+## Nächster Schritt
+
+P03.1 bis P03.3 bleiben `offen`, bis ihr eigener Implementierungs-PR vorliegt.
 
 ## Gesperrte Architekturentscheidungen
 
