@@ -1,10 +1,23 @@
 # Architecture Decision Records
 
-`config/architecture-decisions.json` ist das maschinenlesbare Entscheidungsregister.
+Das maschinenlesbare Register liegt unter `config/architecture-decisions.json`; jede Entscheidung besitzt eine eigene Datei und einen Rückroll- oder Migrationsweg.
 
-## Gesperrte Entscheidungen
+| ADR | Entscheidung |
+|---|---|
+| ADR-001 | C |
+| ADR-002 | C |
+| **ADR-003** | **A – gesperrt** |
+| ADR-004 | C |
+| ADR-005 | C |
+| ADR-006 | C |
+| ADR-007 | C |
+| ADR-008 | C |
+| ADR-009 | C |
+| ADR-010 | C |
+| ADR-011 | C |
+| ADR-012 | C |
+| ADR-013 | C |
+| **ADR-014** | **B – gesperrt** |
+| ADR-015 | C |
 
-- **ADR-003 = A**
-- **ADR-014 = B**
-
-Die beiden Werte sind im Validator zusätzlich hart codiert. Eine abweichende Änderung an Register oder ADR-Datei schlägt fehl.
+Eine Abweichung von **ADR-003=A** oder **ADR-014=B** blockiert die Baseline.

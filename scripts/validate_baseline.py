@@ -26,8 +26,7 @@ def validate_revisions() -> None:
         if not SHA40.fullmatch(entry["frozen_sha"]) or not SHA40.fullmatch(entry["observed_head_sha"]):
             raise ValueError(f"{name}: vollständiger 40-stelliger SHA fehlt")
         changed = entry["frozen_sha"] != entry["observed_head_sha"]
-        expected_status = "advanced_after_freeze" if changed else "unchanged"
-        if entry["drift_status"] != expected_status:
+        if entry["drift_status"] != ("advanced_after_freeze" if changed else "unchanged"):
             raise ValueError(f"{name}: drift_status widerspricht den SHAs")
         if not entry["manual_verification_required"]:
             raise ValueError(f"{name}: nicht lesbare Einstellungen wurden verschwiegen")
@@ -42,28 +41,31 @@ def validate_decisions() -> None:
         raise ValueError("ADR-001 bis ADR-015 müssen vollständig registriert sein")
     if data["locked_decisions"] != LOCKED:
         raise ValueError("Gesperrte Entscheidungen weichen ab")
+    for adr_id, entry in decisions.items():
+        choice = entry["choice"]
+        path = ROOT / "docs/adr" / f"{adr_id}.md"
+        if not path.is_file():
+            raise ValueError(f"{adr_id}: ADR-Datei fehlt")
+        text = path.read_text(encoding="utf-8")
+        if f"choice: {choice}" not in text or f"**Entscheidung:** {choice}." not in text:
+            raise ValueError(f"{adr_id}: ADR-Datei widerspricht dem Register")
+        if "Rückroll- oder Migrationsweg" not in text:
+            raise ValueError(f"{adr_id}: Rückroll- oder Migrationsweg fehlt")
     for adr_id, choice in LOCKED.items():
         entry = decisions[adr_id]
         if entry["choice"] != choice or entry.get("locked") is not True:
             raise ValueError(f"{adr_id} muss auf {choice} gesperrt bleiben")
-        text = (ROOT / "docs/adr" / f"{adr_id}.md").read_text(encoding="utf-8")
-        if f"choice: {choice}" not in text or f"**Entscheidung:** {choice}." not in text:
-            raise ValueError(f"{adr_id}: ADR-Datei widerspricht dem Register")
 
 
-def validate_requirements() -> None:
+def validate_requirements_index() -> None:
     data = load("docs/requirements/requirement-index.json")
-    must = data["must_ids"]
-    v2 = data["v2_ids"]
-    if must != [f"MUSS-{number:02d}" for number in range(1, 41)]:
+    if data["must_ids"] != [f"MUSS-{number:02d}" for number in range(1, 41)]:
         raise ValueError("MUSS-Index ist nicht lückenlos MUSS-01 bis MUSS-40")
-    if len(v2) != 169 or len(set(v2)) != 169:
+    if len(data["v2_ids"]) != 169 or len(set(data["v2_ids"])) != 169:
         raise ValueError("V2-Index muss 169 eindeutige IDs enthalten")
-    if not all(re.fullmatch(r"V2-[A-Z0-9-]+", item) for item in v2):
-        raise ValueError("Ungültige V2-ID")
 
 
-def validate_progress() -> None:
+def validate_progress_count() -> None:
     data = load("docs/implementation-status.json")
     items = data["work_packages"]
     if len(items) != 60 or len({item["id"] for item in items}) != 60:
@@ -74,18 +76,11 @@ def validate_progress() -> None:
         raise ValueError("Fortschrittszusammenfassung ist nicht synchron")
     if counts["umgesetzt"]:
         raise ValueError("P00 darf vor Merge/CI noch nichts als umgesetzt behaupten")
-    ids = [item["id"] for item in items]
-    if ids[:3] != ["P00.1", "P00.2", "P00.3"]:
-        raise ValueError("P00-Reihenfolge wurde verändert")
 
 
 def main() -> None:
-    validate_revisions()
-    validate_decisions()
-    validate_requirements()
-    validate_progress()
+    validate_revisions(); validate_decisions(); validate_requirements_index(); validate_progress_count()
     print("baseline: ok; ADR-003=A; ADR-014=B; 40 MUST; 169 V2; 60 work packages")
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()

@@ -9,25 +9,25 @@ pull_request: 1
 
 # Implementierungsplan V3 – Steuerung
 
-Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellten Langfassung. Die Langfassung bleibt durch ihren SHA-256-Fingerabdruck eindeutig eingefroren; ihre 40 MUSS- und 169 V2-IDs sind unter `docs/requirements/requirement-index.json` vollständig registriert.
+Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellten Langfassung. Die Langfassung bleibt durch ihren SHA-256-Fingerabdruck eindeutig eingefroren; ihre 40 MUSS- und 169 V2-IDs sind über die Register unter `docs/requirements/` vollständig einer Umsetzungsregel zugeordnet.
 
 > [!important]
-> **ADR-003 = A** und **ADR-014 = B** sind unveränderliche Invarianten. Der Baseline-Validator prüft Register und ADR-Dateien gegeneinander.
+> **ADR-003 = A** und **ADR-014 = B** sind unveränderliche Invarianten. Die Baseline-Validatoren prüfen Revisionspolicy, ADR-Register, ADR-Dateien und Anforderungsregister gegeneinander.
 
 ## Aktueller Durchlauf
 
 - **Draft-PR:** #1
 - **Branch:** `agent/p00-governance-baseline`
 - **P00.1 Revisionsblatt und Analysefreeze:** im Review
-- **P00.2 Anforderungs- und Entscheidungstraceability:** in Arbeit
-- **P00.3 Fortschritts- und Evidenzvertrag:** in Arbeit
+- **P00.2 Anforderungs- und Entscheidungstraceability:** im Review
+- **P00.3 Fortschritts- und Evidenzvertrag:** im Review
 - Plan-Checkboxen bleiben bis Merge, grüner CI und vollständiger Evidenz offen.
 
 ## Arbeitspakete
 
 - [ ] **P00.1** Revisionsblatt und Analysefreeze _(im Review, PR #1)_
-- [ ] **P00.2** Anforderungs- und Entscheidungstraceability _(in Arbeit, PR #1)_
-- [ ] **P00.3** Fortschritts- und Evidenzvertrag _(in Arbeit, PR #1)_
+- [ ] **P00.2** Anforderungs- und Entscheidungstraceability _(im Review, PR #1)_
+- [ ] **P00.3** Fortschritts- und Evidenzvertrag _(im Review, PR #1)_
 - [ ] **P01.1** Python-/Node-Paketfundament
 - [ ] **P01.2** Sichere Datei-, Hash- und Stagingprimitive
 - [ ] **P01.3** Offline-Fixtures und Testdatenpolicy
