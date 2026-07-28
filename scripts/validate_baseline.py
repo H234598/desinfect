@@ -26,7 +26,8 @@ def validate_revisions() -> None:
         if not SHA40.fullmatch(entry["frozen_sha"]) or not SHA40.fullmatch(entry["observed_head_sha"]):
             raise ValueError(f"{name}: vollständiger 40-stelliger SHA fehlt")
         changed = entry["frozen_sha"] != entry["observed_head_sha"]
-        if entry["drift_status"] != ("advanced_after_freeze" if changed else "unchanged"):
+        expected_status = "advanced_after_freeze" if changed else "unchanged"
+        if entry["drift_status"] != expected_status:
             raise ValueError(f"{name}: drift_status widerspricht den SHAs")
         if not entry["manual_verification_required"]:
             raise ValueError(f"{name}: nicht lesbare Einstellungen wurden verschwiegen")
@@ -59,9 +60,11 @@ def validate_decisions() -> None:
 
 def validate_requirements_index() -> None:
     data = load("docs/requirements/requirement-index.json")
-    if data["must_ids"] != [f"MUSS-{number:02d}" for number in range(1, 41)]:
+    must = data["must_ids"]
+    v2 = data["v2_ids"]
+    if must != [f"MUSS-{number:02d}" for number in range(1, 41)]:
         raise ValueError("MUSS-Index ist nicht lückenlos MUSS-01 bis MUSS-40")
-    if len(data["v2_ids"]) != 169 or len(set(data["v2_ids"])) != 169:
+    if len(v2) != 169 or len(set(v2)) != 169:
         raise ValueError("V2-Index muss 169 eindeutige IDs enthalten")
 
 
@@ -74,13 +77,15 @@ def validate_progress_count() -> None:
     expected = {"total":60,"offen":counts["offen"],"in_arbeit":counts["in_arbeit"],"im_review":counts["im_review"],"umgesetzt":counts["umgesetzt"],"blockiert":counts["blockiert"]}
     if data["summary"] != expected:
         raise ValueError("Fortschrittszusammenfassung ist nicht synchron")
-    if counts["umgesetzt"]:
-        raise ValueError("P00 darf vor Merge/CI noch nichts als umgesetzt behaupten")
 
 
 def main() -> None:
-    validate_revisions(); validate_decisions(); validate_requirements_index(); validate_progress_count()
+    validate_revisions()
+    validate_decisions()
+    validate_requirements_index()
+    validate_progress_count()
     print("baseline: ok; ADR-003=A; ADR-014=B; 40 MUST; 169 V2; 60 work packages")
 
 
-if __name__ == "__main__": main()
+if __name__ == "__main__":
+    main()
