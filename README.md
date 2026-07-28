@@ -17,8 +17,8 @@
 ## P00-Baseline prüfen
 
 ```bash
-python scripts/validate_all_baseline.py
-python -m unittest discover -s tests -p "test_*.py"
+python3 scripts/validate_all_baseline.py
+python3 -m unittest discover -s tests -p "test_*.py"
 ```
 
 Ein Arbeitspaket wird erst nach Merge, grüner CI und vollständiger Evidenz als `umgesetzt` geführt.

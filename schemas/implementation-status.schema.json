@@ -3,11 +3,129 @@
   "$id": "https://h234598.github.io/desinfect/schemas/implementation-status-1.0.0.json",
   "title": "Desinfect implementation status",
   "type": "object",
-  "required": ["schema_version", "repository", "source_plan_sha256", "updated_at", "summary", "work_packages"],
+  "required": [
+    "schema_version",
+    "repository",
+    "source_plan_sha256",
+    "updated_at",
+    "summary",
+    "work_packages"
+  ],
   "properties": {
-    "schema_version": {"const": "1.0.0"}, "repository": {"const": "H234598/desinfect"}, "source_plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "updated_at": {"type": "string", "format": "date-time"}, "active_pr": {"type": "object"},
-    "summary": {"type": "object", "required": ["total", "offen", "in_arbeit", "im_review", "umgesetzt", "blockiert"], "additionalProperties": {"type": "integer", "minimum": 0}},
-    "work_packages": {"type": "array", "minItems": 60, "maxItems": 60, "items": {"type": "object", "required": ["id", "title", "status"], "properties": {"id": {"type": "string", "pattern": "^P[0-9]{2}\\.[0-9]+$"}, "title": {"type": "string", "minLength": 1}, "status": {"enum": ["offen", "in_arbeit", "im_review", "umgesetzt", "blockiert"]}, "branch": {"type": "string"}, "pr_number": {"type": "integer", "minimum": 1}, "blocker": {"type": "string"}, "evidence": {"type": "object", "properties": {"merge_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"}, "ci_runs": {"type": "array", "items": {"type": "string"}}, "tests": {"type": "array", "items": {"type": "string"}}, "accepted_at": {"type": ["string", "null"]}, "accepted_by": {"type": ["string", "null"]}, "notes": {"type": ["string", "null"]}}, "additionalProperties": false}}, "additionalProperties": false}}
+    "schema_version": {"const": "1.0.0"},
+    "repository": {"const": "H234598/desinfect"},
+    "source_plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "active_pr": {
+      "type": ["object", "null"],
+      "required": ["number", "url", "base", "head", "draft"],
+      "properties": {
+        "number": {"type": "integer", "minimum": 1},
+        "url": {"type": "string", "format": "uri"},
+        "base": {"type": "string", "minLength": 1},
+        "head": {"type": "string", "minLength": 1},
+        "draft": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "summary": {
+      "type": "object",
+      "required": ["total", "offen", "in_arbeit", "im_review", "umgesetzt", "blockiert"],
+      "properties": {
+        "total": {"const": 60},
+        "offen": {"type": "integer", "minimum": 0},
+        "in_arbeit": {"type": "integer", "minimum": 0},
+        "im_review": {"type": "integer", "minimum": 0},
+        "umgesetzt": {"type": "integer", "minimum": 0},
+        "blockiert": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "work_packages": {
+      "type": "array",
+      "minItems": 60,
+      "maxItems": 60,
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "status"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^P[0-9]{2}\\.[0-9]+$"},
+          "title": {"type": "string", "minLength": 1},
+          "status": {"enum": ["offen", "in_arbeit", "im_review", "umgesetzt", "blockiert"]},
+          "branch": {"type": "string", "minLength": 1},
+          "pr_number": {"type": "integer", "minimum": 1},
+          "blocker": {"type": "string", "minLength": 1},
+          "evidence": {
+            "type": "object",
+            "properties": {
+              "merge_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+              "ci_runs": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1}
+              },
+              "tests": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1}
+              },
+              "requirement_ids": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "pattern": "^(MUSS-[0-9]{2}|V2-[A-Z0-9-]+)$"
+                }
+              },
+              "accepted_at": {"type": ["string", "null"], "format": "date-time"},
+              "accepted_by": {"type": ["string", "null"], "minLength": 1},
+              "notes": {"type": ["string", "null"]}
+            },
+            "additionalProperties": false
+          }
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"status": {"const": "in_arbeit"}}, "required": ["status"]},
+            "then": {"required": ["branch"]}
+          },
+          {
+            "if": {"properties": {"status": {"const": "im_review"}}, "required": ["status"]},
+            "then": {"required": ["branch", "pr_number"]}
+          },
+          {
+            "if": {"properties": {"status": {"const": "blockiert"}}, "required": ["status"]},
+            "then": {"required": ["blocker"]}
+          },
+          {
+            "if": {"properties": {"status": {"const": "umgesetzt"}}, "required": ["status"]},
+            "then": {
+              "required": ["branch", "pr_number", "evidence"],
+              "properties": {
+                "evidence": {
+                  "required": [
+                    "merge_sha",
+                    "ci_runs",
+                    "tests",
+                    "requirement_ids",
+                    "accepted_at",
+                    "accepted_by"
+                  ],
+                  "properties": {
+                    "merge_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                    "ci_runs": {"type": "array", "minItems": 1},
+                    "tests": {"type": "array", "minItems": 1},
+                    "requirement_ids": {"type": "array", "minItems": 1},
+                    "accepted_at": {"type": "string", "format": "date-time"},
+                    "accepted_by": {"type": "string", "minLength": 1}
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "additionalProperties": false
+      }
+    }
   },
   "additionalProperties": false
 }

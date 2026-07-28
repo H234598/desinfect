@@ -9,10 +9,10 @@ pull_request: 1
 
 # Implementierungsplan V3 – Steuerung
 
-Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellten Langfassung. Die Langfassung bleibt durch ihren SHA-256-Fingerabdruck eindeutig eingefroren; ihre 40 MUSS- und 169 V2-IDs sind über die Register unter `docs/requirements/` vollständig einer Umsetzungsregel zugeordnet.
+Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellten Langfassung. Die externe Langfassung ist durch Dateiname, Bytezahl und SHA-256 in `config/plan-source.json` eingefroren. Diese Steuerungsdatei ist die kanonische Repositoryprojektion; ihr Bytehash wird bei jedem Baselinelauf neu berechnet. Ihre 40 MUSS- und 169 V2-IDs sind über die Register unter `docs/requirements/` vollständig einer Umsetzungsregel zugeordnet.
 
 > [!important]
-> **ADR-003 = A** und **ADR-014 = B** sind unveränderliche Invarianten. Die Baseline-Validatoren prüfen Revisionspolicy, ADR-Register, ADR-Dateien und Anforderungsregister gegeneinander.
+> **ADR-003 = A** und **ADR-014 = B** sind unveränderliche Invarianten. Die Baseline-Validatoren prüfen Revisionspolicy, ADR-Register, ADR-Dateien, Anforderungsregister, den eingefrorenen Ursprungsfingerabdruck und den Hash dieser kanonischen Steuerungsdatei gegeneinander. Die Antworten bleiben auch bei rechtssicherer Präzisierung ihrer Ausführung unverändert.
 
 ## Aktueller Durchlauf
 
@@ -21,7 +21,8 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 - **P00.1 Revisionsblatt und Analysefreeze:** im Review
 - **P00.2 Anforderungs- und Entscheidungstraceability:** im Review
 - **P00.3 Fortschritts- und Evidenzvertrag:** im Review
-- Plan-Checkboxen bleiben bis Merge, grüner CI und vollständiger Evidenz offen.
+- Reviewkorrekturen umfassen Rechte-Governance, exakte MkDocs-/Material-Pins, kanonische Planverifikation, eindeutige Registerschlüssel und ein schema-/laufzeitgeprüftes Abschlussgate.
+- Plan-Checkboxen bleiben bis Merge, grüner CI, aufgelösten Reviewthreads und vollständiger Evidenz offen.
 
 ## Arbeitspakete
 

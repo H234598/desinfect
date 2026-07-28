@@ -7,6 +7,8 @@ import re
 from collections import Counter
 from pathlib import Path
 
+from scripts.validate_plan_source import validate_plan_source
+
 ROOT = Path(__file__).resolve().parents[1]
 LOCKED = {"ADR-003": "A", "ADR-014": "B"}
 
@@ -20,7 +22,9 @@ def validate_rule(rule: dict, label: str) -> None:
     """Validate the common phase, path, test, and acceptance rule fields."""
     if not re.fullmatch(r"P[0-9]{2}", rule.get("phase", "")):
         raise ValueError(f"{label}: ungültige Phase")
-    if not rule.get("target_paths") or not all(isinstance(path, str) and path for path in rule["target_paths"]):
+    if not rule.get("target_paths") or not all(
+        isinstance(path, str) and path for path in rule["target_paths"]
+    ):
         raise ValueError(f"{label}: Zielpfad fehlt")
     if not rule.get("blocking_test", "").strip():
         raise ValueError(f"{label}: blockierender Test fehlt")
@@ -33,6 +37,9 @@ def validate() -> None:
     index = load("docs/requirements/requirement-index.json")
     must = load("docs/requirements/must-register.json")
     v2 = load("docs/requirements/v2-register.json")
+    source_sha = validate_plan_source()
+    if index.get("source_plan_sha256") != source_sha:
+        raise ValueError("Anforderungsindex verweist nicht auf die eingefrorene Planlangfassung")
     expected = [f"MUSS-{number:02d}" for number in range(1, 41)]
     if index["must_ids"] != expected:
         raise ValueError("MUSS-Index ist nicht lückenlos")
@@ -41,8 +48,8 @@ def validate() -> None:
     if set(must.get("labels", {})) != set(expected):
         raise ValueError("MUSS-Kurztexte sind nicht vollständig")
     for register in (must, v2):
-        if register.get("source_plan_sha256") != index["source_plan_sha256"]:
-            raise ValueError("Planfingerabdruck driftet")
+        if register.get("source_plan_sha256") != source_sha:
+            raise ValueError("Fingerabdruck der Planlangfassung driftet")
         if register.get("locked_decisions") != LOCKED:
             raise ValueError("ADR-003=A und ADR-014=B müssen gesperrt bleiben")
 

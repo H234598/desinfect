@@ -6,21 +6,51 @@ import json
 import re
 from collections import Counter
 from pathlib import Path
+from typing import Any, Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 LOCKED = {"ADR-003": "A", "ADR-014": "B"}
 
 
-def load(path: str) -> dict:
+def load(path: str) -> dict[str, Any]:
     """Load a UTF-8 JSON document relative to the repository root."""
     return json.loads((ROOT / path).read_text(encoding="utf-8"))
+
+
+def require_unique_records(
+    records: Iterable[dict[str, Any]],
+    *,
+    key: str,
+    expected_count: int,
+    label: str,
+) -> dict[str, dict[str, Any]]:
+    """Return records keyed by ``key`` after rejecting missing or duplicate identifiers."""
+    materialized = list(records)
+    if len(materialized) != expected_count:
+        raise ValueError(f"{label}: erwartet {expected_count} Einträge, erhalten {len(materialized)}")
+    identifiers = [entry.get(key) for entry in materialized]
+    if any(not isinstance(identifier, str) or not identifier for identifier in identifiers):
+        raise ValueError(f"{label}: leerer oder ungültiger Schlüssel {key}")
+    if len(set(identifiers)) != len(identifiers):
+        duplicates = sorted(
+            identifier
+            for identifier, count in Counter(identifiers).items()
+            if count > 1
+        )
+        raise ValueError(f"{label}: doppelte Schlüssel: {', '.join(duplicates)}")
+    return {str(entry[key]): entry for entry in materialized}
 
 
 def validate_revisions() -> None:
     """Validate frozen repository revisions, observed heads, and drift markers."""
     data = load("config/reference-revisions.json")
-    repos = {entry["full_name"]: entry for entry in data["repositories"]}
+    repos = require_unique_records(
+        data.get("repositories", []),
+        key="full_name",
+        expected_count=3,
+        label="Revisionsregister",
+    )
     expected = {"H234598/desinfect", "H234598/ADHS-Lernpfad", "H234598/Cheatsheets"}
     if set(repos) != expected:
         raise ValueError("Revisionsregister enthält nicht exakt die drei geplanten Repositories")
@@ -40,7 +70,12 @@ def validate_revisions() -> None:
 def validate_decisions() -> None:
     """Validate the complete ADR register and the two locked choices."""
     data = load("config/architecture-decisions.json")
-    decisions = {entry["id"]: entry for entry in data["decisions"]}
+    decisions = require_unique_records(
+        data.get("decisions", []),
+        key="id",
+        expected_count=15,
+        label="ADR-Register",
+    )
     if set(decisions) != {f"ADR-{number:03d}" for number in range(1, 16)}:
         raise ValueError("ADR-001 bis ADR-015 müssen vollständig registriert sein")
     if data["locked_decisions"] != LOCKED:

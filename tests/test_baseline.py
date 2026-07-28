@@ -27,6 +27,17 @@ class BaselineTests(unittest.TestCase):
         self.assertEqual(choices["ADR-003"], "A")
         self.assertEqual(choices["ADR-014"], "B")
 
+    def test_duplicate_records_are_rejected_before_mapping(self) -> None:
+        """Reject conflicting duplicate identifiers instead of overwriting them."""
+        records = [{"id": "ADR-001"}, {"id": "ADR-001"}]
+        with self.assertRaisesRegex(ValueError, "doppelte Schlüssel"):
+            validate_baseline.require_unique_records(
+                records,
+                key="id",
+                expected_count=2,
+                label="Testregister",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

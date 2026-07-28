@@ -1,0 +1,12 @@
+{
+  "canonical_control_path": "docs/IMPLEMENTIERUNGSPLAN-STEUERUNG.md",
+  "canonical_control_sha256": "011df95fea140cb403091701c728372d5c5acb05522de16c3deda9eb76e795e1",
+  "locked_decisions": {
+    "ADR-003": "A",
+    "ADR-014": "B"
+  },
+  "schema_version": "1.0.0",
+  "source_filename": "DESINFECT_IMPLEMENTIERUNGSPLAN_V3_ADR-003-A_ADR-014-B(2).md",
+  "source_sha256": "aa50863cde1313a7039691b4ca596c1ab498d0fab0008da324de5cb69f12ffc4",
+  "source_size": 533417
+}
