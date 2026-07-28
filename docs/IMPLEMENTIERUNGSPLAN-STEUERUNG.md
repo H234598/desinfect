@@ -1,6 +1,6 @@
 ---
 title: Implementierungsplan V3 – Steuerung
-status: Umsetzung begonnen
+status: P00 abgeschlossen; P01 als nächster Schritt
 source_plan_sha256: aa50863cde1313a7039691b4ca596c1ab498d0fab0008da324de5cb69f12ffc4
 repository: H234598/desinfect
 branch: agent/p00-governance-baseline
@@ -18,17 +18,18 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 
 - **PR:** #1
 - **Branch:** `agent/p00-governance-baseline`
-- **P00.1 Revisionsblatt und Analysefreeze:** im Review
-- **P00.2 Anforderungs- und Entscheidungstraceability:** im Review
-- **P00.3 Fortschritts- und Evidenzvertrag:** im Review
-- Reviewkorrekturen umfassen Rechte-Governance, exakte MkDocs-/Material-Pins, kanonische Planverifikation, eindeutige Registerschlüssel und ein schema-/laufzeitgeprüftes Abschlussgate.
-- Plan-Checkboxen bleiben bis Merge, grüner CI, aufgelösten Reviewthreads und vollständiger Evidenz offen.
+- **P00.1 Revisionsblatt und Analysefreeze:** umgesetzt via PR #1 / `c4996105f6d683c2c4d342df6ee43b74dbcb64a6`
+- **P00.2 Anforderungs- und Entscheidungstraceability:** umgesetzt via PR #1 / `c4996105f6d683c2c4d342df6ee43b74dbcb64a6`
+- **P00.3 Fortschritts- und Evidenzvertrag:** umgesetzt via PR #1 / `c4996105f6d683c2c4d342df6ee43b74dbcb64a6`
+- P00 wurde mit erwartetem Head `c61581842415da4d5c2e81ae7e28fbe7f4165a8f` per Squash gemergt.
+- GitHub Actions `30331599906`, CodeRabbit und qlty waren grün; alle Reviewthreads waren aufgelöst.
+- Die vollständige Merge- und Abnahmeevidenz ist in `docs/implementation-status.json` hinterlegt.
 
 ## Arbeitspakete
 
-- [ ] **P00.1** Revisionsblatt und Analysefreeze _(im Review, PR #1)_
-- [ ] **P00.2** Anforderungs- und Entscheidungstraceability _(im Review, PR #1)_
-- [ ] **P00.3** Fortschritts- und Evidenzvertrag _(im Review, PR #1)_
+- [x] **P00.1** Revisionsblatt und Analysefreeze _(umgesetzt, PR #1, Merge `c4996105f6d683c2c4d342df6ee43b74dbcb64a6`)_
+- [x] **P00.2** Anforderungs- und Entscheidungstraceability _(umgesetzt, PR #1, Merge `c4996105f6d683c2c4d342df6ee43b74dbcb64a6`)_
+- [x] **P00.3** Fortschritts- und Evidenzvertrag _(umgesetzt, PR #1, Merge `c4996105f6d683c2c4d342df6ee43b74dbcb64a6`)_
 - [ ] **P01.1** Python-/Node-Paketfundament
 - [ ] **P01.2** Sichere Datei-, Hash- und Stagingprimitive
 - [ ] **P01.3** Offline-Fixtures und Testdatenpolicy
