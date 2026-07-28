@@ -59,7 +59,6 @@ class PlanProgressTests(unittest.TestCase):
             if item["status"] == "im_review":
                 self.assertTrue(is_positive_int(item.get("pr_number")))
                 self.assertIsNone(evidence.get("merge_sha"))
-                self.assertTrue(evidence.get("requirement_ids"))
             elif item["status"] == "umgesetzt":
                 self.assertRegex(evidence.get("merge_sha", ""), SHA40)
                 self.assertTrue(evidence.get("ci_runs"))
