@@ -7,7 +7,7 @@
 
 | Gesamt | Offen | In Arbeit | Im Review | Umgesetzt | Blockiert |
 |---:|---:|---:|---:|---:|---:|
-| 60 | 54 | 3 | 0 | 3 | 0 |
+| 60 | 54 | 0 | 3 | 3 | 0 |
 
 ## Abgeschlossene Phase P00
 
@@ -23,14 +23,15 @@
 
 ## Aktiver Durchlauf P01
 
+**PR: #3**  
 **Branch:** `agent/p01-foundation`  
 **Basis:** `main@68f1c73d043abd4a778cf3ee0dfa3cf857330efe`
 
 | ID | Titel | Status |
 |---|---|---|
-| P01.1 | Python-/Node-Paketfundament | in_arbeit |
-| P01.2 | Sichere Datei-, Hash- und Stagingprimitive | in_arbeit |
-| P01.3 | Offline-Fixtures und Testdatenpolicy | in_arbeit |
+| P01.1 | Python-/Node-Paketfundament | im_review |
+| P01.2 | Sichere Datei-, Hash- und Stagingprimitive | im_review |
+| P01.3 | Offline-Fixtures und Testdatenpolicy | im_review |
 
 Geplante blockierende Prüfungen:
 
@@ -43,7 +44,7 @@ python3 -m pytest -q
 npm test
 ```
 
-Die P01-Pakete decken `V2-03-TREE-001` bis `V2-03-TREE-005` und `V2-26-TEST-001` bis `V2-26-TEST-008` ab. Merge-, CI- und Abnahmeevidenz stehen noch aus.
+Die P01-Pakete decken `V2-03-TREE-001` bis `V2-03-TREE-005` und `V2-26-TEST-001` bis `V2-26-TEST-008` ab. Der Code liegt in PR #3. Merge-, finale CI- und Abnahmeevidenz stehen noch aus; die Plan-Checkboxen bleiben offen.
 
 ## Gesperrte Architekturentscheidungen
 

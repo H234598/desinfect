@@ -81,6 +81,7 @@ jobs:
           set -Eeuo pipefail
           python3 -m pip install --upgrade "pip==26.1.2"
           mkdir -p build/dependency-reports
+          lock_drift=0
           for kind in runtime test docs; do
             input="requirements.in"
             lock="requirements.txt"
@@ -96,8 +97,9 @@ jobs:
             python3 scripts/validate_dependency_locks.py \
               --render-report "build/dependency-reports/${kind}.json" \
               > "build/dependency-reports/${kind}.txt"
-            diff -u "$lock" "build/dependency-reports/${kind}.txt"
+            diff -u "$lock" "build/dependency-reports/${kind}.txt" || lock_drift=1
           done
+          exit "$lock_drift"
 
       - name: Install locked Python and Node foundations
         shell: bash
