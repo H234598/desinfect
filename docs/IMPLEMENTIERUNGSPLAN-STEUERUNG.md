@@ -1,10 +1,10 @@
 ---
 title: Implementierungsplan V3 – Steuerung
-status: P00 abgeschlossen; P01 als nächster Schritt
+status: P01 in Arbeit
 source_plan_sha256: aa50863cde1313a7039691b4ca596c1ab498d0fab0008da324de5cb69f12ffc4
 repository: H234598/desinfect
-branch: agent/p00-governance-baseline
-pull_request: 1
+branch: agent/p01-foundation
+pull_request: null
 ---
 
 # Implementierungsplan V3 – Steuerung
@@ -16,23 +16,22 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 
 ## Aktueller Durchlauf
 
-- **PR:** #1
-- **Branch:** `agent/p00-governance-baseline`
-- **P00.1 Revisionsblatt und Analysefreeze:** umgesetzt via PR #1 / `c4996105f6d683c2c4d342df6ee43b74dbcb64a6`
-- **P00.2 Anforderungs- und Entscheidungstraceability:** umgesetzt via PR #1 / `c4996105f6d683c2c4d342df6ee43b74dbcb64a6`
-- **P00.3 Fortschritts- und Evidenzvertrag:** umgesetzt via PR #1 / `c4996105f6d683c2c4d342df6ee43b74dbcb64a6`
-- P00 wurde mit erwartetem Head `c61581842415da4d5c2e81ae7e28fbe7f4165a8f` per Squash gemergt.
-- GitHub Actions `30331599906`, CodeRabbit und qlty waren grün; alle Reviewthreads waren aufgelöst.
-- Die vollständige Merge- und Abnahmeevidenz ist in `docs/implementation-status.json` hinterlegt.
+- **Basis:** `main@68f1c73d043abd4a778cf3ee0dfa3cf857330efe`
+- **Branch:** `agent/p01-foundation`
+- **P01.1 Python-/Node-Paketfundament:** in Arbeit
+- **P01.2 Sichere Datei-, Hash- und Stagingprimitive:** in Arbeit
+- **P01.3 Offline-Fixtures und Testdatenpolicy:** in Arbeit
+- P00.1 bis P00.3 bleiben mit PR #1 und Merge `c4996105f6d683c2c4d342df6ee43b74dbcb64a6` abgeschlossen.
+- Die P01-Checkboxen bleiben bis Merge, grüner CI, aufgelösten Reviewthreads und vollständiger Evidenz offen.
 
 ## Arbeitspakete
 
 - [x] **P00.1** Revisionsblatt und Analysefreeze _(umgesetzt, PR #1, Merge `c4996105f6d683c2c4d342df6ee43b74dbcb64a6`)_
 - [x] **P00.2** Anforderungs- und Entscheidungstraceability _(umgesetzt, PR #1, Merge `c4996105f6d683c2c4d342df6ee43b74dbcb64a6`)_
 - [x] **P00.3** Fortschritts- und Evidenzvertrag _(umgesetzt, PR #1, Merge `c4996105f6d683c2c4d342df6ee43b74dbcb64a6`)_
-- [ ] **P01.1** Python-/Node-Paketfundament
-- [ ] **P01.2** Sichere Datei-, Hash- und Stagingprimitive
-- [ ] **P01.3** Offline-Fixtures und Testdatenpolicy
+- [ ] **P01.1** Python-/Node-Paketfundament _(in Arbeit, Branch `agent/p01-foundation`)_
+- [ ] **P01.2** Sichere Datei-, Hash- und Stagingprimitive _(in Arbeit, Branch `agent/p01-foundation`)_
+- [ ] **P01.3** Offline-Fixtures und Testdatenpolicy _(in Arbeit, Branch `agent/p01-foundation`)_
 - [ ] **P02.1** Schemafamilie und Versionsstrategie
 - [ ] **P02.2** Öffentlicher Status und Lauf-/Recovery-Modell
 - [ ] **P02.3** Automatische Schreibpfad-Policy

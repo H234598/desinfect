@@ -1,0 +1,66 @@
+{
+  "entries": [
+    {
+      "bytes": 223,
+      "license_status": "synthetic",
+      "media_type": "text/html",
+      "path": "rki-html/collection.html",
+      "provenance": "H234598/desinfect P01 synthetic fixture policy",
+      "purpose": "synthetic collection page",
+      "sha256": "81c0a7e1fa06db4262bba1b40e71211be73c60b91d909d93f0535e6bb8e0bf1c",
+      "synthetic": true
+    },
+    {
+      "bytes": 308,
+      "license_status": "synthetic",
+      "media_type": "text/html",
+      "path": "rki-html/item.html",
+      "provenance": "H234598/desinfect P01 synthetic fixture policy",
+      "purpose": "synthetic item metadata page",
+      "sha256": "2b5ab7e2d964d5ab19583759c5eed5fb2da19a20c3798bfe98fc6159428cf13b",
+      "synthetic": true
+    },
+    {
+      "bytes": 412,
+      "license_status": "synthetic",
+      "media_type": "application/pdf",
+      "path": "pdf/minimal.pdf",
+      "provenance": "H234598/desinfect P01 synthetic fixture policy",
+      "purpose": "minimal parser and magic fixture",
+      "sha256": "e03649f71ab5b4a992dffe8c036be40ae5812e9add514516f15b34446faf351f",
+      "synthetic": true
+    },
+    {
+      "bytes": 134,
+      "license_status": "synthetic",
+      "media_type": "application/json",
+      "path": "github-api/workflow-disabled.json",
+      "provenance": "H234598/desinfect P01 synthetic fixture policy",
+      "purpose": "GitHub disabled_inactivity response",
+      "sha256": "1b359b3d76541a0e68455d769531e76210f71adc0002bdd3aa76ffb044dbe825",
+      "synthetic": true
+    },
+    {
+      "bytes": 129,
+      "license_status": "specification-derived",
+      "media_type": "text/plain",
+      "path": "lfs/pointer.txt",
+      "provenance": "H234598/desinfect P01 synthetic fixture policy",
+      "purpose": "Git LFS pointer parser fixture",
+      "sha256": "c2780c9771533dd1f6457c4ecdf517149800d8e595442018343f78d26022325e",
+      "synthetic": true
+    },
+    {
+      "bytes": 89,
+      "license_status": "synthetic",
+      "media_type": "application/json",
+      "path": "rights/unknown.json",
+      "provenance": "H234598/desinfect P01 synthetic fixture policy",
+      "purpose": "fail-closed unknown rights state",
+      "sha256": "9cbcc239bf246bab211733e032a4faf42544eb5285d41097cf52f7236e95543e",
+      "synthetic": true
+    }
+  ],
+  "max_file_bytes": 65536,
+  "schema_version": "1.0.0"
+}

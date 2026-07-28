@@ -1,0 +1,6 @@
+beautifulsoup4==4.15.0
+mkdocs==1.6.1
+mkdocs-material==9.7.7
+pymdown-extensions==11.0.1
+PyYAML==6.0.3
+requests==2.34.2
