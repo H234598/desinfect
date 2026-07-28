@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0.0",
+  "source_plan_sha256": "aa50863cde1313a7039691b4ca596c1ab498d0fab0008da324de5cb69f12ffc4",
+  "locked_decisions": {"ADR-003": "A", "ADR-014": "B"},
+  "decisions": [
+    {"id":"ADR-001","choice":"C"},
+    {"id":"ADR-002","choice":"C"},
+    {"id":"ADR-003","choice":"A","locked":true},
+    {"id":"ADR-004","choice":"C"},
+    {"id":"ADR-005","choice":"C"},
+    {"id":"ADR-006","choice":"C"},
+    {"id":"ADR-007","choice":"C"},
+    {"id":"ADR-008","choice":"C"},
+    {"id":"ADR-009","choice":"C"},
+    {"id":"ADR-010","choice":"C"},
+    {"id":"ADR-011","choice":"C"},
+    {"id":"ADR-012","choice":"C"},
+    {"id":"ADR-013","choice":"C"},
+    {"id":"ADR-014","choice":"B","locked":true},
+    {"id":"ADR-015","choice":"C"}
+  ]
+}
