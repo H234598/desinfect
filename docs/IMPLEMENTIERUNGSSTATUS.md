@@ -7,7 +7,7 @@
 
 | Gesamt | Offen | In Arbeit | Im Review | Umgesetzt | Blockiert |
 |---:|---:|---:|---:|---:|---:|
-| 60 | 48 | 3 | 0 | 9 | 0 |
+| 60 | 48 | 0 | 3 | 9 | 0 |
 
 ## Abgeschlossene Phasen
 
@@ -19,15 +19,16 @@
 
 ## Aktive Phase P03
 
+**PR: #7**  
 **Branch:** `agent/p03-grabber-modularization`
 
 | ID | Titel | Status | Evidenzstand |
 |---|---|---|---|
-| P03.1 | Grabber in Parser, HTTP und Orchestrierung schneiden | in_arbeit | reine Parser, Transportport und Service implementiert; Offline-Fixtures ergänzt |
-| P03.2 | Netzwerk-, Robots- und Downloadhärtung | in_arbeit | same-origin HTTPS, fail-closed Robots, Redirect-/Bytegrenzen und atomarer Resume-Download implementiert |
-| P03.3 | Stabile CLI, API und Resultvertrag | in_arbeit | gemeinsame API/CLI, Result-Schema, stabile Exitcodes und Validator implementiert |
+| P03.1 | Grabber in Parser, HTTP und Orchestrierung schneiden | im_review | reine Parser, Transportport und Service implementiert; Offline-Fixtures ergänzt |
+| P03.2 | Netzwerk-, Robots- und Downloadhärtung | im_review | same-origin HTTPS, fail-closed Robots, Redirect-/Bytegrenzen und atomarer Resume-Download implementiert |
+| P03.3 | Stabile CLI, API und Resultvertrag | im_review | gemeinsame API/CLI, Result-Schema, stabile Exitcodes und Validator implementiert |
 
-P03 bleibt bis Implementierungs-PR, grüner CI, aufgelösten Reviewthreads, Merge und separater Abnahmeevidenz offen. In dieser Phase erfolgt kein echter RKI-Abruf und kein produktiver Schreib- oder LFS-Lauf.
+P03 liegt in PR #7 und bleibt bis grüner CI, aufgelösten Reviewthreads, Merge und separater Abnahmeevidenz offen. In dieser Phase erfolgt kein echter RKI-Abruf und kein produktiver Schreib- oder LFS-Lauf.
 
 ## Gesperrte Architekturentscheidungen
 

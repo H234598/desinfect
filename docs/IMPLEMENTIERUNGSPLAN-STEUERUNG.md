@@ -1,10 +1,10 @@
 ---
 title: Implementierungsplan V3 – Steuerung
-status: P03 in Umsetzung
+status: P03 im Review
 source_plan_sha256: aa50863cde1313a7039691b4ca596c1ab498d0fab0008da324de5cb69f12ffc4
 repository: H234598/desinfect
 branch: agent/p03-grabber-modularization
-pull_request: null
+pull_request: 7
 ---
 
 # Implementierungsplan V3 – Steuerung
@@ -23,11 +23,12 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 
 ## Aktive Phase P03
 
+- **PR:** #7
 - **Branch:** `agent/p03-grabber-modularization`
-- **P03.1:** in Arbeit – bestehende Grabberlogik in reine Parser, HTTP-Transport und Orchestrierung getrennt.
-- **P03.2:** in Arbeit – same-origin HTTPS, fail-closed Robotsprüfung, manuelle Redirectgrenzen, Größenlimits und atomare PDF-Ablage.
-- **P03.3:** in Arbeit – gemeinsame importierbare API/CLI und strikter `grabber-result`-Vertrag.
-- **Fortschritt:** 9 von 60 Arbeitspaketen umgesetzt; 3 in Arbeit; 48 offen.
+- **P03.1:** im Review – bestehende Grabberlogik in reine Parser, HTTP-Transport und Orchestrierung getrennt.
+- **P03.2:** im Review – same-origin HTTPS, fail-closed Robotsprüfung, manuelle Redirectgrenzen, Größenlimits und atomare PDF-Ablage.
+- **P03.3:** im Review – gemeinsame importierbare API/CLI und strikter `grabber-result`-Vertrag.
+- **Fortschritt:** 9 von 60 Arbeitspaketen umgesetzt; 3 im Review; 48 offen.
 - Kein historischer Vollabruf, LFS-Import, Scheduler oder schreibender Workflow wird in P03 eingeführt.
 
 ## Arbeitspakete
@@ -41,9 +42,9 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 - [x] **P02.1** Schemafamilie und Versionsstrategie _(umgesetzt, PR #5, Merge `947b2ba86792d5a84e0f2fd972cfbe554c156afc`)_
 - [x] **P02.2** Öffentlicher Status und Lauf-/Recovery-Modell _(umgesetzt, PR #5, Merge `947b2ba86792d5a84e0f2fd972cfbe554c156afc`)_
 - [x] **P02.3** Automatische Schreibpfad-Policy _(umgesetzt, PR #5, Merge `947b2ba86792d5a84e0f2fd972cfbe554c156afc`)_
-- [ ] **P03.1** Grabber in Parser, HTTP und Orchestrierung schneiden _(in Arbeit, Branch `agent/p03-grabber-modularization`)_
-- [ ] **P03.2** Netzwerk-, Robots- und Downloadhärtung _(in Arbeit, Branch `agent/p03-grabber-modularization`)_
-- [ ] **P03.3** Stabile CLI, API und Resultvertrag _(in Arbeit, Branch `agent/p03-grabber-modularization`)_
+- [ ] **P03.1** Grabber in Parser, HTTP und Orchestrierung schneiden _(im Review, PR #7)_
+- [ ] **P03.2** Netzwerk-, Robots- und Downloadhärtung _(im Review, PR #7)_
+- [ ] **P03.3** Stabile CLI, API und Resultvertrag _(im Review, PR #7)_
 - [ ] **P04.1** RunMode und Seiteneffektwächter
 - [ ] **P04.2** Storage Protocol und echte Adapter
 - [ ] **P04.3** Git-LFS-Tracking, Objekt- und Budgetprüfung
