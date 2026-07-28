@@ -6,7 +6,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+import sys
 from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from scripts.rki_pipeline.io_utils import (
     detect_path_collisions,
@@ -14,7 +19,6 @@ from scripts.rki_pipeline.io_utils import (
     sha256_file,
 )
 
-ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = ROOT / "tests" / "fixtures"
 MANIFEST = FIXTURE_ROOT / "manifest.json"
 ALLOWED_METADATA_FILES = {"README.md", "manifest.json"}
