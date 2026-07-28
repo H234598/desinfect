@@ -22,8 +22,9 @@ from scripts.rki_pipeline.io_utils import (
 FIXTURE_ROOT = ROOT / "tests" / "fixtures"
 MANIFEST = FIXTURE_ROOT / "manifest.json"
 ALLOWED_METADATA_FILES = {"README.md", "manifest.json"}
+MAX_FIXTURE_BYTES = 65_536
 SECRET_PATTERNS = (
-    re.compile(rb"ghp_[A-Za-z0-9]{20,}"),
+    re.compile(rb"gh[pousr]_[A-Za-z0-9]{20,}"),
     re.compile(rb"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
 )
@@ -42,8 +43,10 @@ def validate(root: Path = FIXTURE_ROOT, manifest_path: Path = MANIFEST) -> None:
     if data.get("schema_version") != "1.0.0":
         raise ValueError("Fixture-Manifest besitzt eine unbekannte schema_version")
     maximum = data.get("max_file_bytes")
-    if type(maximum) is not int or maximum <= 0:
-        raise ValueError("max_file_bytes muss eine positive Ganzzahl sein")
+    if type(maximum) is not int or maximum <= 0 or maximum > MAX_FIXTURE_BYTES:
+        raise ValueError(
+            f"max_file_bytes muss zwischen 1 und {MAX_FIXTURE_BYTES} liegen"
+        )
     entries = data.get("entries")
     if not isinstance(entries, list) or not entries:
         raise ValueError("Fixture-Manifest benötigt mindestens einen Eintrag")

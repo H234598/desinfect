@@ -10,26 +10,30 @@ Provenance:
   ``fbcc6e850fec1f4592ca519fa3e5141b11a95e60``.
 
 The implementation tightens those patterns with Unicode/POSIX normalization,
-symlink rejection, parent-directory fsync, collision detection, and a project-
-specific generated-root sentinel.
+held directory-descriptor boundaries, no-follow traversal, parent-directory
+fsync, collision detection, and a project-specific generated-root sentinel.
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
+import errno
 import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
 import re
-import shutil
-from typing import Any, Iterable
+import stat
+from typing import Any, Iterable, Iterator
 import unicodedata
 import uuid
 
 GENERATED_ROOT_SENTINEL = ".desinfect-generated-root"
 DEFAULT_CHUNK_SIZE = 1024 * 1024
 _WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
+_DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 
 class UnsafePathError(ValueError):
@@ -87,51 +91,348 @@ def detect_path_collisions(values: Iterable[str | Path | PurePosixPath]) -> None
         seen[key] = normalized
 
 
-def _reject_symlink_components(path: Path, root: Path) -> None:
-    """Reject an existing symlink in the root-to-path component chain."""
+def relative_path_beneath(path: Path, root: Path) -> PurePosixPath:
+    """Return a normalized syntactic path below *root* without following links."""
 
-    resolved_root = root.resolve(strict=True)
-    if root.is_symlink():
-        raise UnsafePathError(f"Erlaubter Wurzelpfad darf kein Symlink sein: {root}")
+    root_absolute = Path(os.path.abspath(root))
+    candidate = path if path.is_absolute() else root_absolute / path
+    candidate_absolute = Path(os.path.abspath(candidate))
     try:
-        relative = path.absolute().relative_to(root.absolute())
+        relative = candidate_absolute.relative_to(root_absolute)
     except ValueError as exc:
         raise UnsafePathError(f"Pfad liegt außerhalb des erlaubten Wurzelpfads: {path}") from exc
+    if not relative.parts:
+        raise UnsafePathError("Der erlaubte Wurzelpfad selbst ist kein gültiges Ziel")
+    return PurePosixPath(normalize_posix_path(relative.as_posix()))
 
-    current = root.absolute()
-    for part in relative.parts:
-        current = current / part
-        if current.exists() and current.is_symlink():
-            raise UnsafePathError(f"Symlink-Komponente ist unzulässig: {current}")
-    # Ensure the resolved candidate remains below the resolved root as a second,
-    # race-resistant boundary check for existing components.
-    resolved = path.resolve(strict=False)
+
+def _open_directory(name: str | Path, *, dir_fd: int | None = None) -> int:
+    """Open one directory component without following its final symlink."""
+
     try:
-        resolved.relative_to(resolved_root)
-    except ValueError as exc:
-        raise UnsafePathError(f"Pfad verlässt den erlaubten Wurzelpfad: {path}") from exc
+        descriptor = os.open(name, _DIRECTORY_FLAGS | _NOFOLLOW, dir_fd=dir_fd)
+    except OSError as exc:
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise UnsafePathError(f"Symlink- oder Nicht-Verzeichnis-Komponente: {name}") from exc
+        raise
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISDIR(metadata.st_mode):
+        os.close(descriptor)
+        raise UnsafePathError(f"Pfadkomponente ist kein Verzeichnis: {name}")
+    return descriptor
+
+
+@contextmanager
+def open_root_directory(root: Path, *, create: bool = False) -> Iterator[int]:
+    """Hold a no-follow descriptor for an allowed root directory."""
+
+    root = Path(os.path.abspath(root))
+    if create:
+        root.mkdir(parents=True, exist_ok=True)
+    descriptor = _open_directory(root)
+    try:
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+def open_directory_beneath(
+    root_fd: int,
+    parts: Iterable[str],
+    *,
+    create: bool = False,
+    mode: int = 0o755,
+) -> int:
+    """Open a directory chain relative to a held root without following links."""
+
+    current = os.dup(root_fd)
+    try:
+        for raw_part in parts:
+            part = normalize_posix_path(raw_part)
+            if "/" in part:
+                raise UnsafePathError(f"Nur einzelne Pfadkomponenten sind erlaubt: {raw_part}")
+            if create:
+                try:
+                    os.mkdir(part, mode=mode, dir_fd=current)
+                except FileExistsError:
+                    pass
+            next_descriptor = _open_directory(part, dir_fd=current)
+            os.close(current)
+            current = next_descriptor
+        return current
+    except BaseException:
+        os.close(current)
+        raise
+
+
+def fd_directory_path(descriptor: int) -> Path:
+    """Return an FD-backed directory path or fail closed on unsupported hosts."""
+
+    for base in (Path("/proc/self/fd"), Path("/dev/fd")):
+        candidate = base / str(descriptor)
+        if base.is_dir() and candidate.exists():
+            return candidate
+    raise UnsafePathError(
+        "Die Plattform stellt keinen FD-basierten Pfad für sicheres Staging bereit"
+    )
+
+
+def entry_exists(parent_fd: int, name: str) -> bool:
+    """Check for an entry relative to a held directory without following links."""
+
+    try:
+        os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def fsync_directory_fd(descriptor: int) -> None:
+    """Synchronize metadata through an already-open directory descriptor."""
+
+    os.fsync(descriptor)
+
+
+def fsync_directory(path: Path) -> None:
+    """Synchronize directory metadata without following the final component."""
+
+    descriptor = _open_directory(path)
+    try:
+        fsync_directory_fd(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _atomic_write_at(parent_fd: int, name: str, payload: bytes, mode: int) -> None:
+    """Atomically replace one regular entry relative to a held directory."""
+
+    if "/" in name or name in {"", ".", ".."}:
+        raise UnsafePathError(f"Ungültiger Dateiname für descriptor-relative Ablage: {name}")
+    try:
+        existing = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        existing = None
+    if existing is not None and not stat.S_ISREG(existing.st_mode):
+        raise UnsafePathError(f"Ziel ist keine reguläre Datei: {name}")
+
+    part = f".{name}.{os.getpid()}.{uuid.uuid4().hex}.part"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | _NOFOLLOW
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(part, flags, mode, dir_fd=parent_fd)
+        os.fchmod(descriptor, mode)
+        with os.fdopen(descriptor, "wb", closefd=True) as handle:
+            descriptor = None
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(
+            part,
+            name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+        fsync_directory_fd(parent_fd)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            os.unlink(part, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+
+
+def atomic_write_bytes(
+    path: Path,
+    payload: bytes,
+    *,
+    allowed_root: Path | None = None,
+    mode: int = 0o644,
+) -> None:
+    """Atomically write bytes beneath a held no-follow root descriptor.
+
+    Temporary-file creation and final replacement are relative to the same held
+    parent directory descriptor, so an ancestor path renamed or replaced with a
+    symlink after validation cannot redirect the write outside the allowed root.
+    """
+
+    root = allowed_root if allowed_root is not None else path.parent
+    relative = relative_path_beneath(path, root)
+    with open_root_directory(root, create=True) as root_fd:
+        parent_fd = open_directory_beneath(root_fd, relative.parts[:-1], create=True)
+        try:
+            _atomic_write_at(parent_fd, relative.name, payload, mode)
+        finally:
+            os.close(parent_fd)
+
+
+def atomic_write_text(
+    path: Path,
+    text: str,
+    *,
+    allowed_root: Path | None = None,
+    mode: int = 0o644,
+) -> None:
+    """Atomically write UTF-8 text."""
+
+    atomic_write_bytes(path, text.encode("utf-8"), allowed_root=allowed_root, mode=mode)
+
+
+def mark_generated_root_fd(directory_fd: int) -> None:
+    """Create the generated-root sentinel inside a held directory descriptor."""
+
+    _atomic_write_at(
+        directory_fd,
+        GENERATED_ROOT_SENTINEL,
+        b"generated by desinfect\n",
+        0o644,
+    )
+
+
+def assert_generated_root_fd(directory_fd: int) -> None:
+    """Require a regular, non-symlink generated-root sentinel."""
+
+    try:
+        metadata = os.stat(
+            GENERATED_ROOT_SENTINEL,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError as exc:
+        raise UnsafePathError(
+            f"Generiertes Ziel ist nicht durch {GENERATED_ROOT_SENTINEL} markiert"
+        ) from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise UnsafePathError(
+            f"Sentinel {GENERATED_ROOT_SENTINEL} ist keine reguläre Datei"
+        )
+
+
+def mark_generated_root(path: Path, *, allowed_root: Path | None = None) -> None:
+    """Create and securely mark a directory as generated output."""
+
+    root = allowed_root if allowed_root is not None else path.parent
+    relative = relative_path_beneath(path, root)
+    with open_root_directory(root, create=True) as root_fd:
+        parent_fd = open_directory_beneath(root_fd, relative.parts[:-1], create=True)
+        try:
+            try:
+                os.mkdir(relative.name, mode=0o755, dir_fd=parent_fd)
+            except FileExistsError:
+                pass
+            directory_fd = _open_directory(relative.name, dir_fd=parent_fd)
+            try:
+                mark_generated_root_fd(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            os.close(parent_fd)
+
+
+def assert_generated_root(path: Path, *, allowed_root: Path | None = None) -> None:
+    """Require the project sentinel without following path symlinks."""
+
+    root = allowed_root if allowed_root is not None else path.parent
+    relative = relative_path_beneath(path, root)
+    with open_root_directory(root) as root_fd:
+        parent_fd = open_directory_beneath(root_fd, relative.parts[:-1])
+        try:
+            directory_fd = _open_directory(relative.name, dir_fd=parent_fd)
+            try:
+                assert_generated_root_fd(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            os.close(parent_fd)
+
+
+def validate_tree_no_symlinks_fd(directory_fd: int) -> None:
+    """Recursively reject every symlink below a held directory descriptor."""
+
+    for name in os.listdir(directory_fd):
+        metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if stat.S_ISLNK(metadata.st_mode):
+            raise UnsafePathError(f"Symlink in generiertem Baum ist unzulässig: {name}")
+        if stat.S_ISDIR(metadata.st_mode):
+            child_fd = _open_directory(name, dir_fd=directory_fd)
+            try:
+                validate_tree_no_symlinks_fd(child_fd)
+            finally:
+                os.close(child_fd)
+
+
+def _remove_tree_contents_fd(directory_fd: int) -> None:
+    """Recursively remove directory contents without following symlinks."""
+
+    for name in os.listdir(directory_fd):
+        metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if stat.S_ISLNK(metadata.st_mode):
+            raise UnsafePathError(f"Symlink in generiertem Baum ist unzulässig: {name}")
+        if stat.S_ISDIR(metadata.st_mode):
+            child_fd = _open_directory(name, dir_fd=directory_fd)
+            try:
+                _remove_tree_contents_fd(child_fd)
+            finally:
+                os.close(child_fd)
+            os.rmdir(name, dir_fd=directory_fd)
+        else:
+            os.unlink(name, dir_fd=directory_fd)
+
+
+def remove_tree_at(parent_fd: int, name: str, *, require_sentinel: bool = True) -> None:
+    """Remove one descriptor-relative directory tree with optional sentinel gate."""
+
+    directory_fd = _open_directory(name, dir_fd=parent_fd)
+    try:
+        if require_sentinel:
+            assert_generated_root_fd(directory_fd)
+        validate_tree_no_symlinks_fd(directory_fd)
+        _remove_tree_contents_fd(directory_fd)
+    finally:
+        os.close(directory_fd)
+    os.rmdir(name, dir_fd=parent_fd)
+    fsync_directory_fd(parent_fd)
+
+
+def safe_remove_generated_tree(path: Path, allowed_root: Path) -> None:
+    """Remove a marked generated tree strictly beneath a held allowed root."""
+
+    relative = relative_path_beneath(path, allowed_root)
+    with open_root_directory(allowed_root) as root_fd:
+        parent_fd = open_directory_beneath(root_fd, relative.parts[:-1])
+        try:
+            remove_tree_at(parent_fd, relative.name, require_sentinel=True)
+        finally:
+            os.close(parent_fd)
 
 
 def ensure_within(path: Path, root: Path, *, reject_symlinks: bool = True) -> Path:
-    """Resolve *path* and guarantee that it remains below *root*.
+    """Return a path below *root* after descriptor-based component validation.
 
-    Relative paths are interpreted below *root*. Existing symlink components are
-    rejected by default, including a symlink used as the root itself.
+    This helper is suitable for validation and display. Security-sensitive writes
+    must continue to operate through the held descriptors used by this module.
     """
 
-    root = root.absolute()
-    if not root.exists():
-        root.mkdir(parents=True, exist_ok=True)
-    candidate = path if path.is_absolute() else root / path
-    if reject_symlinks:
-        _reject_symlink_components(candidate, root)
-    resolved_root = root.resolve(strict=True)
-    resolved = candidate.resolve(strict=False)
-    try:
-        resolved.relative_to(resolved_root)
-    except ValueError as exc:
-        raise UnsafePathError(f"Pfad liegt außerhalb des erlaubten Wurzelpfads: {path}") from exc
-    return resolved
+    relative = relative_path_beneath(path, root)
+    with open_root_directory(root, create=True) as root_fd:
+        if reject_symlinks:
+            parent_fd = open_directory_beneath(root_fd, relative.parts[:-1])
+            try:
+                try:
+                    metadata = os.stat(
+                        relative.name,
+                        dir_fd=parent_fd,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    metadata = None
+                if metadata is not None and stat.S_ISLNK(metadata.st_mode):
+                    raise UnsafePathError(
+                        f"Symlink-Komponente ist unzulässig: {relative.name}"
+                    )
+            finally:
+                os.close(parent_fd)
+    return Path(os.path.abspath(root)) / Path(relative.as_posix())
 
 
 def sha256_file(path: Path, chunk_size: int = DEFAULT_CHUNK_SIZE) -> str:
@@ -165,95 +466,6 @@ def stable_json_dumps(payload: Any, *, indent: int = 2) -> str:
         )
         + "\n"
     )
-
-
-def fsync_directory(path: Path) -> None:
-    """Synchronize directory metadata after an atomic replacement on POSIX."""
-
-    flags = os.O_RDONLY
-    if hasattr(os, "O_DIRECTORY"):
-        flags |= os.O_DIRECTORY
-    descriptor = os.open(path, flags)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def atomic_write_bytes(
-    path: Path,
-    payload: bytes,
-    *,
-    allowed_root: Path | None = None,
-    mode: int = 0o644,
-) -> None:
-    """Atomically write bytes via an exclusive sibling ``.part`` file.
-
-    The file payload and containing directory are synchronized before success is
-    reported. On failure, the previous target remains intact and the temporary
-    file is removed.
-    """
-
-    if allowed_root is not None:
-        path = ensure_within(path, allowed_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.is_symlink():
-        raise UnsafePathError(f"Zieldatei darf kein Symlink sein: {path}")
-    part = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.part")
-    try:
-        with part.open("xb") as handle:
-            os.chmod(part, mode)
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(part, path)
-        fsync_directory(path.parent)
-    finally:
-        part.unlink(missing_ok=True)
-
-
-def atomic_write_text(
-    path: Path,
-    text: str,
-    *,
-    allowed_root: Path | None = None,
-    mode: int = 0o644,
-) -> None:
-    """Atomically write UTF-8 text."""
-
-    atomic_write_bytes(path, text.encode("utf-8"), allowed_root=allowed_root, mode=mode)
-
-
-def mark_generated_root(path: Path) -> None:
-    """Create and mark a directory as safe for generated-tree replacement."""
-
-    path.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(
-        path / GENERATED_ROOT_SENTINEL,
-        "generated by desinfect\n",
-        allowed_root=path,
-    )
-
-
-def assert_generated_root(path: Path) -> None:
-    """Require the project sentinel before deleting or replacing a tree."""
-
-    sentinel = path / GENERATED_ROOT_SENTINEL
-    if path.is_symlink() or not sentinel.is_file() or sentinel.is_symlink():
-        raise UnsafePathError(
-            f"Generiertes Ziel ist nicht durch {GENERATED_ROOT_SENTINEL} markiert: {path}"
-        )
-
-
-def safe_remove_generated_tree(path: Path, allowed_root: Path) -> None:
-    """Remove a marked generated tree that is strictly below *allowed_root*."""
-
-    resolved = ensure_within(path, allowed_root)
-    if resolved == allowed_root.resolve(strict=True):
-        raise UnsafePathError("Der erlaubte Wurzelpfad selbst darf nicht gelöscht werden")
-    assert_generated_root(resolved)
-    shutil.rmtree(resolved)
-    fsync_directory(resolved.parent)
 
 
 def source_date_epoch() -> int:

@@ -104,10 +104,14 @@ def test_atomic_write_failure_preserves_previous_file(
     target.write_text("old", encoding="utf-8")
     original_replace = os.replace
 
-    def fail_replace(source: os.PathLike[str] | str, destination: os.PathLike[str] | str) -> None:
+    def fail_replace(
+        source: os.PathLike[str] | str,
+        destination: os.PathLike[str] | str,
+        **kwargs: object,
+    ) -> None:
         """Simulate an atomic replacement failure before the target changes."""
 
-        del source, destination
+        del source, destination, kwargs
         raise OSError("injected replace failure")
 
     monkeypatch.setattr(io_utils.os, "replace", fail_replace)
@@ -116,3 +120,38 @@ def test_atomic_write_failure_preserves_previous_file(
     monkeypatch.setattr(io_utils.os, "replace", original_replace)
     assert target.read_text(encoding="utf-8") == "old"
     assert not list(tmp_path.glob(".*.part"))
+
+
+def test_atomic_write_resists_symlink_ancestor_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A held parent FD keeps a concurrent ancestor swap inside the original root."""
+
+    root = tmp_path / "root"
+    original_parent = root / "nested"
+    original_parent.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = original_parent / "value.txt"
+    original_replace = os.replace
+    swapped = False
+
+    def race_replace(
+        source: os.PathLike[str] | str,
+        destination: os.PathLike[str] | str,
+        **kwargs: object,
+    ) -> None:
+        """Swap the pathname ancestor immediately before descriptor-relative replace."""
+
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            original_parent.rename(root / "nested-real")
+            original_parent.symlink_to(outside, target_is_directory=True)
+        original_replace(source, destination, **kwargs)
+
+    monkeypatch.setattr(io_utils.os, "replace", race_replace)
+    atomic_write_bytes(target, b"anchored", allowed_root=root)
+
+    assert (root / "nested-real" / "value.txt").read_bytes() == b"anchored"
+    assert not (outside / "value.txt").exists()

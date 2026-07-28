@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 import shutil
 
@@ -29,7 +31,7 @@ def test_fixture_hash_drift_is_rejected(tmp_path: Path) -> None:
 
     root, manifest = _copy_fixture_tree(tmp_path)
     (root / "rights" / "unknown.json").write_text('{"state":"approved"}\n', encoding="utf-8")
-    with pytest.raises(ValueError, match="Hash driftet|Größe driftet"):
+    with pytest.raises(ValueError, match=r"Hash driftet|Größe driftet"):
         validate(root, manifest)
 
 
@@ -50,4 +52,32 @@ def test_fixture_symlink_is_rejected(tmp_path: Path) -> None:
     outside.write_text("external", encoding="utf-8")
     (root / "link.txt").symlink_to(outside)
     with pytest.raises(ValueError, match="Symlink"):
+        validate(root, manifest)
+
+
+def test_manifest_cannot_raise_the_canonical_size_cap(tmp_path: Path) -> None:
+    """The reviewed 64 KiB cap cannot be weakened by editing manifest data."""
+
+    root, manifest = _copy_fixture_tree(tmp_path)
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["max_file_bytes"] = 65_537
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="65536"):
+        validate(root, manifest)
+
+
+@pytest.mark.parametrize("prefix", ["ghp", "gho", "ghu", "ghs", "ghr"])
+def test_all_github_token_families_are_rejected(tmp_path: Path, prefix: str) -> None:
+    """Detect personal, OAuth, user, server, and refresh token prefixes."""
+
+    root, manifest = _copy_fixture_tree(tmp_path)
+    path = root / "rights" / "unknown.json"
+    payload = f"{prefix}_".encode() + b"A" * 24
+    path.write_bytes(payload)
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    entry = next(item for item in data["entries"] if item["path"] == "rights/unknown.json")
+    entry["bytes"] = len(payload)
+    entry["sha256"] = hashlib.sha256(payload).hexdigest()
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="Secretmuster"):
         validate(root, manifest)
