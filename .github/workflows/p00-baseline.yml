@@ -128,104 +128,49 @@ jobs:
           npm ci --ignore-scripts
 
       - name: Validate governance baseline
-        id: governance
-        continue-on-error: true
         shell: bash
         run: |
           set -Eeuo pipefail
           python3 scripts/validate_all_baseline.py
 
       - name: Validate P01 foundation
-        id: p01
-        continue-on-error: true
         shell: bash
         run: |
           set -Eeuo pipefail
           python3 scripts/validate_p01_foundation.py
 
       - name: Validate P02 contracts
-        id: p02
-        continue-on-error: true
         shell: bash
         run: |
           set -Eeuo pipefail
           python3 scripts/validate_p02_contracts.py
 
       - name: Smoke-test runtime status CLI
-        id: runtime_cli
-        continue-on-error: true
         shell: bash
         run: |
           set -Eeuo pipefail
           python3 -m scripts.rki_pipeline.runtime_status_cli --help
 
       - name: Compile Python sources
-        id: compile
-        continue-on-error: true
         shell: bash
         run: |
           set -Eeuo pipefail
           python3 -m compileall -q scripts tests
 
       - name: Run unittest suite
-        id: unittest
-        continue-on-error: true
         shell: bash
         run: |
           set -Eeuo pipefail
           python3 -m unittest discover -s tests -p "test_*.py"
 
       - name: Run pytest suite
-        id: pytest
-        continue-on-error: true
         shell: bash
         run: |
           set -Eeuo pipefail
           python3 -m pytest -q
 
       - name: Run Node foundation tests
-        id: node
-        continue-on-error: true
         shell: bash
         run: |
           set -Eeuo pipefail
           npm test
-
-      - name: Enforce all validation gates
-        if: always()
-        shell: bash
-        env:
-          GOVERNANCE: ${{ steps.governance.outcome }}
-          P01: ${{ steps.p01.outcome }}
-          P02: ${{ steps.p02.outcome }}
-          RUNTIME_CLI: ${{ steps.runtime_cli.outcome }}
-          COMPILE: ${{ steps.compile.outcome }}
-          UNITTEST: ${{ steps.unittest.outcome }}
-          PYTEST: ${{ steps.pytest.outcome }}
-          NODE: ${{ steps.node.outcome }}
-        run: |
-          set -Eeuo pipefail
-          {
-            echo "## P00/P01/P02 validation gates"
-            echo
-            echo "| Gate | Outcome |"
-            echo "|---|---|"
-            echo "| Governance | ${GOVERNANCE} |"
-            echo "| P01 | ${P01} |"
-            echo "| P02 | ${P02} |"
-            echo "| Runtime CLI | ${RUNTIME_CLI} |"
-            echo "| Compile | ${COMPILE} |"
-            echo "| Unittest | ${UNITTEST} |"
-            echo "| Pytest | ${PYTEST} |"
-            echo "| Node | ${NODE} |"
-          } >> "$GITHUB_STEP_SUMMARY"
-          failures=0
-          for outcome in \
-            "$GOVERNANCE" "$P01" "$P02" "$RUNTIME_CLI" \
-            "$COMPILE" "$UNITTEST" "$PYTEST" "$NODE"; do
-            [[ "$outcome" == "success" ]] || failures=$((failures + 1))
-          done
-          if (( failures > 0 )); then
-            echo "${failures} validation gate(s) failed" >&2
-            exit 1
-          fi
