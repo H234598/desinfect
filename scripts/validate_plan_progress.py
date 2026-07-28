@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate implementation status, ordering and evidence requirements."""
+"""Validate implementation status, ordering, and evidence requirements."""
 from __future__ import annotations
 
 import json
@@ -13,10 +13,12 @@ SHA40 = re.compile(r"^[0-9a-f]{40}$")
 
 
 def load(path: str) -> dict:
+    """Load a UTF-8 JSON document relative to the repository root."""
     return json.loads((ROOT / path).read_text(encoding="utf-8"))
 
 
 def validate() -> None:
+    """Validate work-package order, status transitions, and completion evidence."""
     data = load("docs/implementation-status.json")
     items = data["work_packages"]
     if len(items) != 60 or len({item["id"] for item in items}) != 60:
@@ -30,7 +32,13 @@ def validate() -> None:
     counts = Counter(item["status"] for item in items)
     if any(status not in VALID for status in counts):
         raise ValueError("Unbekannter Status")
-    expected = {"total": 60, **{status: counts[status] for status in ("offen", "in_arbeit", "im_review", "umgesetzt", "blockiert")}}
+    expected = {
+        "total": 60,
+        **{
+            status: counts[status]
+            for status in ("offen", "in_arbeit", "im_review", "umgesetzt", "blockiert")
+        },
+    }
     if data["summary"] != expected:
         raise ValueError("Zusammenfassung ist nicht synchron")
 
@@ -38,15 +46,27 @@ def validate() -> None:
         status = item["status"]
         if status == "in_arbeit" and not item.get("branch"):
             raise ValueError(f"{item['id']}: in_arbeit benötigt Branch")
-        if status == "im_review" and (not item.get("branch") or not isinstance(item.get("pr_number"), int)):
+        if status == "im_review" and (
+            not item.get("branch") or not isinstance(item.get("pr_number"), int)
+        ):
             raise ValueError(f"{item['id']}: im_review benötigt Branch und PR")
         if status == "blockiert" and not item.get("blocker"):
             raise ValueError(f"{item['id']}: blockiert benötigt Begründung")
         if status == "umgesetzt":
             evidence = item.get("evidence") or {}
-            required = [evidence.get("merge_sha"), evidence.get("ci_runs"), evidence.get("tests"), evidence.get("accepted_at"), evidence.get("accepted_by")]
-            if any(value in (None, "", []) for value in required) or not SHA40.fullmatch(evidence["merge_sha"]):
-                raise ValueError(f"{item['id']}: umgesetzt ohne vollständige Merge-/CI-/Abnahmeevidenz")
+            required = [
+                evidence.get("merge_sha"),
+                evidence.get("ci_runs"),
+                evidence.get("tests"),
+                evidence.get("accepted_at"),
+                evidence.get("accepted_by"),
+            ]
+            if any(value in (None, "", []) for value in required) or not SHA40.fullmatch(
+                evidence["merge_sha"]
+            ):
+                raise ValueError(
+                    f"{item['id']}: umgesetzt ohne vollständige Merge-/CI-/Abnahmeevidenz"
+                )
 
     status_md = (ROOT / "docs/IMPLEMENTIERUNGSSTATUS.md").read_text(encoding="utf-8")
     for needle in ("ADR-003 = A", "ADR-014 = B"):

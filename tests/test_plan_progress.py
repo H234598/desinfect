@@ -1,3 +1,4 @@
+"""Tests for work-package progress and evidence rules."""
 import json
 import re
 import unittest
@@ -10,11 +11,17 @@ SHA40 = re.compile(r"^[0-9a-f]{40}$")
 
 
 class PlanProgressTests(unittest.TestCase):
+    """Verify ordered progress tracking and the P00 evidence lifecycle."""
+
     def test_plan_progress_is_traceable(self) -> None:
+        """Run the complete progress validator."""
         validate()
 
     def test_p00_review_or_completion_has_matching_evidence(self) -> None:
-        data = json.loads((ROOT / "docs/implementation-status.json").read_text(encoding="utf-8"))
+        """Accept only a review state or a fully evidenced completion state."""
+        data = json.loads(
+            (ROOT / "docs/implementation-status.json").read_text(encoding="utf-8")
+        )
         p00 = [item for item in data["work_packages"] if item["id"].startswith("P00.")]
         self.assertEqual(len(p00), 3)
         for item in p00:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline-Validator für die P00-Governance-Baseline."""
+"""Validate the offline P00 governance baseline."""
 from __future__ import annotations
 
 import json
@@ -13,10 +13,12 @@ LOCKED = {"ADR-003": "A", "ADR-014": "B"}
 
 
 def load(path: str) -> dict:
+    """Load a UTF-8 JSON document relative to the repository root."""
     return json.loads((ROOT / path).read_text(encoding="utf-8"))
 
 
 def validate_revisions() -> None:
+    """Validate frozen repository revisions, observed heads, and drift markers."""
     data = load("config/reference-revisions.json")
     repos = {entry["full_name"]: entry for entry in data["repositories"]}
     expected = {"H234598/desinfect", "H234598/ADHS-Lernpfad", "H234598/Cheatsheets"}
@@ -36,6 +38,7 @@ def validate_revisions() -> None:
 
 
 def validate_decisions() -> None:
+    """Validate the complete ADR register and the two locked choices."""
     data = load("config/architecture-decisions.json")
     decisions = {entry["id"]: entry for entry in data["decisions"]}
     if set(decisions) != {f"ADR-{number:03d}" for number in range(1, 16)}:
@@ -59,6 +62,7 @@ def validate_decisions() -> None:
 
 
 def validate_requirements_index() -> None:
+    """Validate the complete ordered MUST and unique V2 identifier sets."""
     data = load("docs/requirements/requirement-index.json")
     must = data["must_ids"]
     v2 = data["v2_ids"]
@@ -69,17 +73,26 @@ def validate_requirements_index() -> None:
 
 
 def validate_progress_count() -> None:
+    """Validate work-package uniqueness and the derived status counters."""
     data = load("docs/implementation-status.json")
     items = data["work_packages"]
     if len(items) != 60 or len({item["id"] for item in items}) != 60:
         raise ValueError("Fortschrittsregister muss 60 eindeutige Arbeitspakete enthalten")
     counts = Counter(item["status"] for item in items)
-    expected = {"total":60,"offen":counts["offen"],"in_arbeit":counts["in_arbeit"],"im_review":counts["im_review"],"umgesetzt":counts["umgesetzt"],"blockiert":counts["blockiert"]}
+    expected = {
+        "total": 60,
+        "offen": counts["offen"],
+        "in_arbeit": counts["in_arbeit"],
+        "im_review": counts["im_review"],
+        "umgesetzt": counts["umgesetzt"],
+        "blockiert": counts["blockiert"],
+    }
     if data["summary"] != expected:
         raise ValueError("Fortschrittszusammenfassung ist nicht synchron")
 
 
 def main() -> None:
+    """Run every invariant that belongs to the compact baseline validator."""
     validate_revisions()
     validate_decisions()
     validate_requirements_index()
