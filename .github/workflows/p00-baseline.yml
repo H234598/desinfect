@@ -1,14 +1,16 @@
-name: P00/P01 baseline
+name: P00/P01/P02 baseline
 
 on:
   pull_request:
     paths:
       - ".github/workflows/p00-baseline.yml"
+      - ".github/CODEOWNERS"
       - "config/**"
       - "docs/**"
       - "schemas/**"
       - "scripts/**"
       - "tests/**"
+      - "status.json"
       - ".gitignore"
       - "CONTRIBUTING.md"
       - "PROVENANCE.md"
@@ -23,11 +25,13 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/p00-baseline.yml"
+      - ".github/CODEOWNERS"
       - "config/**"
       - "docs/**"
       - "schemas/**"
       - "scripts/**"
       - "tests/**"
+      - "status.json"
       - ".gitignore"
       - "CONTRIBUTING.md"
       - "PROVENANCE.md"
@@ -44,14 +48,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: p00-p01-baseline-${{ github.ref }}
+  group: p00-p02-baseline-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   baseline:
-    name: Validate governance and P01 foundation
+    name: Validate governance, P01 foundation, and P02 contracts
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -108,7 +112,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: p01-dependency-resolver-${{ github.run_id }}
+          name: p02-dependency-resolver-${{ github.run_id }}
           path: build/dependency-reports/
           if-no-files-found: warn
           retention-days: 7
@@ -123,13 +127,50 @@ jobs:
           python3 -m pip install --no-deps --no-build-isolation --editable .
           npm ci --ignore-scripts
 
-      - name: Validate governance and P01 contracts
+      - name: Validate governance baseline
         shell: bash
         run: |
           set -Eeuo pipefail
           python3 scripts/validate_all_baseline.py
+
+      - name: Validate P01 foundation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
           python3 scripts/validate_p01_foundation.py
+
+      - name: Validate P02 contracts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/validate_p02_contracts.py
+
+      - name: Smoke-test runtime status CLI
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m scripts.rki_pipeline.runtime_status_cli --help
+
+      - name: Compile Python sources
+        shell: bash
+        run: |
+          set -Eeuo pipefail
           python3 -m compileall -q scripts tests
+
+      - name: Run unittest suite
+        shell: bash
+        run: |
+          set -Eeuo pipefail
           python3 -m unittest discover -s tests -p "test_*.py"
+
+      - name: Run pytest suite
+        shell: bash
+        run: |
+          set -Eeuo pipefail
           python3 -m pytest -q
+
+      - name: Run Node foundation tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
           npm test

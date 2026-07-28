@@ -1,0 +1,78 @@
+{
+  "$id": "https://h234598.github.io/desinfect/schemas/conversion-manifest-1.0.0.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "converter": {
+      "maxLength": 120,
+      "minLength": 1,
+      "type": "string"
+    },
+    "converter_version": {
+      "maxLength": 120,
+      "minLength": 1,
+      "type": "string"
+    },
+    "document_id": {
+      "maxLength": 200,
+      "minLength": 3,
+      "type": "string"
+    },
+    "ocr_used": {
+      "type": "boolean"
+    },
+    "options_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "output_sha256": {
+      "oneOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "quality": {
+      "enum": [
+        "good",
+        "needs_review",
+        "failed",
+        "not_assessed"
+      ]
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "source_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "state": {
+      "enum": [
+        "converted",
+        "skipped_unchanged",
+        "needs_review",
+        "failed",
+        "not_materialized"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "document_id",
+    "source_sha256",
+    "converter",
+    "converter_version",
+    "options_sha256",
+    "output_sha256",
+    "state",
+    "quality",
+    "ocr_used"
+  ],
+  "title": "Desinfect conversion manifest",
+  "type": "object"
+}

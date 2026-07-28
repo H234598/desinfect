@@ -1,0 +1,39 @@
+{
+  "corpus": {
+    "analysis_corpus_complete_through_year": null,
+    "inventory_complete_through_year": null,
+    "public_mirror_complete_through_year": null,
+    "taxonomy_gate_satisfied": false,
+    "taxonomy_state": "blocked"
+  },
+  "periods": {
+    "last_completed_month": null,
+    "last_completed_week": null,
+    "last_completed_year": null,
+    "last_reconciliation_at": null,
+    "last_recovery_drill_year": null
+  },
+  "pipeline": {
+    "consecutive_failures": 0,
+    "last_error": null,
+    "last_main_commit_at": null,
+    "last_successful_run_at": null,
+    "last_successful_write_at": null
+  },
+  "project": "desinfect",
+  "repository": "H234598/desinfect",
+  "runtime": {
+    "last_run_mode": null,
+    "storage_backend": "lfs"
+  },
+  "schema_version": "3.0.0",
+  "status": "not_initialized",
+  "updated_at": "2026-07-28T00:00:00Z",
+  "watchdog": {
+    "interval_days": 45,
+    "last_bark_at": null,
+    "last_reset_at": null,
+    "next_bark_at": null,
+    "reset_by": null
+  }
+}

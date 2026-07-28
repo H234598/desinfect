@@ -1,0 +1,65 @@
+{
+  "$id": "https://h234598.github.io/desinfect/schemas/archive-manifest-1.0.0.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "archive_id": {
+      "pattern": "^[a-z0-9][a-z0-9._-]{2,200}$",
+      "type": "string"
+    },
+    "entries": {
+      "items": {
+        "maxLength": 500,
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "input_fingerprint": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "week-pdf",
+        "week-markdown",
+        "month-pdf",
+        "month-markdown",
+        "year-pdf",
+        "year-markdown"
+      ]
+    },
+    "output_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "period": {
+      "maxLength": 40,
+      "minLength": 4,
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "storage_reference": {
+      "maxLength": 200,
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "archive_id",
+    "period",
+    "kind",
+    "entries",
+    "input_fingerprint",
+    "output_sha256",
+    "storage_reference"
+  ],
+  "title": "Desinfect archive manifest",
+  "type": "object"
+}

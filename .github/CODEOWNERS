@@ -1,0 +1,19 @@
+
+* @H234598
+
+/.github/ @H234598
+/cloudflare/ @H234598
+/config/ @H234598
+/scripts/ @H234598
+/schemas/ @H234598
+/tests/ @H234598
+/web/ @H234598
+/.gitattributes @H234598
+/mkdocs.yml @H234598
+/pyproject.toml @H234598
+/requirements*.in @H234598
+/requirements*.txt @H234598
+/package*.json @H234598
+/SECURITY.md @H234598
+/research/rights-register.yml @H234598
+/research/taxonomy*.yml @H234598

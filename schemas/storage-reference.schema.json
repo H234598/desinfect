@@ -1,0 +1,80 @@
+{
+  "$id": "https://h234598.github.io/desinfect/schemas/storage-reference-1.0.0.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifact_id": {
+      "pattern": "^[a-z0-9][a-z0-9._-]{2,200}$",
+      "type": "string"
+    },
+    "bytes": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "public_reference": {
+      "oneOf": [
+        {
+          "format": "uri",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "relative_path": {
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).{1,500}$",
+      "type": "string"
+    },
+    "rights_state": {
+      "enum": [
+        "approved",
+        "metadata_only",
+        "internal_only",
+        "unknown",
+        "takedown"
+      ]
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "storage_backend": {
+      "enum": [
+        "lfs",
+        "release",
+        "object"
+      ]
+    },
+    "storage_object_id": {
+      "maxLength": 500,
+      "minLength": 1,
+      "type": "string"
+    },
+    "visibility": {
+      "enum": [
+        "public",
+        "repository_authorized",
+        "internal",
+        "restricted"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "artifact_id",
+    "relative_path",
+    "storage_backend",
+    "storage_object_id",
+    "sha256",
+    "bytes",
+    "visibility",
+    "rights_state",
+    "public_reference"
+  ],
+  "title": "Desinfect storage reference",
+  "type": "object"
+}

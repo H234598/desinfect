@@ -1,0 +1,76 @@
+{
+  "$id": "https://h234598.github.io/desinfect/schemas/document-manifest-1.0.0.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "document_id": {
+      "pattern": "^rki-[a-z0-9-]{3,180}$",
+      "type": "string"
+    },
+    "document_type": {
+      "enum": [
+        "gesamtausgabe",
+        "einzelartikel"
+      ]
+    },
+    "paths": {
+      "additionalProperties": false,
+      "properties": {
+        "markdown": {
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pdf": {
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "pdf",
+        "markdown"
+      ],
+      "type": "object"
+    },
+    "publication_date": {
+      "format": "date",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "source_id": {
+      "maxLength": 200,
+      "minLength": 3,
+      "type": "string"
+    },
+    "supersedes": {
+      "maxLength": 200,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "version": {
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "document_id",
+    "version",
+    "source_id",
+    "document_type",
+    "publication_date",
+    "paths",
+    "supersedes"
+  ],
+  "title": "Desinfect document manifest",
+  "type": "object"
+}

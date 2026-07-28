@@ -59,6 +59,16 @@
       "purpose": "fail-closed unknown rights state",
       "sha256": "9cbcc239bf246bab211733e032a4faf42544eb5285d41097cf52f7236e95543e",
       "synthetic": true
+    },
+    {
+      "bytes": 1154,
+      "license_status": "synthetic",
+      "media_type": "application/json",
+      "path": "schemas/status-v2.json",
+      "provenance": "H234598/desinfect P02 synthetic migration fixture",
+      "purpose": "deterministic public-status migration from 2.0.0 to 3.0.0",
+      "sha256": "c8fe8daae67e3cbf3d747b828761045172d8cf877b42526615075b847c31d269",
+      "synthetic": true
     }
   ],
   "max_file_bytes": 65536,

@@ -1,0 +1,115 @@
+{
+  "$id": "https://h234598.github.io/desinfect/schemas/source-manifest-1.0.0.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "etag": {
+      "maxLength": 500,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "handle": {
+      "maxLength": 160,
+      "minLength": 3,
+      "type": "string"
+    },
+    "last_modified": {
+      "maxLength": 200,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "publication_date": {
+      "format": "date",
+      "type": "string"
+    },
+    "rights": {
+      "additionalProperties": false,
+      "properties": {
+        "basis": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "reviewed_at": {
+          "oneOf": [
+            {
+              "format": "date-time",
+              "pattern": "Z$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reviewed_by": {
+          "maxLength": 200,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "enum": [
+            "approved",
+            "metadata_only",
+            "internal_only",
+            "unknown",
+            "takedown"
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "basis",
+        "reviewed_at",
+        "reviewed_by"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "source_id": {
+      "pattern": "^rki:[A-Za-z0-9./_-]{3,160}$",
+      "type": "string"
+    },
+    "source_url": {
+      "format": "uri",
+      "pattern": "^https://edoc\\.rki\\.de/",
+      "type": "string"
+    },
+    "title": {
+      "maxLength": 1000,
+      "minLength": 1,
+      "type": "string"
+    },
+    "version": {
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "source_id",
+    "handle",
+    "version",
+    "source_url",
+    "title",
+    "publication_date",
+    "etag",
+    "last_modified",
+    "sha256",
+    "rights"
+  ],
+  "title": "Desinfect source manifest",
+  "type": "object"
+}
