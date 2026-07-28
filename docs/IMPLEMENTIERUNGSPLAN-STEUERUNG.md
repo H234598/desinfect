@@ -1,10 +1,10 @@
 ---
 title: Implementierungsplan V3 – Steuerung
-status: P02 im Review
+status: P02 abgeschlossen; P03 als nächster Schritt
 source_plan_sha256: aa50863cde1313a7039691b4ca596c1ab498d0fab0008da324de5cb69f12ffc4
 repository: H234598/desinfect
-branch: agent/p02-data-contracts
-pull_request: 5
+branch: main
+pull_request: null
 ---
 
 # Implementierungsplan V3 – Steuerung
@@ -18,17 +18,13 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 
 - **P00:** PR #1, Merge `c4996105f6d683c2c4d342df6ee43b74dbcb64a6`
 - **P01:** PR #3, Merge `4fc4aca667ce1b7a9529cc49e4e81fc373f75da2`
-- **P01-Gate:** GitHub Actions `30336885794`, CodeRabbit und qlty erfolgreich; alle Reviewthreads aufgelöst.
+- **P02:** PR #5, Merge `947b2ba86792d5a84e0f2fd972cfbe554c156afc`
+- **P02-Gate:** geprüfter Head `923975c7ba81dc73f68d838b85b8b5fdcbe05e72`; GitHub Actions `30342761383`, CodeRabbit und qlty erfolgreich; alle neun Reviewthreads aufgelöst.
+- **Fortschritt:** 9 von 60 Arbeitspaketen umgesetzt; 51 offen; 0 in Arbeit; 0 im Review; 0 blockiert.
 
-## Aktive Phase P02
+## Nächste Phase
 
-- **PR:** #5
-- **Branch:** `agent/p02-data-contracts`
-- **P02.1:** im Review – zwölf versionierte Draft-2020-12-Verträge und deterministische Statusmigration.
-- **P02.2:** im Review – öffentlicher Status, Laufzustandsautomat, Revision, Redaction und Recovery-CLI.
-- **P02.3:** im Review – deny-first Schreibpfad-Policy und initiale CODEOWNERS-Grenzen.
-- **Fortschritt:** 6 von 60 Arbeitspaketen umgesetzt; 3 im Review; 51 offen.
-- Die P02-Checkboxen bleiben bis Merge, grünem CI, aufgelösten Reviewthreads und vollständiger Evidenz offen.
+P03.1 bis P03.3 bleiben `offen`, bis ihr eigener Implementierungs-PR vorliegt. P03 modularisiert und härtet den vorhandenen RKI-Grabber, ohne einen historischen Vollabruf auszulösen.
 
 ## Arbeitspakete
 
@@ -38,9 +34,9 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 - [x] **P01.1** Python-/Node-Paketfundament _(umgesetzt, PR #3, Merge `4fc4aca667ce1b7a9529cc49e4e81fc373f75da2`)_
 - [x] **P01.2** Sichere Datei-, Hash- und Stagingprimitive _(umgesetzt, PR #3, Merge `4fc4aca667ce1b7a9529cc49e4e81fc373f75da2`)_
 - [x] **P01.3** Offline-Fixtures und Testdatenpolicy _(umgesetzt, PR #3, Merge `4fc4aca667ce1b7a9529cc49e4e81fc373f75da2`)_
-- [ ] **P02.1** Schemafamilie und Versionsstrategie _(im Review, PR #5)_
-- [ ] **P02.2** Öffentlicher Status und Lauf-/Recovery-Modell _(im Review, PR #5)_
-- [ ] **P02.3** Automatische Schreibpfad-Policy _(im Review, PR #5)_
+- [x] **P02.1** Schemafamilie und Versionsstrategie _(umgesetzt, PR #5, Merge `947b2ba86792d5a84e0f2fd972cfbe554c156afc`)_
+- [x] **P02.2** Öffentlicher Status und Lauf-/Recovery-Modell _(umgesetzt, PR #5, Merge `947b2ba86792d5a84e0f2fd972cfbe554c156afc`)_
+- [x] **P02.3** Automatische Schreibpfad-Policy _(umgesetzt, PR #5, Merge `947b2ba86792d5a84e0f2fd972cfbe554c156afc`)_
 - [ ] **P03.1** Grabber in Parser, HTTP und Orchestrierung schneiden
 - [ ] **P03.2** Netzwerk-, Robots- und Downloadhärtung
 - [ ] **P03.3** Stabile CLI, API und Resultvertrag
