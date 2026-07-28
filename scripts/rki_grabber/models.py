@@ -441,5 +441,8 @@ def result_outcome(
     if blocked:
         return Outcome.BLOCKED
     if materialized_issues:
-        return Outcome.PARTIAL if materialized_records else Outcome.FAILED
+        successful_records = tuple(
+            record for record in materialized_records if record.state is not RecordState.ERROR
+        )
+        return Outcome.PARTIAL if successful_records else Outcome.FAILED
     return Outcome.SUCCESS

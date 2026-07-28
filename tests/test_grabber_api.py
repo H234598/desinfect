@@ -1,9 +1,9 @@
 """End-to-end offline API, schema, and compatibility CLI tests for P03."""
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 from pathlib import Path
-from collections.abc import Callable
 
 from jsonschema import Draft202012Validator, FormatChecker
 
@@ -188,3 +188,63 @@ def test_cli_configuration_error_uses_exit_code_four(capsys) -> None:
     exit_code = main(["--from-year", "2027", "--to-year", "2026"])
     assert exit_code == 4
     assert "from_year" in capsys.readouterr().err
+
+
+def test_only_error_records_are_failed_not_partial(tmp_path: Path) -> None:
+    """A run with no usable record must use the failed outcome and exit code four."""
+
+    broken = responses(include_pdf=False)
+    broken[PDF_URL] = FakeResponse(
+        200,
+        PDF_URL,
+        b"not-a-pdf",
+        {"content-type": "application/pdf"},
+    )
+    result = grab(
+        GrabberRequest(
+            scope=Scope.ISSUES,
+            from_year=1996,
+            to_year=1996,
+            dry_run=False,
+            max_items=1,
+            output_root=tmp_path,
+            delay_seconds=0,
+        ),
+        config=SourceConfig(delay_seconds=0, timeout_seconds=1),
+        transport=FakeTransport(broken),
+        now=clock(),
+    )
+    assert result.outcome is Outcome.FAILED
+    assert result.exit_code == 4
+    assert result.records[0].state is RecordState.ERROR
+
+
+def test_robots_block_on_pdf_path_remains_global_block(tmp_path: Path) -> None:
+    """A path-specific robots denial must stop the whole run with exit code three."""
+
+    source = responses(include_pdf=False)
+    source[ROBOTS] = FakeResponse(
+        200,
+        ROBOTS,
+        b"User-agent: *\nDisallow: /bitstream/\n",
+        {"content-type": "text/plain"},
+    )
+    transport = FakeTransport(source)
+    result = grab(
+        GrabberRequest(
+            scope=Scope.ISSUES,
+            from_year=1996,
+            to_year=1996,
+            dry_run=False,
+            max_items=1,
+            output_root=tmp_path,
+            delay_seconds=0,
+        ),
+        config=SourceConfig(delay_seconds=0, timeout_seconds=1),
+        transport=transport,
+        now=clock(),
+    )
+    assert result.outcome is Outcome.BLOCKED
+    assert result.exit_code == 3
+    assert transport.counts[PDF_URL] == 0
+    assert result.issues[0].stage == "robots"

@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 import logging
 from pathlib import Path
+from typing import Any
 
 from bs4 import BeautifulSoup
-from typing import Any
 
 from scripts.rki_grabber.download import PdfDownloadError, download_pdf
 from scripts.rki_grabber.http import (
@@ -392,6 +392,28 @@ class RkiGrabberService:
                                         last_modified=downloaded.last_modified,
                                     )
                                 )
+                            except (RobotsDeniedError, RobotsUnavailableError) as exc:
+                                blocked = True
+                                issues.append(
+                                    self._issue(
+                                        exc,
+                                        stage="robots",
+                                        item_url=item_url,
+                                        pdf_url=candidate.url,
+                                    )
+                                )
+                                records.append(
+                                    self._record(
+                                        metadata,
+                                        state=RecordState.ERROR,
+                                        pdf_url=candidate.url,
+                                        source_filename=candidate.source_name,
+                                        relative_path=relative_path,
+                                        expected_md5=candidate.expected_md5,
+                                        error=exc,
+                                    )
+                                )
+                                break
                             except (GrabberHttpError, PdfDownloadError, OSError) as exc:
                                 issues.append(
                                     self._issue(
@@ -412,6 +434,18 @@ class RkiGrabberService:
                                         error=exc,
                                     )
                                 )
+                        if blocked:
+                            break
+                    except (RobotsDeniedError, RobotsUnavailableError) as exc:
+                        blocked = True
+                        issues.append(
+                            self._issue(
+                                exc,
+                                stage="robots",
+                                item_url=item_url,
+                            )
+                        )
+                        break
                     except (GrabberHttpError, ValueError, OSError) as exc:
                         issues.append(
                             self._issue(
