@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://h234598.github.io/desinfect/schemas/requirement-register-1.0.0.json",
+  "title": "Desinfect rule-based requirement traceability register",
+  "type": "object",
+  "required": ["schema_version", "register_type", "source_plan_sha256", "id_source", "source_locator", "locked_decisions", "rules"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "register_type": {"enum": ["must-rule-map", "v2-prefix-map"]},
+    "source_plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "id_source": {"type": "string", "minLength": 1},
+    "source_locator": {"type": "string", "minLength": 1},
+    "locked_decisions": {"type": "object", "required": ["ADR-003", "ADR-014"], "properties": {"ADR-003": {"const": "A"}, "ADR-014": {"const": "B"}}, "additionalProperties": false},
+    "labels": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}},
+    "rules": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["phase", "target_paths", "blocking_test", "acceptance"], "properties": {"rule_id": {"type": "string"}, "prefix": {"type": "string"}, "ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "uniqueItems": true}, "phase": {"type": "string", "pattern": "^P[0-9]{2}$"}, "component": {"type": "string"}, "target_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}, "blocking_test": {"type": "string", "minLength": 1}, "acceptance": {"type": "string", "minLength": 1}}, "additionalProperties": false}}
+  },
+  "additionalProperties": false
+}

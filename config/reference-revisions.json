@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0.0",
+  "repository": "H234598/desinfect",
+  "checked_at": "2026-07-28T03:12:00Z",
+  "source_plan_sha256": "aa50863cde1313a7039691b4ca596c1ab498d0fab0008da324de5cb69f12ffc4",
+  "repositories": [
+    {
+      "full_name": "H234598/desinfect",
+      "role": "target",
+      "default_branch": "main",
+      "frozen_sha": "fbcc6e850fec1f4592ca519fa3e5141b11a95e60",
+      "observed_head_sha": "fbcc6e850fec1f4592ca519fa3e5141b11a95e60",
+      "drift_status": "unchanged",
+      "visibility": "public",
+      "manual_verification_required": ["branch_protection", "rulesets", "pages", "secrets", "variables", "github_app_installation"]
+    },
+    {
+      "full_name": "H234598/ADHS-Lernpfad",
+      "role": "reference-runtime-recovery-web",
+      "default_branch": "main",
+      "frozen_sha": "93c8c02d263ec123c1c271caf0d2deaa76760ccb",
+      "observed_head_sha": "93c8c02d263ec123c1c271caf0d2deaa76760ccb",
+      "drift_status": "unchanged",
+      "visibility": "public",
+      "manual_verification_required": ["branch_protection", "rulesets", "pages", "secrets", "variables"]
+    },
+    {
+      "full_name": "H234598/Cheatsheets",
+      "role": "reference-safe-io-content-build",
+      "default_branch": "main",
+      "frozen_sha": "7db8f713aca07e67b481f9fbcb00553f6a555495",
+      "observed_head_sha": "69c72997eed4fc0ac831eba696bac12b3a2f69b9",
+      "drift_status": "advanced_after_freeze",
+      "visibility": "public",
+      "manual_verification_required": ["branch_protection", "rulesets", "pages", "secrets", "variables"]
+    }
+  ],
+  "policy": {
+    "require_full_40_character_sha": true,
+    "silent_reference_updates_forbidden": true,
+    "reference_update_requires_separate_review": true,
+    "locked_decisions": {"ADR-003": "A", "ADR-014": "B"}
+  }
+}
