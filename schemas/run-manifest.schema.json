@@ -1,0 +1,424 @@
+{
+  "$defs": {
+    "artifact": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).{1,500}$",
+          "type": "string"
+        },
+        "recorded_at": {
+          "$ref": "#/$defs/utcTimestamp"
+        },
+        "reusable": {
+          "type": "boolean"
+        },
+        "sha256": {
+          "oneOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "enum": [
+            "report",
+            "diagnostic",
+            "manifest",
+            "archive",
+            "site",
+            "other"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "path",
+        "sha256",
+        "reusable",
+        "recorded_at"
+      ],
+      "type": "object"
+    },
+    "context": {
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "oneOf": [
+            {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pr_number": {
+          "oneOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "repository": {
+          "const": "H234598/desinfect"
+        },
+        "run_mode": {
+          "enum": [
+            "plan",
+            "materialize",
+            "apply"
+          ]
+        },
+        "storage_backend": {
+          "enum": [
+            "lfs",
+            "release",
+            "object"
+          ]
+        },
+        "trigger_source": {
+          "enum": [
+            "github-schedule",
+            "manual",
+            "cloudflare-watchdog",
+            "backfill",
+            "test"
+          ]
+        }
+      },
+      "required": [
+        "repository",
+        "branch",
+        "commit_sha",
+        "pr_number",
+        "trigger_source",
+        "run_mode",
+        "storage_backend"
+      ],
+      "type": "object"
+    },
+    "error": {
+      "additionalProperties": false,
+      "properties": {
+        "class": {
+          "enum": [
+            "network",
+            "source",
+            "validation",
+            "rights",
+            "storage",
+            "repository_state",
+            "configuration",
+            "security_policy",
+            "timeout",
+            "rate_limit",
+            "unknown"
+          ]
+        },
+        "code": {
+          "pattern": "^[A-Za-z0-9_.-]{1,120}$",
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/utcTimestamp"
+        },
+        "phase": {
+          "enum": [
+            "initialize",
+            "plan",
+            "materialize",
+            "validate",
+            "apply",
+            "verify",
+            "complete"
+          ]
+        },
+        "redacted": {
+          "const": true
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "class",
+        "code",
+        "message",
+        "phase",
+        "occurred_at",
+        "retryable",
+        "redacted"
+      ],
+      "type": "object"
+    },
+    "jsonScalar": {
+      "type": [
+        "string",
+        "number",
+        "integer",
+        "boolean",
+        "null"
+      ]
+    },
+    "nullableUtcTimestamp": {
+      "oneOf": [
+        {
+          "format": "date-time",
+          "pattern": "Z$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "recovery": {
+      "additionalProperties": false,
+      "properties": {
+        "acknowledged": {
+          "type": "boolean"
+        },
+        "action": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "block_next_run": {
+          "type": "boolean"
+        },
+        "level": {
+          "enum": [
+            "retry_same_phase",
+            "resume_from_artifact",
+            "manual_intervention",
+            "terminal_failure"
+          ]
+        },
+        "resume_phase": {
+          "oneOf": [
+            {
+              "enum": [
+                "initialize",
+                "plan",
+                "materialize",
+                "validate",
+                "apply",
+                "verify",
+                "complete"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "level",
+        "action",
+        "resume_phase",
+        "block_next_run",
+        "acknowledged"
+      ],
+      "type": "object"
+    },
+    "utcTimestamp": {
+      "format": "date-time",
+      "pattern": "Z$",
+      "type": "string"
+    }
+  },
+  "$id": "https://h234598.github.io/desinfect/schemas/run-manifest-1.0.0.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/artifact"
+      },
+      "maxItems": 256,
+      "type": "array"
+    },
+    "completed_phases": {
+      "items": {
+        "enum": [
+          "initialize",
+          "plan",
+          "materialize",
+          "validate",
+          "apply",
+          "verify",
+          "complete"
+        ]
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "context": {
+      "$ref": "#/$defs/context"
+    },
+    "created_at": {
+      "$ref": "#/$defs/utcTimestamp"
+    },
+    "duration_seconds": {
+      "oneOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ended_at": {
+      "$ref": "#/$defs/nullableUtcTimestamp"
+    },
+    "error": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/error"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "metrics": {
+      "additionalProperties": {
+        "$ref": "#/$defs/jsonScalar"
+      },
+      "maxProperties": 128,
+      "type": "object"
+    },
+    "phase": {
+      "enum": [
+        "initialize",
+        "plan",
+        "materialize",
+        "validate",
+        "apply",
+        "verify",
+        "complete"
+      ]
+    },
+    "previous_status": {
+      "oneOf": [
+        {
+          "enum": [
+            "created",
+            "running",
+            "success",
+            "no_op",
+            "blocked",
+            "failed",
+            "recovering",
+            "recovered"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "recovery": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/recovery"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "revision": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "run_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "status": {
+      "enum": [
+        "created",
+        "running",
+        "success",
+        "no_op",
+        "blocked",
+        "failed",
+        "recovering",
+        "recovered"
+      ]
+    },
+    "tasks": {
+      "items": {
+        "pattern": "^[a-z][a-z0-9_]{0,63}$",
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "updated_at": {
+      "$ref": "#/$defs/utcTimestamp"
+    },
+    "workflow": {
+      "enum": [
+        "rki-pipeline",
+        "rki-dispatcher",
+        "rki-backfill",
+        "reconciliation",
+        "recovery-drill",
+        "manual"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "run_id",
+    "workflow",
+    "revision",
+    "previous_status",
+    "status",
+    "phase",
+    "completed_phases",
+    "created_at",
+    "updated_at",
+    "ended_at",
+    "duration_seconds",
+    "context",
+    "tasks",
+    "metrics",
+    "artifacts",
+    "error",
+    "recovery"
+  ],
+  "title": "Desinfect run and recovery manifest",
+  "type": "object"
+}

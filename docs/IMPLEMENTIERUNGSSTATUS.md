@@ -7,7 +7,7 @@
 
 | Gesamt | Offen | In Arbeit | Im Review | Umgesetzt | Blockiert |
 |---:|---:|---:|---:|---:|---:|
-| 60 | 54 | 0 | 0 | 6 | 0 |
+| 60 | 51 | 3 | 0 | 6 | 0 |
 
 ## Abgeschlossene Phase P00
 
@@ -33,15 +33,17 @@
 | P01.2 | Sichere Datei-, Hash- und Stagingprimitive | umgesetzt | PR #3, Merge `4fc4aca667ce`, Actions `30336885794` |
 | P01.3 | Offline-Fixtures und Testdatenpolicy | umgesetzt | PR #3, Merge `4fc4aca667ce`, Actions `30336885794` |
 
-Der P01-Gatelauf hat Python 3.12, Node 24, frische Resolverberichte, exakte transitive Locks, Installation, Governance- und Fundamentvalidatoren, `compileall`, Unittest, Pytest und Node-Tests erfolgreich ausgeführt. CodeRabbit und qlty waren erfolgreich; sämtliche Reviewthreads waren aufgelöst.
+## Aktive Phase P02
 
-## Nächste Phase
+**Branch:** `agent/p02-data-contracts`
 
-P02 – Datenverträge, Status und Schreibgrenzen:
+| ID | Titel | Status | Evidenzstand |
+|---|---|---|---|
+| P02.1 | Schemafamilie und Versionsstrategie | in_arbeit | zwölf strikte Schemas, Registry und Statusmigration implementiert |
+| P02.2 | Öffentlicher Status und Lauf-/Recovery-Modell | in_arbeit | Statusprojektion, Zustandsautomat, Revision, Redaction und CLI implementiert |
+| P02.3 | Automatische Schreibpfad-Policy | in_arbeit | deny-first Policy, Indexprüfung und CODEOWNERS implementiert |
 
-- P02.1 Schemafamilie und Versionsstrategie
-- P02.2 Öffentlicher Status und Lauf-/Recovery-Modell
-- P02.3 Automatische Schreibpfad-Policy
+Die P02-Pakete bleiben bis zum tatsächlichen Merge, grüner CI, aufgelösten Reviewthreads und eingetragener Abnahmeevidenz offen.
 
 ## Gesperrte Architekturentscheidungen
 

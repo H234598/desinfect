@@ -1,0 +1,91 @@
+{
+  "contracts": [
+    {
+      "current_version": "3.0.0",
+      "migration": "migrate_status_v2_to_v3",
+      "name": "status",
+      "path": "schemas/status.schema.json",
+      "previous_versions": [
+        "2.0.0"
+      ]
+    },
+    {
+      "current_version": "1.0.0",
+      "migration": null,
+      "name": "run-manifest",
+      "path": "schemas/run-manifest.schema.json",
+      "previous_versions": []
+    },
+    {
+      "current_version": "1.0.0",
+      "migration": null,
+      "name": "source-manifest",
+      "path": "schemas/source-manifest.schema.json",
+      "previous_versions": []
+    },
+    {
+      "current_version": "1.0.0",
+      "migration": null,
+      "name": "document-manifest",
+      "path": "schemas/document-manifest.schema.json",
+      "previous_versions": []
+    },
+    {
+      "current_version": "1.0.0",
+      "migration": null,
+      "name": "conversion-manifest",
+      "path": "schemas/conversion-manifest.schema.json",
+      "previous_versions": []
+    },
+    {
+      "current_version": "1.0.0",
+      "migration": null,
+      "name": "archive-manifest",
+      "path": "schemas/archive-manifest.schema.json",
+      "previous_versions": []
+    },
+    {
+      "current_version": "1.0.0",
+      "migration": null,
+      "name": "storage-reference",
+      "path": "schemas/storage-reference.schema.json",
+      "previous_versions": []
+    },
+    {
+      "current_version": "1.0.0",
+      "migration": null,
+      "name": "reconciliation-report",
+      "path": "schemas/reconciliation-report.schema.json",
+      "previous_versions": []
+    },
+    {
+      "current_version": "1.0.0",
+      "migration": null,
+      "name": "recovery-report",
+      "path": "schemas/recovery-report.schema.json",
+      "previous_versions": []
+    },
+    {
+      "current_version": "1.0.0",
+      "migration": null,
+      "name": "corpus-readiness",
+      "path": "schemas/corpus-readiness.schema.json",
+      "previous_versions": []
+    },
+    {
+      "current_version": "1.0.0",
+      "migration": null,
+      "name": "extraction",
+      "path": "schemas/extraction.schema.json",
+      "previous_versions": []
+    },
+    {
+      "current_version": "1.0.0",
+      "migration": null,
+      "name": "taxonomy",
+      "path": "schemas/taxonomy.schema.json",
+      "previous_versions": []
+    }
+  ],
+  "schema_version": "1.0.0"
+}

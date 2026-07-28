@@ -1,0 +1,153 @@
+{
+  "$id": "https://h234598.github.io/desinfect/schemas/extraction-1.0.0.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "application_axis": {
+      "items": {
+        "enum": [
+          "handdesinfektion",
+          "flaechendesinfektion"
+        ]
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "candidate_terms": {
+      "items": {
+        "maxLength": 200,
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "document_id": {
+      "maxLength": 200,
+      "minLength": 3,
+      "type": "string"
+    },
+    "id": {
+      "pattern": "^rki-extraction-[a-z0-9-]{3,200}$",
+      "type": "string"
+    },
+    "observed_terms": {
+      "items": {
+        "maxLength": 200,
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "pages": {
+      "items": {
+        "minimum": 1,
+        "type": "integer"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "review": {
+      "additionalProperties": false,
+      "properties": {
+        "reviewed_at": {
+          "oneOf": [
+            {
+              "format": "date-time",
+              "pattern": "Z$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reviewer": {
+          "maxLength": 200,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "enum": [
+            "candidate",
+            "reviewed",
+            "rejected"
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "reviewer",
+        "reviewed_at"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "section": {
+      "maxLength": 500,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source_statement": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "type": "string"
+    },
+    "taxonomy": {
+      "additionalProperties": false,
+      "properties": {
+        "category_ids": {
+          "items": {
+            "pattern": "^[a-z0-9][a-z0-9-]{2,100}$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "state": {
+          "enum": [
+            "pending",
+            "mapped",
+            "rejected"
+          ]
+        },
+        "taxonomy_version": {
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "taxonomy_version",
+        "category_ids"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "document_id",
+    "pages",
+    "section",
+    "source_statement",
+    "application_axis",
+    "observed_terms",
+    "candidate_terms",
+    "taxonomy",
+    "review"
+  ],
+  "title": "Desinfect extraction",
+  "type": "object"
+}

@@ -1,0 +1,109 @@
+{
+  "$id": "https://h234598.github.io/desinfect/schemas/corpus-readiness-1.0.0.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "analysis_corpus_complete_through_year": {
+      "maximum": 9999,
+      "minimum": 1990,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "approved_source_exceptions": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "based_on_manifest_sha256": {
+      "oneOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "inventory_complete_through_year": {
+      "maximum": 9999,
+      "minimum": 1990,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "last_reconciliation_conclusion": {
+      "enum": [
+        "success",
+        "degraded",
+        "blocked",
+        "failed",
+        "not_run"
+      ]
+    },
+    "minimum_required_year": {
+      "const": 2020
+    },
+    "monthly_archives_complete_through": {
+      "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "policy_version": {
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "type": "string"
+    },
+    "public_mirror_complete_through_year": {
+      "maximum": 9999,
+      "minimum": 1990,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "taxonomy_gate_satisfied": {
+      "type": "boolean"
+    },
+    "unresolved_conversion_failures": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "unresolved_source_gaps": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "yearly_archives_complete_through_year": {
+      "maximum": 9999,
+      "minimum": 1990,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "policy_version",
+    "minimum_required_year",
+    "inventory_complete_through_year",
+    "analysis_corpus_complete_through_year",
+    "public_mirror_complete_through_year",
+    "monthly_archives_complete_through",
+    "yearly_archives_complete_through_year",
+    "unresolved_source_gaps",
+    "approved_source_exceptions",
+    "unresolved_conversion_failures",
+    "last_reconciliation_conclusion",
+    "taxonomy_gate_satisfied",
+    "based_on_manifest_sha256"
+  ],
+  "title": "Desinfect corpus readiness",
+  "type": "object"
+}

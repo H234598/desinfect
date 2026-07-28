@@ -1,0 +1,44 @@
+{
+  "corpus": {
+    "markdown_complete_through_year": 2020,
+    "pdf_complete_through_year": 2020,
+    "public_mirror_complete_through_year": null,
+    "taxonomy_gate_satisfied": false,
+    "taxonomy_state": "blocked"
+  },
+  "periods": {
+    "last_completed_month": "2026-06",
+    "last_completed_week": "2026-W29",
+    "last_completed_year": 2025,
+    "last_reconciliation_at": null,
+    "last_recovery_drill_year": null
+  },
+  "pipeline": {
+    "consecutive_failures": 1,
+    "last_error": {
+      "code": "source.timeout",
+      "message": "Zeitüberschreitung",
+      "occurred_at": "2026-07-28T00:00:00Z",
+      "phase": "plan",
+      "redacted": true
+    },
+    "last_successful_run_at": "2026-07-20T04:31:12Z",
+    "last_successful_write_at": "2026-07-19T04:31:12Z"
+  },
+  "project": "desinfect",
+  "repository": "H234598/desinfect",
+  "runtime": {
+    "run_mode": "plan",
+    "storage_backend": "lfs"
+  },
+  "schema_version": "2.0.0",
+  "status": "degraded",
+  "updated_at": "2026-07-28T00:00:00Z",
+  "watchdog": {
+    "interval_days": 45,
+    "last_bark_at": null,
+    "last_reset_at": null,
+    "next_bark_at": null,
+    "reset_by": null
+  }
+}

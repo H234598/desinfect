@@ -1,0 +1,159 @@
+
+#!/usr/bin/env python3
+"""Versioned JSON-Schema registry and deterministic one-version migrations."""
+from __future__ import annotations
+
+from copy import deepcopy
+import json
+from pathlib import Path
+from typing import Any, Callable
+
+from jsonschema import Draft202012Validator, FormatChecker
+
+ROOT = Path(__file__).resolve().parents[2]
+REGISTRY_PATH = ROOT / "config" / "schema-registry.json"
+
+
+class SchemaContractError(ValueError):
+    """A schema, document version, or migration violates the contract."""
+
+
+def load_registry(path: Path = REGISTRY_PATH) -> dict[str, Any]:
+    """Load the strict schema registry."""
+
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def contract(name: str, registry: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return one uniquely registered contract by name."""
+
+    data = registry or load_registry()
+    matches = [entry for entry in data.get("contracts", []) if entry.get("name") == name]
+    if len(matches) != 1:
+        raise SchemaContractError(f"Schema-Vertrag muss genau einmal registriert sein: {name}")
+    return matches[0]
+
+
+def load_schema(name: str, registry: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Load and meta-validate one registered Draft 2020-12 schema."""
+
+    entry = contract(name, registry)
+    path = ROOT / entry["path"]
+    try:
+        schema = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SchemaContractError(f"Schema nicht lesbar: {path}") from exc
+    Draft202012Validator.check_schema(schema)
+    if schema.get("$schema") != "https://json-schema.org/draft/2020-12/schema":
+        raise SchemaContractError(f"{name}: ausschließlich Draft 2020-12 ist zulässig")
+    version = schema.get("properties", {}).get("schema_version", {}).get("const")
+    if version != entry["current_version"]:
+        raise SchemaContractError(f"{name}: Registry und Schema-Version driften")
+    return schema
+
+
+def validate_document(name: str, payload: dict[str, Any]) -> None:
+    """Validate one document against the current registered contract."""
+
+    validator = Draft202012Validator(load_schema(name), format_checker=FormatChecker())
+    errors = sorted(validator.iter_errors(payload), key=lambda error: list(error.absolute_path))
+    if errors:
+        rendered = "; ".join(
+            f"{'/'.join(map(str, error.absolute_path)) or '<root>'}: {error.message}"
+            for error in errors[:8]
+        )
+        raise SchemaContractError(f"{name}: {rendered}")
+
+
+def _nullable_year(value: Any) -> int | None:
+    return value if type(value) is int and 1990 <= value <= 9999 else None
+
+
+def migrate_status_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
+    """Migrate the single supported predecessor status contract deterministically."""
+
+    version = payload.get("schema_version")
+    if version not in {2, "2", "2.0.0"}:
+        raise SchemaContractError(f"Nicht unterstützte Statusmigration: {version!r}")
+    source = deepcopy(payload)
+    runtime = source.get("runtime") if isinstance(source.get("runtime"), dict) else {}
+    pipeline = source.get("pipeline") if isinstance(source.get("pipeline"), dict) else {}
+    periods = source.get("periods") if isinstance(source.get("periods"), dict) else {}
+    corpus = source.get("corpus") if isinstance(source.get("corpus"), dict) else {}
+    watchdog = source.get("watchdog") if isinstance(source.get("watchdog"), dict) else {}
+
+    result = {
+        "schema_version": "3.0.0",
+        "project": "desinfect",
+        "repository": "H234598/desinfect",
+        "status": source.get("status") if source.get("status") in {
+            "not_initialized", "operational", "degraded", "blocked", "unknown"
+        } else "unknown",
+        "updated_at": source.get("updated_at"),
+        "runtime": {
+            "storage_backend": runtime.get("storage_backend", "lfs"),
+            "last_run_mode": runtime.get("last_run_mode", runtime.get("run_mode")),
+        },
+        "pipeline": {
+            "last_main_commit_at": pipeline.get("last_main_commit_at"),
+            "last_successful_run_at": pipeline.get("last_successful_run_at"),
+            "last_successful_write_at": pipeline.get("last_successful_write_at"),
+            "consecutive_failures": pipeline.get("consecutive_failures", 0),
+            "last_error": pipeline.get("last_error"),
+        },
+        "periods": {
+            "last_completed_week": periods.get("last_completed_week"),
+            "last_completed_month": periods.get("last_completed_month"),
+            "last_completed_year": _nullable_year(periods.get("last_completed_year")),
+            "last_reconciliation_at": periods.get("last_reconciliation_at"),
+            "last_recovery_drill_year": _nullable_year(periods.get("last_recovery_drill_year")),
+        },
+        "corpus": {
+            "inventory_complete_through_year": _nullable_year(
+                corpus.get("inventory_complete_through_year", corpus.get("pdf_complete_through_year"))
+            ),
+            "analysis_corpus_complete_through_year": _nullable_year(
+                corpus.get("analysis_corpus_complete_through_year", corpus.get("markdown_complete_through_year"))
+            ),
+            "public_mirror_complete_through_year": _nullable_year(
+                corpus.get("public_mirror_complete_through_year")
+            ),
+            "taxonomy_gate_satisfied": bool(corpus.get("taxonomy_gate_satisfied", False)),
+            "taxonomy_state": corpus.get("taxonomy_state", "blocked"),
+        },
+        "watchdog": {
+            "interval_days": watchdog.get("interval_days", 45),
+            "last_reset_at": watchdog.get("last_reset_at"),
+            "next_bark_at": watchdog.get("next_bark_at"),
+            "last_bark_at": watchdog.get("last_bark_at"),
+            "reset_by": watchdog.get("reset_by"),
+        },
+    }
+    validate_document("status", result)
+    return result
+
+
+MIGRATIONS: dict[tuple[str, str, str], Callable[[dict[str, Any]], dict[str, Any]]] = {
+    ("status", "2.0.0", "3.0.0"): migrate_status_v2_to_v3,
+}
+
+
+def migrate_document(name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Migrate exactly one registered predecessor version to the current contract."""
+
+    entry = contract(name)
+    current = entry["current_version"]
+    raw_version = payload.get("schema_version")
+    source_version = "2.0.0" if raw_version in {2, "2", "2.0.0"} else raw_version
+    if source_version == current:
+        result = deepcopy(payload)
+        validate_document(name, result)
+        return result
+    if source_version not in entry.get("previous_versions", []):
+        raise SchemaContractError(
+            f"{name}: Version {source_version!r} ist weder aktuell noch die unterstützte Vorversion"
+        )
+    migration = MIGRATIONS.get((name, str(source_version), current))
+    if migration is None:
+        raise SchemaContractError(f"{name}: registrierte Migration fehlt")
+    return migration(payload)

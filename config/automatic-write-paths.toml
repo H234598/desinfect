@@ -1,0 +1,32 @@
+
+schema_version = 1
+max_operations = 10000
+reject_symlinks = true
+reject_gitlinks = true
+
+allow = [
+  "rki/Bulletins/**",
+  "content/generated-data/**",
+  "research/corpus-readiness.json",
+  "status.json",
+]
+
+deny = [
+  ".github/**",
+  "cloudflare/**",
+  "scripts/**",
+  "config/**",
+  "tests/**",
+  "web/**",
+  "schemas/**",
+  "mkdocs.yml",
+  "pyproject.toml",
+  "requirements*.txt",
+  "requirements*.in",
+  "package*.json",
+  ".gitattributes",
+  "SECURITY.md",
+  ".github/CODEOWNERS",
+  "research/taxonomy*.yml",
+  "research/rights-register.yml",
+]

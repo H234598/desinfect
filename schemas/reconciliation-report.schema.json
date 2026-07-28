@@ -1,0 +1,100 @@
+{
+  "$id": "https://h234598.github.io/desinfect/schemas/reconciliation-report-1.0.0.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "as_of": {
+      "format": "date-time",
+      "pattern": "Z$",
+      "type": "string"
+    },
+    "conclusion": {
+      "enum": [
+        "success",
+        "degraded",
+        "blocked",
+        "failed"
+      ]
+    },
+    "counts": {
+      "additionalProperties": false,
+      "properties": {
+        "changed": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "missing_local": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "missing_remote": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ok": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "orphan": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rights_changed": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unresolved": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "ok",
+        "changed",
+        "missing_remote",
+        "missing_local",
+        "orphan",
+        "rights_changed",
+        "unresolved"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "scope": {
+      "additionalProperties": false,
+      "properties": {
+        "from_year": {
+          "maximum": 9999,
+          "minimum": 1990,
+          "type": "integer"
+        },
+        "to_year": {
+          "maximum": 9999,
+          "minimum": 1990,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "from_year",
+        "to_year"
+      ],
+      "type": "object"
+    },
+    "source_manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "scope",
+    "as_of",
+    "counts",
+    "conclusion",
+    "source_manifest_sha256"
+  ],
+  "title": "Desinfect reconciliation report",
+  "type": "object"
+}

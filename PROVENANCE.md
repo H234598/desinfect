@@ -30,4 +30,10 @@ Die kanonisch im Repository gepflegte Ausführungssteuerung ist `docs/IMPLEMENTI
 
 Das vorhandene `.part`-/`os.replace`-Muster aus `H234598/desinfect@fbcc6e850fec1f4592ca519fa3e5141b11a95e60` bleibt als fachliche Herkunft ebenfalls dokumentiert. Paketvalidatoren, Offline-Fixtures und P01-Tests sind Eigenentwicklungen auf Grundlage des Plans.
 
+## P02 – Datenverträge, Status und Schreibgrenzen
+
+- Das Laufstatus- und Recoverymodell ist konzeptionell aus `H234598/ADHS-Lernpfad@93c8c02d263ec123c1c271caf0d2deaa76760ccb` (`automation/run-status.schema.json`, `scripts/automation_status.py`, `scripts/runtime_status_cli.py`) abgeleitet und für `desinfect` neu implementiert.
+- Pfadnormalisierung, atomare Schreibgrenzen und Kollisionsprüfung verwenden die in P01 dokumentierte Cheatsheets-Provenienz.
+- Die zwölf Domänenschemas, das Migrationsregister und die deny-first Schreibpolicy sind Eigenentwicklungen nach dem bereitgestellten Implementierungsplan.
+
 Die gesperrten Entscheidungen bleiben unabhängig von diesen Fundamentarbeiten unverändert: **ADR-003=A** und **ADR-014=B**.

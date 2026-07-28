@@ -1,0 +1,321 @@
+{
+  "$defs": {
+    "nullableUtcTimestamp": {
+      "oneOf": [
+        {
+          "format": "date-time",
+          "pattern": "Z$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "publicError": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "pattern": "^[A-Za-z0-9_.-]{1,120}$",
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/utcTimestamp"
+        },
+        "phase": {
+          "pattern": "^[a-z][a-z0-9_]{0,63}$",
+          "type": "string"
+        },
+        "redacted": {
+          "const": true
+        }
+      },
+      "required": [
+        "code",
+        "phase",
+        "occurred_at",
+        "message",
+        "redacted"
+      ],
+      "type": "object"
+    },
+    "utcTimestamp": {
+      "format": "date-time",
+      "pattern": "Z$",
+      "type": "string"
+    }
+  },
+  "$id": "https://h234598.github.io/desinfect/schemas/status-3.0.0.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "corpus": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_corpus_complete_through_year": {
+          "oneOf": [
+            {
+              "maximum": 9999,
+              "minimum": 1990,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inventory_complete_through_year": {
+          "oneOf": [
+            {
+              "maximum": 9999,
+              "minimum": 1990,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "public_mirror_complete_through_year": {
+          "oneOf": [
+            {
+              "maximum": 9999,
+              "minimum": 1990,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "taxonomy_gate_satisfied": {
+          "type": "boolean"
+        },
+        "taxonomy_state": {
+          "enum": [
+            "blocked",
+            "candidate",
+            "proposal",
+            "approved"
+          ]
+        }
+      },
+      "required": [
+        "inventory_complete_through_year",
+        "analysis_corpus_complete_through_year",
+        "public_mirror_complete_through_year",
+        "taxonomy_gate_satisfied",
+        "taxonomy_state"
+      ],
+      "type": "object"
+    },
+    "periods": {
+      "additionalProperties": false,
+      "properties": {
+        "last_completed_month": {
+          "oneOf": [
+            {
+              "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_completed_week": {
+          "oneOf": [
+            {
+              "pattern": "^[0-9]{4}-W(?:0[1-9]|[1-4][0-9]|5[0-3])$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_completed_year": {
+          "oneOf": [
+            {
+              "maximum": 9999,
+              "minimum": 1990,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_reconciliation_at": {
+          "$ref": "#/$defs/nullableUtcTimestamp"
+        },
+        "last_recovery_drill_year": {
+          "oneOf": [
+            {
+              "maximum": 9999,
+              "minimum": 1990,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "last_completed_week",
+        "last_completed_month",
+        "last_completed_year",
+        "last_reconciliation_at",
+        "last_recovery_drill_year"
+      ],
+      "type": "object"
+    },
+    "pipeline": {
+      "additionalProperties": false,
+      "properties": {
+        "consecutive_failures": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "last_error": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/publicError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_main_commit_at": {
+          "$ref": "#/$defs/nullableUtcTimestamp"
+        },
+        "last_successful_run_at": {
+          "$ref": "#/$defs/nullableUtcTimestamp"
+        },
+        "last_successful_write_at": {
+          "$ref": "#/$defs/nullableUtcTimestamp"
+        }
+      },
+      "required": [
+        "last_main_commit_at",
+        "last_successful_run_at",
+        "last_successful_write_at",
+        "consecutive_failures",
+        "last_error"
+      ],
+      "type": "object"
+    },
+    "project": {
+      "const": "desinfect"
+    },
+    "repository": {
+      "const": "H234598/desinfect"
+    },
+    "runtime": {
+      "additionalProperties": false,
+      "properties": {
+        "last_run_mode": {
+          "oneOf": [
+            {
+              "enum": [
+                "plan",
+                "materialize",
+                "apply"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "storage_backend": {
+          "enum": [
+            "lfs",
+            "release",
+            "object"
+          ]
+        }
+      },
+      "required": [
+        "storage_backend",
+        "last_run_mode"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "3.0.0"
+    },
+    "status": {
+      "enum": [
+        "not_initialized",
+        "operational",
+        "degraded",
+        "blocked",
+        "unknown"
+      ]
+    },
+    "updated_at": {
+      "$ref": "#/$defs/utcTimestamp"
+    },
+    "watchdog": {
+      "additionalProperties": false,
+      "properties": {
+        "interval_days": {
+          "maximum": 55,
+          "minimum": 7,
+          "type": "integer"
+        },
+        "last_bark_at": {
+          "$ref": "#/$defs/nullableUtcTimestamp"
+        },
+        "last_reset_at": {
+          "$ref": "#/$defs/nullableUtcTimestamp"
+        },
+        "next_bark_at": {
+          "$ref": "#/$defs/nullableUtcTimestamp"
+        },
+        "reset_by": {
+          "oneOf": [
+            {
+              "maxLength": 120,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "interval_days",
+        "last_reset_at",
+        "next_bark_at",
+        "last_bark_at",
+        "reset_by"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "project",
+    "repository",
+    "status",
+    "updated_at",
+    "runtime",
+    "pipeline",
+    "periods",
+    "corpus",
+    "watchdog"
+  ],
+  "title": "Desinfect public operational status",
+  "type": "object"
+}
