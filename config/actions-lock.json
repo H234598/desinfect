@@ -25,6 +25,14 @@
       "used_by": [
         ".github/workflows/p00-baseline.yml"
       ]
+    },
+    {
+      "repository": "actions/upload-artifact",
+      "tag": "v7",
+      "sha": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+      "used_by": [
+        ".github/workflows/p00-baseline.yml"
+      ]
     }
   ]
 }
