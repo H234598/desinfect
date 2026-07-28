@@ -10,6 +10,16 @@ on:
       - "scripts/**"
       - "tests/**"
       - "README.md"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/p00-baseline.yml"
+      - "config/**"
+      - "docs/**"
+      - "schemas/**"
+      - "scripts/**"
+      - "tests/**"
+      - "README.md"
   workflow_dispatch:
 
 permissions:
