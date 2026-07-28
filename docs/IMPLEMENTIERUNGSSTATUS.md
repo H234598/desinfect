@@ -11,11 +11,15 @@
 
 ## Aktiver Durchlauf
 
-| ID | Titel | Status | Branch |
-|---|---|---|---|
-| P00.1 | Revisionsblatt und Analysefreeze | im_review | `agent/p00-governance-baseline` |
-| P00.2 | Anforderungs- und Entscheidungstraceability | in_arbeit | `agent/p00-governance-baseline` |
-| P00.3 | Fortschritts- und Evidenzvertrag | in_arbeit | `agent/p00-governance-baseline` |
+**Draft-PR:** #1 – `chore(plan): P00-Revisionsbaseline und ADR-Sperren`  
+**Branch:** `agent/p00-governance-baseline`  
+**Basis:** `main@fbcc6e850fec1f4592ca519fa3e5141b11a95e60`
+
+| ID | Titel | Status | PR |
+|---|---|---|---:|
+| P00.1 | Revisionsblatt und Analysefreeze | im_review | #1 |
+| P00.2 | Anforderungs- und Entscheidungstraceability | in_arbeit | #1 |
+| P00.3 | Fortschritts- und Evidenzvertrag | in_arbeit | #1 |
 
 ## Gesperrte Architekturentscheidungen
 

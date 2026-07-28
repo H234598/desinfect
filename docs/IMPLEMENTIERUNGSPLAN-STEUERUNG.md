@@ -4,6 +4,7 @@ status: Umsetzung begonnen
 source_plan_sha256: aa50863cde1313a7039691b4ca596c1ab498d0fab0008da324de5cb69f12ffc4
 repository: H234598/desinfect
 branch: agent/p00-governance-baseline
+pull_request: 1
 ---
 
 # Implementierungsplan V3 – Steuerung
@@ -15,6 +16,8 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 
 ## Aktueller Durchlauf
 
+- **Draft-PR:** #1
+- **Branch:** `agent/p00-governance-baseline`
 - **P00.1 Revisionsblatt und Analysefreeze:** im Review
 - **P00.2 Anforderungs- und Entscheidungstraceability:** in Arbeit
 - **P00.3 Fortschritts- und Evidenzvertrag:** in Arbeit
@@ -22,9 +25,9 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 
 ## Arbeitspakete
 
-- [ ] **P00.1** Revisionsblatt und Analysefreeze _(im Review)_
-- [ ] **P00.2** Anforderungs- und Entscheidungstraceability _(in Arbeit)_
-- [ ] **P00.3** Fortschritts- und Evidenzvertrag _(in Arbeit)_
+- [ ] **P00.1** Revisionsblatt und Analysefreeze _(im Review, PR #1)_
+- [ ] **P00.2** Anforderungs- und Entscheidungstraceability _(in Arbeit, PR #1)_
+- [ ] **P00.3** Fortschritts- und Evidenzvertrag _(in Arbeit, PR #1)_
 - [ ] **P01.1** Python-/Node-Paketfundament
 - [ ] **P01.2** Sichere Datei-, Hash- und Stagingprimitive
 - [ ] **P01.3** Offline-Fixtures und Testdatenpolicy
