@@ -49,9 +49,14 @@ def validate() -> None:
                 raise ValueError(f"{item['id']}: umgesetzt ohne vollständige Merge-/CI-/Abnahmeevidenz")
 
     status_md = (ROOT / "docs/IMPLEMENTIERUNGSSTATUS.md").read_text(encoding="utf-8")
-    for needle in ("ADR-003 = A", "ADR-014 = B", "**PR: #1**"):
+    for needle in ("ADR-003 = A", "ADR-014 = B"):
         if needle not in status_md:
             raise ValueError(f"Statusseite fehlt: {needle}")
+    active_pr = data.get("active_pr")
+    if active_pr is not None:
+        number = active_pr.get("number")
+        if not isinstance(number, int) or f"**PR: #{number}**" not in status_md:
+            raise ValueError("Aktiver PR ist zwischen Maschinenstatus und Statusseite nicht synchron")
 
 
 if __name__ == "__main__":
