@@ -7,55 +7,27 @@
 
 | Gesamt | Offen | In Arbeit | Im Review | Umgesetzt | Blockiert |
 |---:|---:|---:|---:|---:|---:|
-| 60 | 51 | 0 | 0 | 9 | 0 |
+| 60 | 48 | 3 | 0 | 9 | 0 |
 
-## Abgeschlossene Phase P00
+## Abgeschlossene Phasen
 
-**PR:** #1 — `chore(plan): P00-Revisionsbaseline und ADR-Sperren`  
-**Merge:** `c4996105f6d683c2c4d342df6ee43b74dbcb64a6`
+| Phase | Implementierungs-PR | Merge | Gate |
+|---|---:|---|---|
+| P00 | #1 | `c4996105f6d683c2c4d342df6ee43b74dbcb64a6` | Actions `30331599906`, CodeRabbit, qlty |
+| P01 | #3 | `4fc4aca667ce1b7a9529cc49e4e81fc373f75da2` | Actions `30336885794`, CodeRabbit, qlty |
+| P02 | #5 | `947b2ba86792d5a84e0f2fd972cfbe554c156afc` | Actions `30342761383`, CodeRabbit, qlty, 9 Reviewthreads |
 
-| ID | Titel | Status | Evidenz |
+## Aktive Phase P03
+
+**Branch:** `agent/p03-grabber-modularization`
+
+| ID | Titel | Status | Evidenzstand |
 |---|---|---|---|
-| P00.1 | Revisionsblatt und Analysefreeze | umgesetzt | PR #1, Merge `c4996105f6d6`, Actions `30331599906` |
-| P00.2 | Anforderungs- und Entscheidungstraceability | umgesetzt | PR #1, Merge `c4996105f6d6`, Actions `30331599906` |
-| P00.3 | Fortschritts- und Evidenzvertrag | umgesetzt | PR #1, Merge `c4996105f6d6`, Actions `30331599906` |
+| P03.1 | Grabber in Parser, HTTP und Orchestrierung schneiden | in_arbeit | reine Parser, Transportport und Service implementiert; Offline-Fixtures ergänzt |
+| P03.2 | Netzwerk-, Robots- und Downloadhärtung | in_arbeit | same-origin HTTPS, fail-closed Robots, Redirect-/Bytegrenzen und atomarer Resume-Download implementiert |
+| P03.3 | Stabile CLI, API und Resultvertrag | in_arbeit | gemeinsame API/CLI, Result-Schema, stabile Exitcodes und Validator implementiert |
 
-## Abgeschlossene Phase P01
-
-**PR:** #3 — `feat(p01): Paket-, IO- und Offline-Testfundament`  
-**Merge:** `4fc4aca667ce1b7a9529cc49e4e81fc373f75da2`
-
-| ID | Titel | Status | Evidenz |
-|---|---|---|---|
-| P01.1 | Python-/Node-Paketfundament | umgesetzt | PR #3, Merge `4fc4aca667ce`, Actions `30336885794` |
-| P01.2 | Sichere Datei-, Hash- und Stagingprimitive | umgesetzt | PR #3, Merge `4fc4aca667ce`, Actions `30336885794` |
-| P01.3 | Offline-Fixtures und Testdatenpolicy | umgesetzt | PR #3, Merge `4fc4aca667ce`, Actions `30336885794` |
-
-## Abgeschlossene Phase P02
-
-**PR:** #5 — `feat(p02): Datenverträge, Status und Schreibgrenzen`  
-**Merge:** `947b2ba86792d5a84e0f2fd972cfbe554c156afc`  
-**Geprüfter Head:** `923975c7ba81dc73f68d838b85b8b5fdcbe05e72`
-
-| ID | Titel | Status | Evidenz |
-|---|---|---|---|
-| P02.1 | Schemafamilie und Versionsstrategie | umgesetzt | PR #5, Merge `947b2ba86792`, Actions `30342761383` |
-| P02.2 | Öffentlicher Status und Lauf-/Recovery-Modell | umgesetzt | PR #5, Merge `947b2ba86792`, Actions `30342761383` |
-| P02.3 | Automatische Schreibpfad-Policy | umgesetzt | PR #5, Merge `947b2ba86792`, Actions `30342761383` |
-
-## Abnahme P02
-
-- GitHub Actions: erfolgreich
-- CodeRabbit: erfolgreich
-- qlty: erfolgreich
-- ungelöste Reviewthreads: 0
-- behobene Reviewthreads: 9
-- Abgenommen am: `2026-07-28T08:34:46Z`
-- Abgenommen durch: `H234598`
-
-## Nächster Schritt
-
-P03.1 bis P03.3 bleiben `offen`, bis ihr eigener Implementierungs-PR vorliegt.
+P03 bleibt bis Implementierungs-PR, grüner CI, aufgelösten Reviewthreads, Merge und separater Abnahmeevidenz offen. In dieser Phase erfolgt kein echter RKI-Abruf und kein produktiver Schreib- oder LFS-Lauf.
 
 ## Gesperrte Architekturentscheidungen
 

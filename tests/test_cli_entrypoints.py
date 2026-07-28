@@ -9,13 +9,15 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_p01_validator_scripts_run_by_path() -> None:
+def test_validator_scripts_run_by_path() -> None:
     """Keep every documented ``python3 scripts/...`` invocation executable."""
 
     for relative in (
         "scripts/validate_dependency_locks.py",
         "scripts/validate_fixture_manifest.py",
         "scripts/validate_p01_foundation.py",
+        "scripts/validate_p02_contracts.py",
+        "scripts/validate_p03_grabber.py",
     ):
         completed = subprocess.run(
             [sys.executable, relative],
@@ -24,4 +26,8 @@ def test_p01_validator_scripts_run_by_path() -> None:
             capture_output=True,
             text=True,
         )
-        assert completed.returncode == 0, (relative, completed.stdout, completed.stderr)
+        assert completed.returncode == 0, (
+            relative,
+            completed.stdout,
+            completed.stderr,
+        )

@@ -17,4 +17,15 @@
 - Analysevollständigkeit und öffentliche Spiegelvollständigkeit bleiben entsprechend **ADR-014=B** getrennt.
 - Automatische Writes sind deny-first begrenzt. Unbekannte Pfade, Infrastruktur, Schemas, Symlinks, Gitlinks und portable Kollisionen blockieren vor dem Commit.
 
+## P03-RKI-Trust-Boundary
+
+- Der Grabber akzeptiert nur HTTPS, erlaubte RKI-Hosts, Port 443 und URLs ohne Credentials.
+- Jeder Redirect wird manuell und erneut gegen dieselbe feste Trust-Boundary geprüft.
+- Bei aktiviertem Robots-Schutz sind Fehler und unbekannte Antworten fail-closed; nur eine fehlende `robots.txt` mit HTTP 404 gilt als keine Regeldatei.
+- HTML-, Robots- und PDF-Antworten besitzen harte Bytegrenzen; deklarierte und tatsächlich gelesene Größen werden geprüft.
+- PDFs benötigen erlaubten MIME-Typ, `%PDF-`, `%%EOF`, eine passende optionale RKI-MD5-Prüfsumme und eine berechnete SHA-256.
+- Downloads verwenden gehaltene Root-/Parent-Deskriptoren, `O_NOFOLLOW`, exklusive Part-Dateien, sicheren Resume-Vertrag, Datei-/Verzeichnis-`fsync` und atomaren Austausch.
+- Externe Titel und Dateinamen werden nur als Daten behandelt; dauerhafte Pfade enthalten die versionierte Handle-Identität.
+- Das Resultat enthält keine Kontaktangabe, keine absoluten Runnerpfade und keine ungefilterten Transportobjekte.
+
 Sicherheitsrelevante Funde sollen nicht in öffentlichen Issues mit Secrets oder ungekürzten sensitiven Daten veröffentlicht werden. Der konkrete private Meldeweg wird in P11.3 zusammen mit der vollständigen Supply-Chain-Policy festgelegt.

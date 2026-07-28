@@ -1,0 +1,20 @@
+schema_version = 1
+
+[source]
+base_url = "https://edoc.rki.de"
+issues_root_handle = "176904/10"
+articles_handle = "176904/45"
+allowed_hosts = ["edoc.rki.de"]
+
+[network]
+user_agent = "RKI-EpidBull-Research-Downloader/2.0"
+delay_seconds = 1.25
+timeout_seconds = 60.0
+max_redirects = 5
+max_listing_pages = 10000
+respect_robots = true
+
+[limits]
+robots_max_bytes = 524288
+max_html_bytes = 4194304
+max_pdf_bytes = 268435456
