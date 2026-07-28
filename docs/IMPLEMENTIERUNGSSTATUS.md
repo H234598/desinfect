@@ -7,7 +7,7 @@
 
 | Gesamt | Offen | In Arbeit | Im Review | Umgesetzt | Blockiert |
 |---:|---:|---:|---:|---:|---:|
-| 60 | 54 | 0 | 3 | 3 | 0 |
+| 60 | 54 | 0 | 0 | 6 | 0 |
 
 ## Abgeschlossene Phase P00
 
@@ -21,30 +21,27 @@
 | P00.2 | Anforderungs- und Entscheidungstraceability | umgesetzt | PR #1, Merge `c4996105f6d6`, Actions `30331599906` |
 | P00.3 | Fortschritts- und Evidenzvertrag | umgesetzt | PR #1, Merge `c4996105f6d6`, Actions `30331599906` |
 
-## Aktiver Durchlauf P01
+## Abgeschlossene Phase P01
 
-**PR: #3**  
-**Branch:** `agent/p01-foundation`  
-**Basis:** `main@68f1c73d043abd4a778cf3ee0dfa3cf857330efe`
+**PR:** #3 — `feat(p01): Paket-, IO- und Offline-Testfundament`  
+**Merge:** `4fc4aca667ce1b7a9529cc49e4e81fc373f75da2`  
+**Geprüfter Head:** `a0b6d26ee91ba0e1c6d531c6b7fd2ab6058393aa`
 
-| ID | Titel | Status |
-|---|---|---|
-| P01.1 | Python-/Node-Paketfundament | im_review |
-| P01.2 | Sichere Datei-, Hash- und Stagingprimitive | im_review |
-| P01.3 | Offline-Fixtures und Testdatenpolicy | im_review |
+| ID | Titel | Status | Evidenz |
+|---|---|---|---|
+| P01.1 | Python-/Node-Paketfundament | umgesetzt | PR #3, Merge `4fc4aca667ce`, Actions `30336885794` |
+| P01.2 | Sichere Datei-, Hash- und Stagingprimitive | umgesetzt | PR #3, Merge `4fc4aca667ce`, Actions `30336885794` |
+| P01.3 | Offline-Fixtures und Testdatenpolicy | umgesetzt | PR #3, Merge `4fc4aca667ce`, Actions `30336885794` |
 
-Geplante blockierende Prüfungen:
+Der P01-Gatelauf hat Python 3.12, Node 24, frische Resolverberichte, exakte transitive Locks, Installation, Governance- und Fundamentvalidatoren, `compileall`, Unittest, Pytest und Node-Tests erfolgreich ausgeführt. CodeRabbit und qlty waren erfolgreich; sämtliche Reviewthreads waren aufgelöst.
 
-```bash
-python3 scripts/validate_all_baseline.py
-python3 scripts/validate_p01_foundation.py
-python3 -m compileall -q scripts tests
-python3 -m unittest discover -s tests -p "test_*.py"
-python3 -m pytest -q
-npm test
-```
+## Nächste Phase
 
-Die P01-Pakete decken `V2-03-TREE-001` bis `V2-03-TREE-005` und `V2-26-TEST-001` bis `V2-26-TEST-008` ab. Der Code liegt in PR #3. Merge-, finale CI- und Abnahmeevidenz stehen noch aus; die Plan-Checkboxen bleiben offen.
+P02 – Datenverträge, Status und Schreibgrenzen:
+
+- P02.1 Schemafamilie und Versionsstrategie
+- P02.2 Öffentlicher Status und Lauf-/Recovery-Modell
+- P02.3 Automatische Schreibpfad-Policy
 
 ## Gesperrte Architekturentscheidungen
 
