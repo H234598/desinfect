@@ -133,6 +133,12 @@ jobs:
           set -Eeuo pipefail
           python3 scripts/validate_all_baseline.py
 
+      - name: Validate CI mutation safety
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/validate_ci_mutation_safety.py
+
       - name: Validate P01 foundation
         shell: bash
         run: |
