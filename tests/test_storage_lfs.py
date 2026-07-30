@@ -73,7 +73,7 @@ def test_verify_lfs_object_checks_presence_size_and_hash(tmp_path: Path) -> None
     (tmp_path / ".git").mkdir()
     oid, path = write_lfs_object(tmp_path, b"payload")
     verify_lfs_object(tmp_path, oid=oid, size=7)
-    path.write_bytes(b"tampered")
+    path.write_bytes(b"tamper!")
     with pytest.raises(LfsIntegrityError, match="SHA-256"):
         verify_lfs_object(tmp_path, oid=oid, size=7)
     path.unlink()
