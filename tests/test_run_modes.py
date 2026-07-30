@@ -47,14 +47,24 @@ def init_repository(root: Path) -> None:
         (RunMode.APPLY, EffectKind.OBJECT, True),
     ),
 )
-def test_mode_matrix(mode: RunMode, effect: EffectKind, allowed: bool) -> None:
-    ledger = EffectLedger(mode)
+def test_mode_matrix(tmp_path: Path, mode: RunMode, effect: EffectKind, allowed: bool) -> None:
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    ledger = EffectLedger(
+        mode,
+        temp_root=temp_root if mode is RunMode.MATERIALIZE else None,
+    )
+    target = (
+        (temp_root / "artifact").as_posix()
+        if effect is EffectKind.TEMP_FILE
+        else "artifact"
+    )
     if allowed:
-        ledger.record(effect, "artifact")
+        ledger.record(effect, target)
         assert ledger.events[-1].kind is effect
     else:
         with pytest.raises(ModeViolation):
-            ledger.record(effect, "artifact")
+            ledger.record(effect, target)
 
 
 def test_unknown_run_mode_fails_closed() -> None:
@@ -83,7 +93,7 @@ def test_materialize_detects_status_and_index_mutation(tmp_path: Path) -> None:
             repository_root=tmp_path,
             mode=RunMode.MATERIALIZE,
             temp_root=temp_root,
-            ledger=EffectLedger(RunMode.MATERIALIZE),
+            ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root),
         ):
             (tmp_path / "status.json").write_text('{"status":"changed"}\n', encoding="utf-8")
             subprocess.run(["git", "-C", tmp_path, "add", "status.json"], check=True)
