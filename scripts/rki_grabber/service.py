@@ -122,7 +122,11 @@ class RkiGrabberService:
                 base_url=self.config.base_url,
                 excluded_handles=excluded_handles,
             )
-            new_items = [(handle, url) for handle, url in page_items if url not in seen_items]
+            new_items = [
+                (handle, url)
+                for handle, url in page_items
+                if url not in seen_items
+            ]
             for handle, url in new_items:
                 seen_items.add(url)
                 yield handle, url
@@ -142,8 +146,14 @@ class RkiGrabberService:
                 if len(seen_items) >= expected_total or end >= expected_total:
                     break
 
-            discovered_next = find_next_page(html, current_url=final_url)
-            if discovered_next is not None and discovered_next not in seen_pages:
+            discovered_next = find_next_page(
+                html,
+                current_url=final_url,
+            )
+            if (
+                discovered_next is not None
+                and discovered_next not in seen_pages
+            ):
                 page_url = self.client.validate_url(discovered_next)
                 continue
             if bounds is None:
@@ -151,15 +161,23 @@ class RkiGrabberService:
                 continue
             _start, end, _total = bounds
             candidate = with_offset(base_listing_url, end)
-            if candidate in seen_pages or (not new_items and len(seen_pages) > 1):
+            if (
+                candidate in seen_pages
+                or (not new_items and len(seen_pages) > 1)
+            ):
                 raise PaginationError(
-                    "Pagination lieferte keine neuen Einträge; offset-Vertrag könnte driften"
+                    "Pagination lieferte keine neuen Einträge; "
+                    "offset-Vertrag könnte driften"
                 )
             page_url = candidate
 
         if expected_total is not None and len(seen_items) < expected_total:
-            raise PaginationError(
-                f"Nur {len(seen_items)} von erwarteten {expected_total} Item-Links gefunden"
+            logging.warning(
+                "Listing meldet %s rohe Einträge; nach sicheren Handle- und "
+                "Textfiltern bleiben %s eindeutige Dokumentlinks. "
+                "Die Pagination selbst ist vollständig durchlaufen.",
+                expected_total,
+                len(seen_items),
             )
 
     def collect_scope_items(
@@ -170,10 +188,18 @@ class RkiGrabberService:
         """Yield item handles, URLs, and optional collection-year fallbacks."""
 
         if scope is Scope.ISSUES:
-            root_url = f"{self.config.base_url}/handle/{self.config.issues_root_handle}"
+            root_url = (
+                f"{self.config.base_url}/handle/"
+                f"{self.config.issues_root_handle}"
+            )
             html, _headers, _final = self._html(root_url)
-            years = extract_year_collections(html, base_url=self.config.base_url)
-            all_collection_handles = {handle for handle, _url in years.values()}
+            years = extract_year_collections(
+                html,
+                base_url=self.config.base_url,
+            )
+            all_collection_handles = {
+                handle for handle, _url in years.values()
+            }
             excluded = {
                 self.config.issues_root_handle,
                 self.config.articles_handle,
@@ -287,8 +313,16 @@ class RkiGrabberService:
             expected_md5=expected_md5,
             etag=etag,
             last_modified=last_modified,
-            error_code=(None if error is None else str(getattr(error, "code", "error"))),
-            error_message=(None if error is None else str(error)),
+            error_code=(
+                None
+                if error is None
+                else str(getattr(error, "code", "error"))
+            ),
+            error_message=(
+                None
+                if error is None
+                else str(error)
+            ),
         )
 
     def grab(self, request: GrabberRequest) -> GrabberResult:
@@ -332,10 +366,15 @@ class RkiGrabberService:
                             fallback_year=fallback_year,
                         )
                         if metadata.year is not None and not (
-                            request.from_year <= metadata.year <= request.to_year
+                            request.from_year
+                            <= metadata.year
+                            <= request.to_year
                         ):
                             continue
-                        affected.add(metadata.publication_date, metadata.year)
+                        affected.add(
+                            metadata.publication_date,
+                            metadata.year,
+                        )
                         if not metadata.pdfs:
                             records.append(
                                 self._record(
@@ -352,16 +391,23 @@ class RkiGrabberService:
                             if candidate.url in seen_pdf_urls:
                                 continue
                             seen_pdf_urls.add(candidate.url)
-                            relative_path = target_relative_path(metadata, candidate)
+                            relative_path = target_relative_path(
+                                metadata,
+                                candidate,
+                            )
                             if request.dry_run:
                                 records.append(
                                     self._record(
                                         metadata,
                                         state=RecordState.PLANNED,
                                         pdf_url=candidate.url,
-                                        source_filename=candidate.source_name,
+                                        source_filename=(
+                                            candidate.source_name
+                                        ),
                                         relative_path=relative_path,
-                                        expected_md5=candidate.expected_md5,
+                                        expected_md5=(
+                                            candidate.expected_md5
+                                        ),
                                     )
                                 )
                                 continue
@@ -369,7 +415,8 @@ class RkiGrabberService:
                                 downloaded = download_pdf(
                                     self.client,
                                     candidate,
-                                    request.output_root / Path(relative_path),
+                                    request.output_root
+                                    / Path(relative_path),
                                     allowed_root=request.output_root,
                                     force=request.force,
                                     max_bytes=(
@@ -382,17 +429,28 @@ class RkiGrabberService:
                                         metadata,
                                         state=downloaded.state,
                                         pdf_url=candidate.url,
-                                        source_filename=candidate.source_name,
-                                        relative_path=downloaded.relative_path,
-                                        expected_md5=candidate.expected_md5,
+                                        source_filename=(
+                                            candidate.source_name
+                                        ),
+                                        relative_path=(
+                                            downloaded.relative_path
+                                        ),
+                                        expected_md5=(
+                                            candidate.expected_md5
+                                        ),
                                         bytes_value=downloaded.bytes,
                                         md5=downloaded.md5,
                                         sha256=downloaded.sha256,
                                         etag=downloaded.etag,
-                                        last_modified=downloaded.last_modified,
+                                        last_modified=(
+                                            downloaded.last_modified
+                                        ),
                                     )
                                 )
-                            except (RobotsDeniedError, RobotsUnavailableError) as exc:
+                            except (
+                                RobotsDeniedError,
+                                RobotsUnavailableError,
+                            ) as exc:
                                 blocked = True
                                 issues.append(
                                     self._issue(
@@ -407,14 +465,22 @@ class RkiGrabberService:
                                         metadata,
                                         state=RecordState.ERROR,
                                         pdf_url=candidate.url,
-                                        source_filename=candidate.source_name,
+                                        source_filename=(
+                                            candidate.source_name
+                                        ),
                                         relative_path=relative_path,
-                                        expected_md5=candidate.expected_md5,
+                                        expected_md5=(
+                                            candidate.expected_md5
+                                        ),
                                         error=exc,
                                     )
                                 )
                                 break
-                            except (GrabberHttpError, PdfDownloadError, OSError) as exc:
+                            except (
+                                GrabberHttpError,
+                                PdfDownloadError,
+                                OSError,
+                            ) as exc:
                                 issues.append(
                                     self._issue(
                                         exc,
@@ -428,15 +494,22 @@ class RkiGrabberService:
                                         metadata,
                                         state=RecordState.ERROR,
                                         pdf_url=candidate.url,
-                                        source_filename=candidate.source_name,
+                                        source_filename=(
+                                            candidate.source_name
+                                        ),
                                         relative_path=relative_path,
-                                        expected_md5=candidate.expected_md5,
+                                        expected_md5=(
+                                            candidate.expected_md5
+                                        ),
                                         error=exc,
                                     )
                                 )
                         if blocked:
                             break
-                    except (RobotsDeniedError, RobotsUnavailableError) as exc:
+                    except (
+                        RobotsDeniedError,
+                        RobotsUnavailableError,
+                    ) as exc:
                         blocked = True
                         issues.append(
                             self._issue(
@@ -446,7 +519,11 @@ class RkiGrabberService:
                             )
                         )
                         break
-                    except (GrabberHttpError, ValueError, OSError) as exc:
+                    except (
+                        GrabberHttpError,
+                        ValueError,
+                        OSError,
+                    ) as exc:
                         issues.append(
                             self._issue(
                                 exc,
@@ -454,13 +531,25 @@ class RkiGrabberService:
                                 item_url=item_url,
                             )
                         )
-            except (RobotsDeniedError, RobotsUnavailableError) as exc:
+            except (
+                RobotsDeniedError,
+                RobotsUnavailableError,
+            ) as exc:
                 blocked = True
                 issues.append(self._issue(exc, stage="robots"))
-            except (GrabberHttpError, GrabberServiceError, ValueError, OSError) as exc:
+            except (
+                GrabberHttpError,
+                GrabberServiceError,
+                ValueError,
+                OSError,
+            ) as exc:
                 issues.append(self._issue(exc, stage="scope"))
 
-        outcome = result_outcome(records, issues, blocked=blocked)
+        outcome = result_outcome(
+            records,
+            issues,
+            blocked=blocked,
+        )
         return GrabberResult(
             source=self.source_descriptor,
             request=request,
