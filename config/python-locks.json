@@ -7,7 +7,7 @@
       "intent_path": "requirements-docs.in",
       "intent_sha256": "bb71f6ef1c4130aa4e320ef27cf02eda7afd009281ca10f2bed9ec7198f7f09a",
       "lock_path": "requirements-docs.txt",
-      "lock_sha256": "dab50884d9474a2525d2d0559ec0fbc53c09f68fb339e6ad76b53d8edba96630",
+      "lock_sha256": "957ca4b7292f00e1043a92539bb5c3d0efa13fb6f42e13bb9937e5c012b5436a",
       "packages": {
         "babel": "2.18.0",
         "backrefs": "8.0",
@@ -19,7 +19,7 @@
         "ghp-import": "2.1.0",
         "idna": "3.18",
         "jinja2": "3.1.6",
-        "markdown": "3.10.2",
+        "markdown": "3.10.3",
         "markupsafe": "3.0.3",
         "mergedeep": "1.3.4",
         "mkdocs": "1.6.1",

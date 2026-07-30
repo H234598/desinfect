@@ -36,4 +36,11 @@ Das vorhandene `.part`-/`os.replace`-Muster aus `H234598/desinfect@fbcc6e850fec1
 - Pfadnormalisierung, atomare Schreibgrenzen und Kollisionsprüfung verwenden die in P01 dokumentierte Cheatsheets-Provenienz.
 - Die zwölf Domänenschemas, das Migrationsregister und die deny-first Schreibpolicy sind Eigenentwicklungen nach dem bereitgestellten Implementierungsplan.
 
-Die gesperrten Entscheidungen bleiben unabhängig von diesen Fundamentarbeiten unverändert: **ADR-003=A** und **ADR-014=B**.
+## P03 – Modularer und gehärteter RKI-Grabber
+
+- Fachliche Quelle: `H234598/desinfect@fbcc6e850fec1f4592ca519fa3e5141b11a95e60`, `scripts/rki_grabber/rki_epidbull_grabber.py`, Blob `808ab02f24b4bbf3a6ad7d88c61a03a68c846cb8`.
+- Übernommen und modularisiert: Handle-/Jahres-/Datumsparser, DSpace-Pagination, Metadaten-/DOI-/MD5-Erkennung, serielles Delay, Retry- und Resumeabsicht, CSV-/JSONL-Kompatibilitätsausgaben.
+- Neu gehärtet: importfreundliche Abhängigkeitsgrenze, same-origin HTTPS und manuelle Redirectkontrolle, fail-closed Robotsvertrag, Antwort-/PDF-Größenlimits, `%PDF-`/`%%EOF`, descriptor-relative atomare Ablage, strikter Grabber-Resultvertrag, stabile Exitcodes und vollständige Offline-Ports/Fixtures.
+- Die P03-Parser-, Transport-, Download-, API- und Schema-Tests sind Eigenentwicklungen auf Grundlage des eingefrorenen Plans und des ursprünglichen Grabbers.
+
+Die gesperrten Entscheidungen bleiben unabhängig von diesen Arbeiten unverändert: **ADR-003=A** und **ADR-014=B**.

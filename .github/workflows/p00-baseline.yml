@@ -1,4 +1,4 @@
-name: P00/P01/P02 baseline
+name: P00/P01/P02/P03 baseline
 
 on:
   pull_request:
@@ -48,14 +48,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: p00-p02-baseline-${{ github.ref }}
+  group: p00-p03-baseline-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   baseline:
-    name: Validate governance, P01 foundation, and P02 contracts
+    name: Validate governance, P01/P02 foundations, and P03 grabber
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - name: Checkout without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -112,7 +112,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: p02-dependency-resolver-${{ github.run_id }}
+          name: p03-dependency-resolver-${{ github.run_id }}
           path: build/dependency-reports/
           if-no-files-found: warn
           retention-days: 7
@@ -145,11 +145,18 @@ jobs:
           set -Eeuo pipefail
           python3 scripts/validate_p02_contracts.py
 
-      - name: Smoke-test runtime status CLI
+      - name: Validate P03 modular grabber
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/validate_p03_grabber.py
+
+      - name: Smoke-test runtime status and grabber CLIs
         shell: bash
         run: |
           set -Eeuo pipefail
           python3 -m scripts.rki_pipeline.runtime_status_cli --help
+          python3 -m scripts.rki_grabber.rki_epidbull_grabber --help
 
       - name: Compile Python sources
         shell: bash

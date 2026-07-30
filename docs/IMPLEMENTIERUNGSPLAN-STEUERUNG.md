@@ -1,10 +1,10 @@
 ---
 title: Implementierungsplan V3 – Steuerung
-status: P02 abgeschlossen; P03 als nächster Schritt
+status: P03 im Review
 source_plan_sha256: aa50863cde1313a7039691b4ca596c1ab498d0fab0008da324de5cb69f12ffc4
 repository: H234598/desinfect
-branch: main
-pull_request: null
+branch: agent/p03-grabber-modularization
+pull_request: 7
 ---
 
 # Implementierungsplan V3 – Steuerung
@@ -20,11 +20,16 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 - **P01:** PR #3, Merge `4fc4aca667ce1b7a9529cc49e4e81fc373f75da2`
 - **P02:** PR #5, Merge `947b2ba86792d5a84e0f2fd972cfbe554c156afc`
 - **P02-Gate:** geprüfter Head `923975c7ba81dc73f68d838b85b8b5fdcbe05e72`; GitHub Actions `30342761383`, CodeRabbit und qlty erfolgreich; alle neun Reviewthreads aufgelöst.
-- **Fortschritt:** 9 von 60 Arbeitspaketen umgesetzt; 51 offen; 0 in Arbeit; 0 im Review; 0 blockiert.
 
-## Nächste Phase
+## Aktive Phase P03
 
-P03.1 bis P03.3 bleiben `offen`, bis ihr eigener Implementierungs-PR vorliegt. P03 modularisiert und härtet den vorhandenen RKI-Grabber, ohne einen historischen Vollabruf auszulösen.
+- **PR:** #7
+- **Branch:** `agent/p03-grabber-modularization`
+- **P03.1:** im Review – bestehende Grabberlogik in reine Parser, HTTP-Transport und Orchestrierung getrennt.
+- **P03.2:** im Review – same-origin HTTPS, fail-closed Robotsprüfung, manuelle Redirectgrenzen, Größenlimits und atomare PDF-Ablage.
+- **P03.3:** im Review – gemeinsame importierbare API/CLI und strikter `grabber-result`-Vertrag.
+- **Fortschritt:** 9 von 60 Arbeitspaketen umgesetzt; 3 im Review; 48 offen.
+- Kein historischer Vollabruf, LFS-Import, Scheduler oder schreibender Workflow wird in P03 eingeführt.
 
 ## Arbeitspakete
 
@@ -37,9 +42,9 @@ P03.1 bis P03.3 bleiben `offen`, bis ihr eigener Implementierungs-PR vorliegt. P
 - [x] **P02.1** Schemafamilie und Versionsstrategie _(umgesetzt, PR #5, Merge `947b2ba86792d5a84e0f2fd972cfbe554c156afc`)_
 - [x] **P02.2** Öffentlicher Status und Lauf-/Recovery-Modell _(umgesetzt, PR #5, Merge `947b2ba86792d5a84e0f2fd972cfbe554c156afc`)_
 - [x] **P02.3** Automatische Schreibpfad-Policy _(umgesetzt, PR #5, Merge `947b2ba86792d5a84e0f2fd972cfbe554c156afc`)_
-- [ ] **P03.1** Grabber in Parser, HTTP und Orchestrierung schneiden
-- [ ] **P03.2** Netzwerk-, Robots- und Downloadhärtung
-- [ ] **P03.3** Stabile CLI, API und Resultvertrag
+- [ ] **P03.1** Grabber in Parser, HTTP und Orchestrierung schneiden _(im Review, PR #7)_
+- [ ] **P03.2** Netzwerk-, Robots- und Downloadhärtung _(im Review, PR #7)_
+- [ ] **P03.3** Stabile CLI, API und Resultvertrag _(im Review, PR #7)_
 - [ ] **P04.1** RunMode und Seiteneffektwächter
 - [ ] **P04.2** Storage Protocol und echte Adapter
 - [ ] **P04.3** Git-LFS-Tracking, Objekt- und Budgetprüfung
