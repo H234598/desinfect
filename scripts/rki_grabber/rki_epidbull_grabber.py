@@ -135,7 +135,7 @@ def _request_from_args(args: argparse.Namespace) -> GrabberRequest:
         user_agent=args.user_agent,
         delay_seconds=args.delay,
         timeout_seconds=args.timeout,
-        respect_robots=not args.no_robots,
+        respect_robots=False if args.no_robots else None,
         max_html_bytes=args.max_html_bytes,
         max_pdf_bytes=args.max_pdf_bytes,
     )
