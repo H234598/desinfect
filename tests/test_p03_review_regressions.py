@@ -29,7 +29,13 @@ PDF_URL = f"{BASE}/bitstream/handle/176904/12345.2/minimal.pdf"
 PDF = (ROOT / "tests" / "fixtures" / "pdf" / "minimal.pdf").read_bytes()
 
 
-def write_config(tmp_path: Path, body: str) -> Path:
+def write_config(
+    tmp_path: Path,
+    *,
+    source: str = "",
+    network: str = "",
+    limits: str = "",
+) -> Path:
     """Write one complete schema-v1 source configuration fixture."""
 
     path = tmp_path / "rki-source.toml"
@@ -37,9 +43,11 @@ def write_config(tmp_path: Path, body: str) -> Path:
         "schema_version = 1\n"
         "[source]\n"
         'allowed_hosts = ["edoc.rki.de"]\n'
+        f"{source}"
         "[network]\n"
+        f"{network}"
         "[limits]\n"
-        f"{body}",
+        f"{limits}",
         encoding="utf-8",
     )
     return path
@@ -82,7 +90,7 @@ def test_config_normalizes_oversized_numeric_errors(tmp_path: Path) -> None:
     enormous = "9" * 400
     path = write_config(
         tmp_path,
-        f"delay_seconds = {enormous}\n",
+        network=f"delay_seconds = {enormous}\n",
     )
     with pytest.raises(
         ValueError,
@@ -95,14 +103,14 @@ def test_config_rejects_non_string_handles_and_user_agent(tmp_path: Path) -> Non
     """Lists and numbers may not be silently converted into URLs or headers."""
 
     cases = (
-        'issues_root_handle = ["176904/10"]\n',
-        "articles_handle = 176904\n",
-        "user_agent = 123\n",
+        {"source": 'issues_root_handle = ["176904/10"]\n'},
+        {"source": "articles_handle = 176904\n"},
+        {"network": "user_agent = 123\n"},
     )
-    for index, body in enumerate(cases):
+    for index, sections in enumerate(cases):
         case_root = tmp_path / str(index)
         case_root.mkdir()
-        path = write_config(case_root, body)
+        path = write_config(case_root, **sections)
         with pytest.raises(ValueError, match="muss eine Zeichenkette sein"):
             load_source_config(path)
 
