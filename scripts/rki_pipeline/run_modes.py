@@ -7,6 +7,7 @@ from enum import StrEnum
 import hashlib
 import os
 from pathlib import Path
+import stat
 import subprocess
 from typing import Iterable
 
@@ -137,6 +138,7 @@ class RepositorySnapshot:
     head: str
     worktree: bytes
     index: bytes
+    dirty_files: tuple[tuple[str, str | None], ...]
     protected: tuple[tuple[str, str | None], ...]
     temp_files: tuple[tuple[str, str], ...]
 
@@ -167,6 +169,16 @@ def _sha256(path: Path) -> str | None:
     return digest.hexdigest()
 
 
+def _fingerprint(path: Path) -> str | None:
+    """Hash regular-file bytes together with permission bits."""
+
+    digest = _sha256(path)
+    if digest is None:
+        return None
+    mode = stat.S_IMODE(path.stat(follow_symlinks=False).st_mode)
+    return f"{mode:o}:{digest}"
+
+
 def _tree_snapshot(root: Path | None) -> tuple[tuple[str, str], ...]:
     if root is None or not root.exists():
         return ()
@@ -177,38 +189,8 @@ def _tree_snapshot(root: Path | None) -> tuple[tuple[str, str], ...]:
             raise ModeViolation(f"Symlink im temp_root ist unzulässig: {path}")
         if not path.is_file():
             continue
-        rows.append((path.relative_to(root).as_posix(), _sha256(path) or ""))
+        rows.append((path.relative_to(root).as_posix(), _fingerprint(path) or ""))
     return tuple(rows)
-
-
-def capture_repository_snapshot(
-    repository_root: Path,
-    *,
-    protected_paths: Iterable[str],
-    temp_root: Path | None,
-) -> RepositorySnapshot:
-    """Capture Git, protected-file, and temp-tree state without mutations."""
-
-    root = Path(os.path.abspath(repository_root))
-    head = _git(root, "rev-parse", "HEAD").decode("ascii").strip()
-    worktree = _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-    index = _git(root, "diff", "--cached", "--binary")
-    protected = tuple(
-        sorted(
-            (
-                normalize_posix_path(path),
-                _sha256(root / normalize_posix_path(path)),
-            )
-            for path in protected_paths
-        )
-    )
-    return RepositorySnapshot(
-        head=head,
-        worktree=worktree,
-        index=index,
-        protected=protected,
-        temp_files=_tree_snapshot(temp_root),
-    )
 
 
 def _status_paths(payload: bytes) -> frozenset[str]:
@@ -222,15 +204,58 @@ def _status_paths(payload: bytes) -> frozenset[str]:
         index += 1
         if len(token) < 4:
             raise ModeViolation(f"Ungültige Git-Statuszeile: {token!r}")
-        status = token[:2]
+        status_code = token[:2]
         path = token[3:]
-        if status[0] in {"R", "C"} or status[1] in {"R", "C"}:
+        if status_code[0] in {"R", "C"} or status_code[1] in {"R", "C"}:
             if index >= len(tokens) or not tokens[index]:
                 raise ModeViolation("Unvollständiger Rename-/Copy-Status")
+            paths.add(normalize_posix_path(path))
             path = tokens[index].decode("utf-8", errors="strict")
             index += 1
         paths.add(normalize_posix_path(path))
     return frozenset(paths)
+
+
+def _dirty_snapshot(root: Path, worktree: bytes) -> tuple[tuple[str, str | None], ...]:
+    """Fingerprint every currently dirty/untracked path, including prior dirt."""
+
+    return tuple(
+        sorted(
+            (path, _fingerprint(root / path))
+            for path in _status_paths(worktree)
+        )
+    )
+
+
+def capture_repository_snapshot(
+    repository_root: Path,
+    *,
+    protected_paths: Iterable[str],
+    temp_root: Path | None,
+) -> RepositorySnapshot:
+    """Capture Git, dirty-file, protected-file, and temp-tree state."""
+
+    root = Path(os.path.abspath(repository_root))
+    head = _git(root, "rev-parse", "HEAD").decode("ascii").strip()
+    worktree = _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+    index = _git(root, "diff", "--cached", "--binary")
+    protected = tuple(
+        sorted(
+            (
+                normalize_posix_path(path),
+                _fingerprint(root / normalize_posix_path(path)),
+            )
+            for path in protected_paths
+        )
+    )
+    return RepositorySnapshot(
+        head=head,
+        worktree=worktree,
+        index=index,
+        dirty_files=_dirty_snapshot(root, worktree),
+        protected=protected,
+        temp_files=_tree_snapshot(temp_root),
+    )
 
 
 class SideEffectGuard:
@@ -279,15 +304,30 @@ class SideEffectGuard:
         self._validate(self._before, after)
         return False
 
+    @staticmethod
+    def _changed_rows(
+        before_rows: tuple[tuple[str, str | None], ...],
+        after_rows: tuple[tuple[str, str | None], ...],
+    ) -> frozenset[str]:
+        before = dict(before_rows)
+        after = dict(after_rows)
+        return frozenset(
+            path
+            for path in set(before) | set(after)
+            if before.get(path) != after.get(path)
+        )
+
     def _validate(
         self,
         before: RepositorySnapshot,
         after: RepositorySnapshot,
     ) -> None:
+        dirty_changed = self._changed_rows(before.dirty_files, after.dirty_files)
         repository_changed = (
             before.head != after.head
             or before.worktree != after.worktree
             or before.index != after.index
+            or bool(dirty_changed)
             or before.protected != after.protected
         )
         if self.mode in {RunMode.PLAN, RunMode.MATERIALIZE} and repository_changed:
@@ -304,9 +344,11 @@ class SideEffectGuard:
                 EffectKind.GIT_INDEX
             ):
                 raise ModeViolation("Git-Index wurde nicht im Ledger registriert")
-            before_paths = _status_paths(before.worktree)
-            after_paths = _status_paths(after.worktree)
-            changed_paths = before_paths.symmetric_difference(after_paths)
+            changed_paths = (
+                _status_paths(before.worktree)
+                .symmetric_difference(_status_paths(after.worktree))
+                .union(dirty_changed)
+            )
             registered = self.ledger.targets(
                 EffectKind.REPOSITORY_FILE,
                 EffectKind.STATUS,
@@ -318,13 +360,7 @@ class SideEffectGuard:
                     + ", ".join(missing)
                 )
 
-        before_temp = dict(before.temp_files)
-        after_temp = dict(after.temp_files)
-        changed_temp = {
-            path
-            for path in set(before_temp) | set(after_temp)
-            if before_temp.get(path) != after_temp.get(path)
-        }
+        changed_temp = self._changed_rows(before.temp_files, after.temp_files)
         if changed_temp:
             if self.mode is RunMode.PLAN:
                 raise ModeViolation("plan darf temp_root nicht verändern")
