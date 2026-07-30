@@ -1,10 +1,10 @@
 ---
 title: Implementierungsplan V3 – Steuerung
-status: P03 im Review
+status: P03 abgeschlossen; P04 als nächste Phase
 source_plan_sha256: aa50863cde1313a7039691b4ca596c1ab498d0fab0008da324de5cb69f12ffc4
 repository: H234598/desinfect
-branch: agent/p03-grabber-modularization
-pull_request: 7
+branch: main
+pull_request: null
 ---
 
 # Implementierungsplan V3 – Steuerung
@@ -19,17 +19,13 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 - **P00:** PR #1, Merge `c4996105f6d683c2c4d342df6ee43b74dbcb64a6`
 - **P01:** PR #3, Merge `4fc4aca667ce1b7a9529cc49e4e81fc373f75da2`
 - **P02:** PR #5, Merge `947b2ba86792d5a84e0f2fd972cfbe554c156afc`
-- **P02-Gate:** geprüfter Head `923975c7ba81dc73f68d838b85b8b5fdcbe05e72`; GitHub Actions `30342761383`, CodeRabbit und qlty erfolgreich; alle neun Reviewthreads aufgelöst.
+- **P03:** PR #7, Merge `e180b20788072bba840e655d493bac73c7f1a3ee`
+- **P03-Gate:** geprüfter Head `71943a05fe0f6a2a013f1794e64601b32a44d079`; GitHub Actions `30584133252`, CodeRabbit und qlty erfolgreich; alle zehn Reviewthreads aufgelöst.
+- **Fortschritt:** 12 von 60 Arbeitspaketen umgesetzt; 48 offen; 0 in Arbeit; 0 im Review; 0 blockiert.
 
-## Aktive Phase P03
+## Nächste Phase P04
 
-- **PR:** #7
-- **Branch:** `agent/p03-grabber-modularization`
-- **P03.1:** im Review – bestehende Grabberlogik in reine Parser, HTTP-Transport und Orchestrierung getrennt.
-- **P03.2:** im Review – same-origin HTTPS, fail-closed Robotsprüfung, manuelle Redirectgrenzen, Größenlimits und atomare PDF-Ablage.
-- **P03.3:** im Review – gemeinsame importierbare API/CLI und strikter `grabber-result`-Vertrag.
-- **Fortschritt:** 9 von 60 Arbeitspaketen umgesetzt; 3 im Review; 48 offen.
-- Kein historischer Vollabruf, LFS-Import, Scheduler oder schreibender Workflow wird in P03 eingeführt.
+P04.1 bis P04.4 bleiben `offen`, bis der eigene Implementierungsbranch und die planmäßige Evidenz vorliegen. P04 führt die strikt getrennten Modi `plan|materialize|apply`, einen Seiteneffektwächter, das Storage Protocol mit echten Adaptern, Git-LFS-Objekt-/Budgetprüfung und das Backend-Migrationswerkzeug ein.
 
 ## Arbeitspakete
 
@@ -42,9 +38,9 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 - [x] **P02.1** Schemafamilie und Versionsstrategie _(umgesetzt, PR #5, Merge `947b2ba86792d5a84e0f2fd972cfbe554c156afc`)_
 - [x] **P02.2** Öffentlicher Status und Lauf-/Recovery-Modell _(umgesetzt, PR #5, Merge `947b2ba86792d5a84e0f2fd972cfbe554c156afc`)_
 - [x] **P02.3** Automatische Schreibpfad-Policy _(umgesetzt, PR #5, Merge `947b2ba86792d5a84e0f2fd972cfbe554c156afc`)_
-- [ ] **P03.1** Grabber in Parser, HTTP und Orchestrierung schneiden _(im Review, PR #7)_
-- [ ] **P03.2** Netzwerk-, Robots- und Downloadhärtung _(im Review, PR #7)_
-- [ ] **P03.3** Stabile CLI, API und Resultvertrag _(im Review, PR #7)_
+- [x] **P03.1** Grabber in Parser, HTTP und Orchestrierung schneiden _(umgesetzt, PR #7, Merge `e180b20788072bba840e655d493bac73c7f1a3ee`)_
+- [x] **P03.2** Netzwerk-, Robots- und Downloadhärtung _(umgesetzt, PR #7, Merge `e180b20788072bba840e655d493bac73c7f1a3ee`)_
+- [x] **P03.3** Stabile CLI, API und Resultvertrag _(umgesetzt, PR #7, Merge `e180b20788072bba840e655d493bac73c7f1a3ee`)_
 - [ ] **P04.1** RunMode und Seiteneffektwächter
 - [ ] **P04.2** Storage Protocol und echte Adapter
 - [ ] **P04.3** Git-LFS-Tracking, Objekt- und Budgetprüfung
