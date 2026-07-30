@@ -22,7 +22,7 @@ result: GrabberResult = grab(request)
 
 ## Request
 
-`GrabberRequest` validiert Jahresbereich, Treffergrenze, Delay, Timeout und Größenlimits vor einem Lauf. Kontaktangabe und Outputpfade gehören nicht zur öffentlichen Resultprojektion.
+`GrabberRequest` validiert exakte Laufzeittypen, Jahresbereich, Treffergrenze, endliche Delay-/Timeoutwerte und Größenlimits vor einem Lauf. Kontaktangabe und Outputpfade gehören nicht zur öffentlichen Resultprojektion.
 
 Wichtige Felder:
 
@@ -36,7 +36,7 @@ Wichtige Felder:
 
 ## Result
 
-`GrabberResult.to_dict()` liefert ausschließlich JSON-kompatible Werte und validiert gegen `schemas/grabber-result.schema.json`. `exit_code` ist stabil:
+`GrabberResult.to_dict()` erzeugt ausschließlich die kanonische JSON-kompatible Darstellung. Die Schema-Validierung gegen `schemas/grabber-result.schema.json` ist eine ausdrückliche Verantwortung der schreibenden API-Funktionen, Validatoren und Tests; `to_dict()` selbst führt keine Schema-Validierung aus. `exit_code` ist stabil:
 
 - `0`: success,
 - `2`: partial,
