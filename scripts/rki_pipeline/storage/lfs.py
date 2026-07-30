@@ -83,8 +83,6 @@ class LfsBudget:
 
 
 def validate_lfs_tracking(path: Path) -> tuple[str, ...]:
-    """Require exactly the three canonical archive tracking rules."""
-
     try:
         lines = tuple(
             line.strip()
@@ -94,15 +92,11 @@ def validate_lfs_tracking(path: Path) -> tuple[str, ...]:
     except OSError as exc:
         raise LfsIntegrityError(f".gitattributes ist nicht lesbar: {path}") from exc
     if lines != _REQUIRED_TRACKING:
-        raise LfsIntegrityError(
-            "Git-LFS-Trackingregeln weichen vom kanonischen Vertrag ab"
-        )
+        raise LfsIntegrityError("Git-LFS-Trackingregeln weichen vom kanonischen Vertrag ab")
     return lines
 
 
 def parse_lfs_pointer(text: str | bytes) -> LfsPointer:
-    """Parse the exact Git-LFS v1 three-line pointer form."""
-
     if isinstance(text, bytes):
         try:
             text = text.decode("utf-8")
@@ -123,32 +117,23 @@ def lfs_object_path(repository_root: Path, oid: str) -> Path:
 
 
 def verify_lfs_object(repository_root: Path, *, oid: str, size: int) -> Path:
-    """Verify one local LFS object by exact path, size, and SHA-256."""
-
     path = lfs_object_path(repository_root, oid)
     if not path.exists():
         raise LfsIntegrityError(f"Lokales LFS-Objekt fehlt: {oid}")
     measured_size, measured_hash = hash_file(path)
     if measured_size != size:
-        raise LfsIntegrityError(
-            f"LFS-Objektgröße stimmt nicht: {measured_size} != {size}"
-        )
+        raise LfsIntegrityError(f"LFS-Objektgröße stimmt nicht: {measured_size} != {size}")
     if measured_hash != oid:
-        raise LfsIntegrityError(
-            f"LFS-Objekt-SHA-256 stimmt nicht: {measured_hash} != {oid}"
-        )
+        raise LfsIntegrityError(f"LFS-Objekt-SHA-256 stimmt nicht: {measured_hash} != {oid}")
     return path
 
 
 def inventory_lfs_objects(repository_root: Path) -> LfsInventory:
-    """Count unique regular local objects below .git/lfs/objects."""
-
     root = Path(repository_root) / ".git" / "lfs" / "objects"
     if not root.exists():
         return LfsInventory(0, 0)
-    objects = 0
-    total = 0
     seen: set[str] = set()
+    total = 0
     for path in sorted(root.rglob("*")):
         if path.is_symlink():
             raise LfsIntegrityError(f"Symlink im LFS-Objektbestand: {path}")
@@ -160,27 +145,15 @@ def inventory_lfs_objects(repository_root: Path) -> LfsInventory:
                 f"LFS-Objektpfad und SHA-256 driften: {path.name} != {measured_hash}"
             )
         seen.add(path.name)
-        objects += 1
         total += measured_size
-    return LfsInventory(objects, total)
+    return LfsInventory(len(seen), total)
 
 
-def check_lfs_budget(
-    budget: LfsBudget,
-    *,
-    run: LfsInventory,
-    total: LfsInventory,
-) -> None:
-    """Enforce hard run/total limits and emit one total warning threshold."""
-
+def check_lfs_budget(budget: LfsBudget, *, run: LfsInventory, total: LfsInventory) -> None:
     if run.objects > budget.max_run_objects:
-        raise LfsBudgetError(
-            f"Laufobjekte {run.objects} überschreiten {budget.max_run_objects}"
-        )
+        raise LfsBudgetError(f"Laufobjekte {run.objects} überschreiten {budget.max_run_objects}")
     if run.bytes > budget.max_run_bytes:
-        raise LfsBudgetError(
-            f"Laufbytes {run.bytes} überschreiten {budget.max_run_bytes}"
-        )
+        raise LfsBudgetError(f"Laufbytes {run.bytes} überschreiten {budget.max_run_bytes}")
     if total.bytes > budget.block_total_bytes:
         raise LfsBudgetError(
             f"LFS-Blockschwelle überschritten: {total.bytes} > {budget.block_total_bytes}"
@@ -203,7 +176,7 @@ def _pointer_from_path(path: Path) -> LfsPointer | None:
 
 
 class LfsStorageAdapter:
-    """Local Git-LFS working-tree adapter; never commits or pushes."""
+    """Local Git-LFS working-tree adapter; never commits, pushes, or transfers."""
 
     backend = StorageBackend.LFS
 
@@ -213,7 +186,10 @@ class LfsStorageAdapter:
         self.artifact_root = normalize_posix_path(config.artifact_root)
 
     def _relative_path(self, logical_key: str) -> str:
-        return normalize_posix_path(f"{self.artifact_root}/{normalize_posix_path(logical_key)}")
+        normalized = normalize_posix_path(logical_key)
+        if normalized == self.artifact_root or normalized.startswith(f"{self.artifact_root}/"):
+            return normalized
+        return normalize_posix_path(f"{self.artifact_root}/{normalized}")
 
     def _target(self, logical_key: str) -> Path:
         return self.repository_root / self._relative_path(logical_key)
@@ -232,23 +208,12 @@ class LfsStorageAdapter:
             raise LfsIntegrityError("Vorhandenes LFS-Ziel besitzt anderen Inhalt")
         return reference
 
-    def materialize(
-        self,
-        intent: StorageIntent,
-        *,
-        temp_root: Path,
-        ledger: EffectLedger,
-    ) -> PreparedObject:
+    def materialize(self, intent: StorageIntent, *, temp_root: Path, ledger: EffectLedger) -> PreparedObject:
         if ledger.mode is not RunMode.MATERIALIZE:
             raise LfsIntegrityError("LFS-Materialisierung benötigt RunMode materialize")
         target = Path(temp_root) / normalize_posix_path(intent.logical_key)
         atomic_write_bytes(target, intent.source_path.read_bytes(), allowed_root=Path(temp_root))
-        ledger.record(
-            EffectKind.TEMP_FILE,
-            target.absolute().as_posix(),
-            sha256=intent.sha256,
-            size=intent.size,
-        )
+        ledger.record(EffectKind.TEMP_FILE, target.absolute().as_posix(), sha256=intent.sha256, size=intent.size)
         return PreparedObject(
             artifact_id=intent.artifact_id,
             logical_key=intent.logical_key,
@@ -260,40 +225,50 @@ class LfsStorageAdapter:
             rights_state=intent.rights_state,
         )
 
-    def apply(
-        self,
-        prepared: PreparedObject,
-        *,
-        ledger: EffectLedger,
-    ) -> StorageReference:
+    def export(self, reference: StorageReference, *, temp_root: Path, ledger: EffectLedger) -> PreparedObject:
+        if ledger.mode is not RunMode.MATERIALIZE:
+            raise LfsIntegrityError("LFS-Export benötigt RunMode materialize")
+        if reference.storage_backend is not StorageBackend.LFS:
+            raise LfsIntegrityError("Referenz gehört nicht zum LFS-Backend")
+        source = self.repository_root / normalize_posix_path(reference.relative_path)
+        pointer = _pointer_from_path(source)
+        payload_source = (
+            verify_lfs_object(self.repository_root, oid=pointer.oid, size=pointer.size)
+            if pointer is not None
+            else source
+        )
+        measured_size, measured_hash = hash_file(payload_source)
+        if (measured_size, measured_hash) != (reference.size, reference.sha256):
+            raise LfsIntegrityError("LFS-Exportquelle und Referenz driften")
+        target = Path(temp_root) / normalize_posix_path(reference.relative_path)
+        atomic_write_bytes(target, payload_source.read_bytes(), allowed_root=Path(temp_root))
+        ledger.record(EffectKind.TEMP_FILE, target.absolute().as_posix(), sha256=measured_hash, size=measured_size)
+        return PreparedObject(
+            artifact_id=reference.artifact_id,
+            logical_key=reference.relative_path,
+            path=target,
+            temp_root=Path(temp_root),
+            sha256=measured_hash,
+            size=measured_size,
+            visibility=reference.visibility,
+            rights_state=reference.rights_state,
+        )
+
+    def apply(self, prepared: PreparedObject, *, ledger: EffectLedger) -> StorageReference:
         if ledger.mode is not RunMode.APPLY:
             raise LfsIntegrityError("LFS-Publikation benötigt RunMode apply")
         validate_lfs_tracking(self.repository_root / ".gitattributes")
         total_before = inventory_lfs_objects(self.repository_root)
-        total_after = LfsInventory(
-            total_before.objects + 1,
-            total_before.bytes + prepared.size,
-        )
         check_lfs_budget(
             LfsBudget.from_config(self.config),
             run=LfsInventory(1, prepared.size),
-            total=total_after,
+            total=LfsInventory(total_before.objects + 1, total_before.bytes + prepared.size),
         )
         relative = self._relative_path(prepared.logical_key)
         target = self.repository_root / relative
         atomic_write_bytes(target, prepared.path.read_bytes(), allowed_root=self.repository_root)
-        ledger.record(
-            EffectKind.REPOSITORY_FILE,
-            relative,
-            sha256=prepared.sha256,
-            size=prepared.size,
-        )
-        ledger.record(
-            EffectKind.LFS,
-            relative,
-            sha256=prepared.sha256,
-            size=prepared.size,
-        )
+        ledger.record(EffectKind.REPOSITORY_FILE, relative, sha256=prepared.sha256, size=prepared.size)
+        ledger.record(EffectKind.LFS, relative, sha256=prepared.sha256, size=prepared.size)
         reference = StorageReference(
             artifact_id=prepared.artifact_id,
             relative_path=relative,
