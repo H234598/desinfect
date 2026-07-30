@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from enum import StrEnum
+import math
 from pathlib import Path, PurePosixPath
 import re
 from typing import Any, Iterable, Mapping
@@ -12,9 +13,13 @@ from typing import Any, Iterable, Mapping
 from scripts.rki_pipeline.io_utils import normalize_posix_path
 
 SCHEMA_VERSION = "1.0.0"
+CANONICAL_RKI_BASE_URL = "https://edoc.rki.de"
+CANONICAL_RKI_HOSTS = ("edoc.rki.de",)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _MD5_RE = re.compile(r"^[0-9a-f]{32}$")
-_HANDLE_RE = re.compile(r"^(?P<prefix>[0-9]+)/(?P<number>[0-9]+)(?:\.(?P<version>[0-9]+))?$")
+_HANDLE_RE = re.compile(
+    r"^(?P<prefix>[0-9]+)/(?P<number>[0-9]+)(?:\.(?P<version>[0-9]+))?$"
+)
 
 
 class Scope(StrEnum):
@@ -45,14 +50,25 @@ class RecordState(StrEnum):
     ERROR = "error"
 
 
+def _finite_number(value: object, name: str) -> float:
+    """Return one finite non-boolean number or raise a stable API error."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} muss eine endliche Zahl sein")
+    converted = float(value)
+    if not math.isfinite(converted):
+        raise ValueError(f"{name} muss eine endliche Zahl sein")
+    return converted
+
+
 @dataclass(frozen=True, slots=True)
 class SourceConfig:
     """Validated, fixed RKI endpoint and bounded network policy."""
 
-    base_url: str = "https://edoc.rki.de"
+    base_url: str = CANONICAL_RKI_BASE_URL
     issues_root_handle: str = "176904/10"
     articles_handle: str = "176904/45"
-    allowed_hosts: tuple[str, ...] = ("edoc.rki.de",)
+    allowed_hosts: tuple[str, ...] = CANONICAL_RKI_HOSTS
     user_agent: str = "RKI-EpidBull-Research-Downloader/2.0"
     delay_seconds: float = 1.25
     timeout_seconds: float = 60.0
@@ -66,20 +82,53 @@ class SourceConfig:
     def __post_init__(self) -> None:
         """Reject unsafe or nonsensical source configuration."""
 
-        if not self.base_url.startswith("https://") or self.base_url.endswith("/"):
-            raise ValueError("base_url muss eine HTTPS-URL ohne abschließenden Slash sein")
-        if not self.allowed_hosts or any(not host or "/" in host for host in self.allowed_hosts):
-            raise ValueError("allowed_hosts muss nichtleere Hostnamen enthalten")
-        if self.delay_seconds < 0 or self.timeout_seconds <= 0:
-            raise ValueError("Delay darf nicht negativ und Timeout muss positiv sein")
-        if not 0 <= self.max_redirects <= 10:
-            raise ValueError("max_redirects liegt außerhalb des sicheren Bereichs")
-        if not 1 <= self.max_listing_pages <= 100_000:
-            raise ValueError("max_listing_pages liegt außerhalb des sicheren Bereichs")
-        for name in ("max_html_bytes", "max_pdf_bytes", "robots_max_bytes"):
+        if self.base_url != CANONICAL_RKI_BASE_URL:
+            raise ValueError(
+                f"base_url muss die kanonische RKI-Basis-URL "
+                f"{CANONICAL_RKI_BASE_URL} sein"
+            )
+        if self.allowed_hosts != CANONICAL_RKI_HOSTS:
+            raise ValueError(
+                "allowed_hosts muss exakt den kanonischen RKI-Host "
+                "('edoc.rki.de',) enthalten"
+            )
+        if type(self.issues_root_handle) is not str or not _HANDLE_RE.fullmatch(
+            self.issues_root_handle
+        ):
+            raise ValueError("issues_root_handle muss ein gültiger RKI-Handle sein")
+        if type(self.articles_handle) is not str or not _HANDLE_RE.fullmatch(
+            self.articles_handle
+        ):
+            raise ValueError("articles_handle muss ein gültiger RKI-Handle sein")
+        if type(self.user_agent) is not str or not self.user_agent.strip():
+            raise ValueError("user_agent muss eine nichtleere Zeichenkette sein")
+        delay = _finite_number(self.delay_seconds, "delay_seconds")
+        timeout = _finite_number(self.timeout_seconds, "timeout_seconds")
+        if delay < 0 or timeout <= 0:
+            raise ValueError(
+                "Delay darf nicht negativ und Timeout muss positiv sein"
+            )
+        if type(self.max_redirects) is not int or not 0 <= self.max_redirects <= 10:
+            raise ValueError(
+                "max_redirects liegt außerhalb des sicheren Bereichs"
+            )
+        if (
+            type(self.max_listing_pages) is not int
+            or not 1 <= self.max_listing_pages <= 100_000
+        ):
+            raise ValueError(
+                "max_listing_pages liegt außerhalb des sicheren Bereichs"
+            )
+        for name in (
+            "max_html_bytes",
+            "max_pdf_bytes",
+            "robots_max_bytes",
+        ):
             value = getattr(self, name)
             if type(value) is not int or value <= 0:
                 raise ValueError(f"{name} muss eine positive Ganzzahl sein")
+        if type(self.respect_robots) is not bool:
+            raise ValueError("respect_robots muss ein Boolean sein")
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,8 +160,12 @@ class PdfCandidate:
     def __post_init__(self) -> None:
         """Validate repository checksum syntax when provided."""
 
-        if self.expected_md5 is not None and not _MD5_RE.fullmatch(self.expected_md5):
-            raise ValueError("expected_md5 muss ein kleingeschriebener MD5-Wert sein")
+        if self.expected_md5 is not None and not _MD5_RE.fullmatch(
+            self.expected_md5
+        ):
+            raise ValueError(
+                "expected_md5 muss ein kleingeschriebener MD5-Wert sein"
+            )
 
     def to_dict(self) -> dict[str, str | None]:
         """Return stable JSON data."""
@@ -154,7 +207,9 @@ class ItemMetadata:
         if match is None:
             raise ValueError(f"Ungültiger RKI-Handle: {self.item_handle}")
         version = int(match.group("version") or "1")
-        return f"rki-{match.group('prefix')}-{match.group('number')}-v{version}"
+        return (
+            f"rki-{match.group('prefix')}-{match.group('number')}-v{version}"
+        )
 
     @property
     def version(self) -> int:
@@ -189,20 +244,58 @@ class GrabberRequest:
     def __post_init__(self) -> None:
         """Validate API boundaries without touching disk or network."""
 
-        if not 1900 <= self.from_year <= 9999 or not 1900 <= self.to_year <= 9999:
-            raise ValueError("Jahresgrenzen müssen zwischen 1900 und 9999 liegen")
+        if not isinstance(self.scope, Scope):
+            raise ValueError("scope muss ein Scope-Wert sein")
+        if type(self.from_year) is not int or type(self.to_year) is not int:
+            raise ValueError("Jahresgrenzen müssen Ganzzahlen sein")
+        if (
+            not 1900 <= self.from_year <= 9999
+            or not 1900 <= self.to_year <= 9999
+        ):
+            raise ValueError(
+                "Jahresgrenzen müssen zwischen 1900 und 9999 liegen"
+            )
         if self.from_year > self.to_year:
-            raise ValueError("from_year darf nicht größer als to_year sein")
-        if self.max_items is not None and self.max_items < 1:
-            raise ValueError("max_items muss mindestens 1 sein")
-        if self.delay_seconds is not None and self.delay_seconds < 0:
-            raise ValueError("delay_seconds darf nicht negativ sein")
-        if self.timeout_seconds is not None and self.timeout_seconds <= 0:
-            raise ValueError("timeout_seconds muss positiv sein")
-        if self.max_html_bytes is not None and self.max_html_bytes <= 0:
-            raise ValueError("max_html_bytes muss positiv sein")
-        if self.max_pdf_bytes is not None and self.max_pdf_bytes <= 0:
-            raise ValueError("max_pdf_bytes muss positiv sein")
+            raise ValueError(
+                "from_year darf nicht größer als to_year sein"
+            )
+        if type(self.dry_run) is not bool or type(self.force) is not bool:
+            raise ValueError("dry_run und force müssen Boolean-Werte sein")
+        if self.max_items is not None:
+            if type(self.max_items) is not int or self.max_items < 1:
+                raise ValueError("max_items muss eine positive Ganzzahl sein")
+        if self.respect_robots is not None and type(self.respect_robots) is not bool:
+            raise ValueError("respect_robots muss Boolean oder None sein")
+        if self.delay_seconds is not None:
+            delay = _finite_number(self.delay_seconds, "delay_seconds")
+            if delay < 0:
+                raise ValueError("delay_seconds darf nicht negativ sein")
+        if self.timeout_seconds is not None:
+            timeout = _finite_number(
+                self.timeout_seconds,
+                "timeout_seconds",
+            )
+            if timeout <= 0:
+                raise ValueError("timeout_seconds muss positiv sein")
+        for name in ("max_html_bytes", "max_pdf_bytes"):
+            value = getattr(self, name)
+            if value is not None and (
+                type(value) is not int or value <= 0
+            ):
+                raise ValueError(
+                    f"{name} muss eine positive Ganzzahl sein"
+                )
+        if not isinstance(self.output_root, Path):
+            raise ValueError("output_root muss ein pathlib.Path sein")
+        if self.result_path is not None and not isinstance(
+            self.result_path,
+            Path,
+        ):
+            raise ValueError("result_path muss ein pathlib.Path oder None sein")
+        for name in ("contact", "user_agent"):
+            value = getattr(self, name)
+            if value is not None and type(value) is not str:
+                raise ValueError(f"{name} muss eine Zeichenkette oder None sein")
 
     def to_public_dict(self) -> dict[str, Any]:
         """Return result-safe request metadata without contact information or paths."""
@@ -277,7 +370,10 @@ class ArtifactRecord:
             normalize_posix_path(PurePosixPath(self.relative_path))
         if self.sha256 is not None and not _SHA256_RE.fullmatch(self.sha256):
             raise ValueError("sha256 hat kein gültiges Format")
-        for value, name in ((self.md5, "md5"), (self.expected_md5, "expected_md5")):
+        for value, name in (
+            (self.md5, "md5"),
+            (self.expected_md5, "expected_md5"),
+        ):
             if value is not None and not _MD5_RE.fullmatch(value):
                 raise ValueError(f"{name} hat kein gültiges Format")
         if self.bytes is not None and self.bytes < 0:
@@ -309,7 +405,11 @@ class ArtifactRecord:
             "etag": self.etag,
             "last_modified": self.last_modified,
             "error_code": self.error_code,
-            "error_message": None if self.error_message is None else self.error_message[:1000],
+            "error_message": (
+                None
+                if self.error_message is None
+                else self.error_message[:1000]
+            ),
         }
 
 
@@ -321,7 +421,11 @@ class AffectedPeriods:
     months: set[str] = field(default_factory=set)
     years: set[int] = field(default_factory=set)
 
-    def add(self, publication_date: str | None, year: int | None) -> None:
+    def add(
+        self,
+        publication_date: str | None,
+        year: int | None,
+    ) -> None:
         """Add exact ISO periods when a full date exists and at least the year otherwise."""
 
         if publication_date is not None:
@@ -381,10 +485,18 @@ class GrabberResult:
             "record_errors": states.count(RecordState.ERROR),
             "issues": len(self.issues),
             "downloads_occurred": any(
-                state in {RecordState.DOWNLOADED, RecordState.RESUMED} for state in states
+                state in {
+                    RecordState.DOWNLOADED,
+                    RecordState.RESUMED,
+                }
+                for state in states
             ),
             "content_changed": any(
-                state in {RecordState.DOWNLOADED, RecordState.RESUMED} for state in states
+                state in {
+                    RecordState.DOWNLOADED,
+                    RecordState.RESUMED,
+                }
+                for state in states
             ),
         }
 
@@ -425,7 +537,11 @@ class GrabberResult:
 def utc_now() -> str:
     """Return a canonical UTC timestamp with second precision."""
 
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
 
 
 def result_outcome(
@@ -442,7 +558,13 @@ def result_outcome(
         return Outcome.BLOCKED
     if materialized_issues:
         successful_records = tuple(
-            record for record in materialized_records if record.state is not RecordState.ERROR
+            record
+            for record in materialized_records
+            if record.state is not RecordState.ERROR
         )
-        return Outcome.PARTIAL if successful_records else Outcome.FAILED
+        return (
+            Outcome.PARTIAL
+            if successful_records
+            else Outcome.FAILED
+        )
     return Outcome.SUCCESS
