@@ -16,6 +16,7 @@ from scripts.rki_pipeline.storage.lfs import (
     LfsInventory,
     LfsStorageAdapter,
     check_lfs_budget,
+    lfs_object_path,
     parse_lfs_pointer,
     validate_lfs_tracking,
     verify_lfs_object,
@@ -145,13 +146,23 @@ def test_lfs_adapter_materializes_then_applies_without_git_commit(tmp_path: Path
     apply_ledger = EffectLedger(RunMode.APPLY)
     reference = adapter.apply(prepared, ledger=apply_ledger)
     target = repository / reference.relative_path
-    assert target.read_bytes() == source.read_bytes()
+    pointer = parse_lfs_pointer(target.read_text(encoding="utf-8"))
+    assert pointer.oid == intent.sha256
+    assert pointer.size == intent.size
+    object_path = lfs_object_path(repository, pointer.oid)
+    assert object_path.read_bytes() == source.read_bytes()
     assert {event.kind for event in apply_ledger.events} >= {
         EffectKind.REPOSITORY_FILE,
         EffectKind.LFS,
     }
     assert not any(event.kind is EffectKind.GIT_COMMIT for event in apply_ledger.events)
     adapter.verify(reference)
+
+    before = sorted(path.as_posix() for path in (repository / ".git" / "lfs" / "objects").rglob("*"))
+    repeated = adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
+    after = sorted(path.as_posix() for path in (repository / ".git" / "lfs" / "objects").rglob("*"))
+    assert repeated == reference
+    assert after == before
 
 
 def test_lfs_adapter_verifies_pointer_against_local_object(tmp_path: Path) -> None:
@@ -173,6 +184,11 @@ def test_lfs_adapter_verifies_pointer_against_local_object(tmp_path: Path) -> No
         encoding="utf-8",
     )
     adapter = LfsStorageAdapter(repository_root=repository, config=config())
-    reference = adapter.reference_for_path(target, artifact_id="artifact-1", visibility="repository_authorized", rights_state="approved")
+    reference = adapter.reference_for_path(
+        target,
+        artifact_id="artifact-1",
+        visibility="repository_authorized",
+        rights_state="approved",
+    )
     adapter.verify(reference)
     assert reference.sha256 == oid
