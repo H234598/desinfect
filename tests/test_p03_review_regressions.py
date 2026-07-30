@@ -1,7 +1,6 @@
 """Regression tests for the actionable PR #7 review findings."""
 from __future__ import annotations
 
-import argparse
 import fcntl
 import math
 import os
@@ -9,9 +8,18 @@ from pathlib import Path
 
 import pytest
 
+from scripts.rki_grabber.config import load_source_config
 from scripts.rki_grabber.download import PdfDownloadError, download_pdf
-from scripts.rki_grabber.models import GrabberRequest, PdfCandidate, Scope, SourceConfig
-from scripts.rki_grabber.rki_epidbull_grabber import _request_from_args, build_parser
+from scripts.rki_grabber.models import (
+    GrabberRequest,
+    PdfCandidate,
+    Scope,
+    SourceConfig,
+)
+from scripts.rki_grabber.rki_epidbull_grabber import (
+    _request_from_args,
+    build_parser,
+)
 from scripts.rki_grabber.service import RkiGrabberService
 from tests.fakes import FakeResponse, FakeTransport
 
@@ -19,6 +27,22 @@ ROOT = Path(__file__).resolve().parents[1]
 BASE = "https://edoc.rki.de"
 PDF_URL = f"{BASE}/bitstream/handle/176904/12345.2/minimal.pdf"
 PDF = (ROOT / "tests" / "fixtures" / "pdf" / "minimal.pdf").read_bytes()
+
+
+def write_config(tmp_path: Path, body: str) -> Path:
+    """Write one complete schema-v1 source configuration fixture."""
+
+    path = tmp_path / "rki-source.toml"
+    path.write_text(
+        "schema_version = 1\n"
+        "[source]\n"
+        'allowed_hosts = ["edoc.rki.de"]\n'
+        "[network]\n"
+        "[limits]\n"
+        f"{body}",
+        encoding="utf-8",
+    )
+    return path
 
 
 def test_source_config_rejects_every_network_boundary_override() -> None:
@@ -52,6 +76,37 @@ def test_grabber_request_rejects_wrong_runtime_types_and_nonfinite_numbers() -> 
             GrabberRequest(**values)
 
 
+def test_config_normalizes_oversized_numeric_errors(tmp_path: Path) -> None:
+    """Huge TOML integers must follow the public ValueError contract."""
+
+    enormous = "9" * 400
+    path = write_config(
+        tmp_path,
+        f"delay_seconds = {enormous}\n",
+    )
+    with pytest.raises(
+        ValueError,
+        match="delay_seconds muss eine endliche Zahl sein",
+    ):
+        load_source_config(path)
+
+
+def test_config_rejects_non_string_handles_and_user_agent(tmp_path: Path) -> None:
+    """Lists and numbers may not be silently converted into URLs or headers."""
+
+    cases = (
+        'issues_root_handle = ["176904/10"]\n',
+        "articles_handle = 176904\n",
+        "user_agent = 123\n",
+    )
+    for index, body in enumerate(cases):
+        case_root = tmp_path / str(index)
+        case_root.mkdir()
+        path = write_config(case_root, body)
+        with pytest.raises(ValueError, match="muss eine Zeichenkette sein"):
+            load_source_config(path)
+
+
 def test_cli_inherits_robots_policy_unless_no_robots_is_explicit() -> None:
     """An absent CLI override must preserve the selected TOML policy."""
 
@@ -75,7 +130,10 @@ def test_filtered_listing_link_does_not_create_false_pagination_failure() -> Non
         def _html(self, url: str):  # type: ignore[override]
             return listing, {}, url
 
-    service = ListingService(SourceConfig(delay_seconds=0), object())  # type: ignore[arg-type]
+    service = ListingService(
+        SourceConfig(delay_seconds=0),
+        object(),  # type: ignore[arg-type]
+    )
     items = list(
         service.iter_submission_items(
             collection_handle="176904/1996",
@@ -108,7 +166,11 @@ def test_download_fails_fast_when_target_lock_is_held(tmp_path: Path) -> None:
         from scripts.rki_grabber.http import PoliteClient
 
         client = PoliteClient(
-            SourceConfig(delay_seconds=0, timeout_seconds=1, respect_robots=False),
+            SourceConfig(
+                delay_seconds=0,
+                timeout_seconds=1,
+                respect_robots=False,
+            ),
             transport=transport,
             respect_robots=False,
             clock=lambda: 0.0,
@@ -133,5 +195,8 @@ def test_api_documentation_assigns_schema_validation_to_callers() -> None:
     """Documentation must not claim that to_dict() performs validation."""
 
     api = (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
-    assert "to_dict()` liefert ausschließlich JSON-kompatible Werte und validiert" not in api
+    assert (
+        "to_dict()` liefert ausschließlich JSON-kompatible Werte und validiert"
+        not in api
+    )
     assert "Schema-Validierung" in api
