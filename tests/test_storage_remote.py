@@ -21,7 +21,7 @@ class MemoryClient:
     def head(self, key: str):
         self.calls.append(("head", key))
         value = self.objects.get(key)
-        return None if value is None else dict(value)
+        return None if value is None else {name: data for name, data in value.items() if name != "payload"}
 
     def put(self, key: str, source_path: Path, sha256: str, size: int):
         self.calls.append(("put", key))
@@ -32,13 +32,18 @@ class MemoryClient:
             "artifact_id": "artifact-1",
             "visibility": "public",
             "rights_state": "approved",
+            "payload": source_path.read_bytes(),
         }
         return f"https://example.invalid/{key}"
+
+    def get(self, key: str, target_path: Path):
+        self.calls.append(("get", key))
+        target_path.write_bytes(self.objects[key]["payload"])
 
     def list(self, prefix: str):
         self.calls.append(("list", prefix))
         return tuple(
-            {"key": key, **metadata}
+            {"key": key, **{name: data for name, data in metadata.items() if name != "payload"}}
             for key, metadata in sorted(self.objects.items())
             if key.startswith(prefix)
         )
@@ -109,6 +114,7 @@ def test_remote_checksum_conflict_fails_closed(tmp_path: Path) -> None:
                 "artifact_id": "artifact-1",
                 "visibility": "public",
                 "rights_state": "approved",
+                "payload": b"wrong!",
             }
         }
     )
