@@ -1,0 +1,86 @@
+"""Repository-level contracts for P05 dispatcher, pipeline, and backfill workflows."""
+from __future__ import annotations
+
+from pathlib import Path
+import re
+
+import yaml
+
+from scripts.validate_ci_mutation_safety import validate_repository
+
+ROOT = Path(__file__).resolve().parents[1]
+WORKFLOWS = ROOT / ".github" / "workflows"
+
+
+def load(name: str):
+    path = WORKFLOWS / name
+    return path, yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def triggers(data):
+    return data.get("on", data.get(True, {}))
+
+
+def test_repository_has_exactly_one_schedule() -> None:
+    scheduled: list[str] = []
+    for path in sorted(WORKFLOWS.glob("*.y*ml")):
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if "schedule" in triggers(data):
+            scheduled.append(path.name)
+    assert scheduled == ["rki-dispatcher.yml"]
+
+
+def test_dispatcher_is_read_only_and_calls_reusable_pipeline() -> None:
+    path, data = load("rki-dispatcher.yml")
+    assert set(triggers(data)) == {"schedule", "workflow_dispatch"}
+    assert data["permissions"] == {"contents": "read"}
+    pipeline = data["jobs"]["pipeline"]
+    assert pipeline["uses"] == "./.github/workflows/rki-pipeline.yml"
+    assert pipeline["secrets"] == "inherit"
+    text = path.read_text(encoding="utf-8")
+    assert "git commit" not in text
+    assert "git push" not in text
+
+
+def test_pipeline_owns_the_only_writer_concurrency_and_never_cancels() -> None:
+    path, data = load("rki-pipeline.yml")
+    assert set(triggers(data)) == {"workflow_call", "workflow_dispatch"}
+    assert data["permissions"] == {"contents": "read"}
+    assert data["concurrency"] == {
+        "group": "desinfect-repository-writer",
+        "cancel-in-progress": False,
+    }
+    text = path.read_text(encoding="utf-8")
+    assert "--force" not in text
+    assert "persist-credentials: false" in text
+
+
+def test_app_token_is_repository_scoped_and_created_after_validation() -> None:
+    _path, data = load("rki-pipeline.yml")
+    steps = data["jobs"]["pipeline"]["steps"]
+    names = [step["name"] for step in steps]
+    validation = names.index("Run one global blocking validation")
+    token = names.index("Create repository-scoped Wachhund token")
+    writer = names.index("Commit and push safely")
+    assert validation < token < writer
+    token_step = steps[token]
+    assert re.fullmatch(r"actions/create-github-app-token@[0-9a-f]{40}", token_step["uses"].split(" #", 1)[0])
+    assert token_step["with"]["owner"] == "H234598"
+    assert token_step["with"]["repositories"] == "desinfect"
+    assert token_step["with"]["permission-contents"] == "write"
+    assert "GITHUB_TOKEN" not in str(steps[writer])
+
+
+def test_backfill_is_manual_bounded_and_requires_literal_apply_confirmation() -> None:
+    path, data = load("rki-backfill.yml")
+    assert set(triggers(data)) == {"workflow_dispatch"}
+    inputs = triggers(data)["workflow_dispatch"]["inputs"]
+    assert {"from_year", "to_year", "max_tasks", "run_mode", "confirm_apply"} <= set(inputs)
+    text = path.read_text(encoding="utf-8")
+    assert '[[ "$CONFIRM_APPLY" != "APPLY" ]]' in text
+    assert "schedule:" not in text
+    assert data["jobs"]["pipeline"]["uses"] == "./.github/workflows/rki-pipeline.yml"
+
+
+def test_variant_b_validator_accepts_repository_workflows() -> None:
+    assert validate_repository(ROOT) == []
