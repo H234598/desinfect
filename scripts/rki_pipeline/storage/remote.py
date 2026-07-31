@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Protocol, runtime_checkable
 
 from scripts.rki_pipeline.io_utils import atomic_write_bytes, normalize_posix_path
@@ -35,7 +36,7 @@ class RemoteStorageAdapter:
 
     def __init__(self, *, client: RemoteClient, prefix: str, object_prefix: str) -> None:
         if not isinstance(client, RemoteClient):
-            raise TypeError("client erfüllt das RemoteClient-Protokoll nicht")
+            raise StorageError("client erfüllt das RemoteClient-Protokoll nicht")
         self.client = client
         self.prefix = normalize_posix_path(prefix)
         self.object_prefix = object_prefix
@@ -135,6 +136,21 @@ class RemoteStorageAdapter:
             rights_state=reference.rights_state,
         )
 
+    @staticmethod
+    def _snapshot_prepared(prepared: PreparedObject, directory: Path) -> tuple[Path, int, str]:
+        source = Path(prepared.path)
+        if source.is_symlink() or not source.is_file():
+            raise StorageError("Vorbereitetes Remote-Objekt ist keine reguläre Datei")
+        payload = source.read_bytes()
+        snapshot = directory / "payload.bin"
+        atomic_write_bytes(snapshot, payload, allowed_root=directory)
+        size, sha256 = hash_file(snapshot)
+        if (size, sha256) != (prepared.size, prepared.sha256):
+            raise StorageError(
+                "Vorbereitetes Remote-Objekt besitzt falsche Größe/SHA-256"
+            )
+        return snapshot, size, sha256
+
     def apply(self, prepared: PreparedObject, *, ledger: EffectLedger) -> StorageReference:
         if ledger.mode is not RunMode.APPLY:
             raise StorageError("Remote-Publikation benötigt RunMode apply")
@@ -144,14 +160,31 @@ class RemoteStorageAdapter:
             reference = self._reference_from_metadata(key, metadata, fallback=prepared)
             if (reference.sha256, reference.size) != (prepared.sha256, prepared.size):
                 raise StorageError(f"Remote-Konflikt für {key}")
+            self.verify(reference)
             return reference
-        public_reference = self.client.put(key, prepared.path, prepared.sha256, prepared.size)
-        ledger.record(self.effect_kind, key, sha256=prepared.sha256, size=prepared.size)
+
+        with TemporaryDirectory(prefix="desinfect-remote-upload-") as temporary:
+            snapshot, measured_size, measured_hash = self._snapshot_prepared(
+                prepared,
+                Path(temporary),
+            )
+            public_reference = self.client.put(
+                key,
+                snapshot,
+                measured_hash,
+                measured_size,
+            )
+        ledger.record(
+            self.effect_kind,
+            key,
+            sha256=measured_hash,
+            size=measured_size,
+        )
         reference = self._reference(
             artifact_id=prepared.artifact_id,
             key=key,
-            sha256=prepared.sha256,
-            size=prepared.size,
+            sha256=measured_hash,
+            size=measured_size,
             visibility=prepared.visibility,
             rights_state=prepared.rights_state,
             public_reference=public_reference,
@@ -167,6 +200,14 @@ class RemoteStorageAdapter:
             raise StorageError(f"Remote-Objekt fehlt: {reference.relative_path}")
         if (metadata.get("sha256"), metadata.get("size")) != (reference.sha256, reference.size):
             raise StorageError(f"Remote-Objektintegrität weicht ab: {reference.relative_path}")
+        with TemporaryDirectory(prefix="desinfect-remote-verify-") as temporary:
+            target = Path(temporary) / "payload.bin"
+            self.client.get(reference.relative_path, target)
+            measured_size, measured_hash = hash_file(target)
+        if (measured_hash, measured_size) != (reference.sha256, reference.size):
+            raise StorageError(
+                f"Remote-Objektintegrität weicht ab: {reference.relative_path}"
+            )
 
     def list_references(self) -> tuple[StorageReference, ...]:
         references: list[StorageReference] = []
