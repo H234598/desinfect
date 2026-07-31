@@ -167,6 +167,8 @@ def check_lfs_budget(budget: LfsBudget, *, run: LfsInventory, total: LfsInventor
 
 
 def _pointer_from_path(path: Path) -> LfsPointer | None:
+    if path.is_symlink():
+        raise LfsIntegrityError(f"Symlink als LFS-Artefakt ist unzulässig: {path}")
     if path.stat().st_size > 1024:
         return None
     payload = path.read_bytes()
@@ -181,7 +183,12 @@ class LfsStorageAdapter:
     backend = StorageBackend.LFS
 
     def __init__(self, *, repository_root: Path, config: LfsConfig) -> None:
-        self.repository_root = Path(repository_root).absolute()
+        try:
+            self.repository_root = Path(repository_root).resolve(strict=True)
+        except OSError as exc:
+            raise LfsIntegrityError(f"Repositoryroot ist nicht auflösbar: {repository_root}") from exc
+        if not self.repository_root.is_dir():
+            raise LfsIntegrityError(f"Repositoryroot ist kein Verzeichnis: {repository_root}")
         self.config = config
         self.artifact_root = normalize_posix_path(config.artifact_root)
 
@@ -194,9 +201,47 @@ class LfsStorageAdapter:
     def _target(self, logical_key: str) -> Path:
         return self.repository_root / self._relative_path(logical_key)
 
+    def _validated_source(self, path: Path) -> tuple[Path, str]:
+        candidate = Path(path)
+        if not candidate.is_absolute():
+            candidate = self.repository_root / candidate
+        if candidate.is_symlink():
+            raise LfsIntegrityError(f"Symlink als LFS-Artefakt ist unzulässig: {candidate}")
+        try:
+            resolved = candidate.resolve(strict=True)
+            relative = resolved.relative_to(self.repository_root).as_posix()
+        except (OSError, ValueError) as exc:
+            raise LfsIntegrityError("LFS-Pfad liegt außerhalb des Repositoryroots") from exc
+        if not resolved.is_file():
+            raise LfsIntegrityError(f"LFS-Artefakt ist keine reguläre Datei: {resolved}")
+        return resolved, normalize_posix_path(relative)
+
+    @staticmethod
+    def _prepared_payload(prepared: PreparedObject) -> bytes:
+        path = Path(prepared.path)
+        if path.is_symlink() or not path.is_file():
+            raise LfsIntegrityError("Vorbereitetes LFS-Objekt ist keine reguläre Datei")
+        payload = path.read_bytes()
+        measured_hash = hashlib.sha256(payload).hexdigest()
+        if (len(payload), measured_hash) != (prepared.size, prepared.sha256):
+            raise LfsIntegrityError(
+                "Vorbereitetes LFS-Objekt besitzt falsche Größe/SHA-256"
+            )
+        return payload
+
+    @staticmethod
+    def _run_inventory(ledger: EffectLedger, prepared_size: int) -> LfsInventory:
+        prior = [event for event in ledger.events if event.kind is EffectKind.LFS]
+        if any(event.size is None for event in prior):
+            raise LfsBudgetError("LFS-Ledger enthält ein Ereignis ohne Größe")
+        return LfsInventory(
+            objects=len(prior) + 1,
+            bytes=sum(event.size or 0 for event in prior) + prepared_size,
+        )
+
     def exists(self, intent: StorageIntent) -> StorageReference | None:
         target = self._target(intent.logical_key)
-        if not target.exists():
+        if not target.exists() and not target.is_symlink():
             return None
         reference = self.reference_for_path(
             target,
@@ -230,7 +275,9 @@ class LfsStorageAdapter:
             raise LfsIntegrityError("LFS-Export benötigt RunMode materialize")
         if reference.storage_backend is not StorageBackend.LFS:
             raise LfsIntegrityError("Referenz gehört nicht zum LFS-Backend")
-        source = self.repository_root / normalize_posix_path(reference.relative_path)
+        source, _relative = self._validated_source(
+            self.repository_root / normalize_posix_path(reference.relative_path)
+        )
         pointer = _pointer_from_path(source)
         payload_source = (
             verify_lfs_object(self.repository_root, oid=pointer.oid, size=pointer.size)
@@ -258,15 +305,49 @@ class LfsStorageAdapter:
         if ledger.mode is not RunMode.APPLY:
             raise LfsIntegrityError("LFS-Publikation benötigt RunMode apply")
         validate_lfs_tracking(self.repository_root / ".gitattributes")
-        total_before = inventory_lfs_objects(self.repository_root)
-        check_lfs_budget(
-            LfsBudget.from_config(self.config),
-            run=LfsInventory(1, prepared.size),
-            total=LfsInventory(total_before.objects + 1, total_before.bytes + prepared.size),
-        )
+        payload = self._prepared_payload(prepared)
         relative = self._relative_path(prepared.logical_key)
         target = self.repository_root / relative
-        atomic_write_bytes(target, prepared.path.read_bytes(), allowed_root=self.repository_root)
+        if target.exists() or target.is_symlink():
+            existing = self.reference_for_path(
+                target,
+                artifact_id=prepared.artifact_id,
+                visibility=prepared.visibility,
+                rights_state=prepared.rights_state,
+            )
+            if (existing.sha256, existing.size) != (prepared.sha256, prepared.size):
+                raise LfsIntegrityError(
+                    f"Vorhandenes LFS-Ziel besitzt anderen Inhalt: {relative}"
+                )
+            return existing
+
+        total_before = inventory_lfs_objects(self.repository_root)
+        object_path = lfs_object_path(self.repository_root, prepared.sha256)
+        object_exists = object_path.exists() or object_path.is_symlink()
+        if object_exists:
+            verify_lfs_object(
+                self.repository_root,
+                oid=prepared.sha256,
+                size=prepared.size,
+            )
+        total_after = LfsInventory(
+            total_before.objects + (0 if object_exists else 1),
+            total_before.bytes + (0 if object_exists else prepared.size),
+        )
+        check_lfs_budget(
+            LfsBudget.from_config(self.config),
+            run=self._run_inventory(ledger, prepared.size),
+            total=total_after,
+        )
+
+        if not object_exists:
+            atomic_write_bytes(
+                object_path,
+                payload,
+                allowed_root=self.repository_root,
+            )
+        pointer = LfsPointer(prepared.sha256, prepared.size).to_text().encode("utf-8")
+        atomic_write_bytes(target, pointer, allowed_root=self.repository_root)
         ledger.record(EffectKind.REPOSITORY_FILE, relative, sha256=prepared.sha256, size=prepared.size)
         ledger.record(EffectKind.LFS, relative, sha256=prepared.sha256, size=prepared.size)
         reference = StorageReference(
@@ -291,20 +372,16 @@ class LfsStorageAdapter:
         visibility: str,
         rights_state: str,
     ) -> StorageReference:
-        path = Path(path)
-        try:
-            relative = path.absolute().relative_to(self.repository_root).as_posix()
-        except ValueError as exc:
-            raise LfsIntegrityError("LFS-Pfad liegt außerhalb des Repositoryroots") from exc
-        pointer = _pointer_from_path(path)
+        validated, relative = self._validated_source(path)
+        pointer = _pointer_from_path(validated)
         if pointer is None:
-            size, sha256 = hash_file(path)
+            size, sha256 = hash_file(validated)
         else:
             verify_lfs_object(self.repository_root, oid=pointer.oid, size=pointer.size)
             size, sha256 = pointer.size, pointer.oid
         return StorageReference(
             artifact_id=artifact_id,
-            relative_path=normalize_posix_path(relative),
+            relative_path=relative,
             storage_backend=StorageBackend.LFS,
             storage_object_id=f"sha256:{sha256}",
             sha256=sha256,
@@ -317,9 +394,9 @@ class LfsStorageAdapter:
     def verify(self, reference: StorageReference) -> None:
         if reference.storage_backend is not StorageBackend.LFS:
             raise LfsIntegrityError("Referenz gehört nicht zum LFS-Backend")
-        target = self.repository_root / normalize_posix_path(reference.relative_path)
-        if not target.exists():
-            raise LfsIntegrityError(f"LFS-Artefakt fehlt: {reference.relative_path}")
+        target, _relative = self._validated_source(
+            self.repository_root / normalize_posix_path(reference.relative_path)
+        )
         pointer = _pointer_from_path(target)
         if pointer is not None:
             if (pointer.oid, pointer.size) != (reference.sha256, reference.size):
@@ -334,8 +411,12 @@ class LfsStorageAdapter:
         root = self.repository_root / self.artifact_root
         if not root.exists():
             return ()
+        if root.is_symlink():
+            raise LfsIntegrityError(f"Symlink im LFS-Artefaktbestand: {root}")
         references: list[StorageReference] = []
         for path in sorted(root.rglob("*")):
+            if path.is_symlink():
+                raise LfsIntegrityError(f"Symlink im LFS-Artefaktbestand: {path}")
             if not path.is_file() or path.suffix.lower() not in {".pdf", ".md", ".zip"}:
                 continue
             digest = hashlib.sha256(path.relative_to(root).as_posix().encode("utf-8")).hexdigest()[:24]
