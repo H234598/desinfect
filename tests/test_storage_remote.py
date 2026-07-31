@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 from pathlib import Path
 
 import pytest
 
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
-from scripts.rki_pipeline.storage.base import StorageBackend, StorageError, StorageIntent
+from scripts.rki_pipeline.storage.base import StorageBackend, StorageError, StorageIntent, StorageReference
 from scripts.rki_pipeline.storage.config import ObjectConfig, ReleaseConfig
 from scripts.rki_pipeline.storage.object import ObjectStorageAdapter
 from scripts.rki_pipeline.storage.release import ReleaseStorageAdapter
@@ -61,13 +62,17 @@ def intent(tmp_path: Path) -> StorageIntent:
     )
 
 
+def object_adapter(client: MemoryClient) -> ObjectStorageAdapter:
+    return ObjectStorageAdapter(ObjectConfig("desinfect", "rki/Bulletins"), client)
+
+
 @pytest.mark.parametrize("backend", (StorageBackend.RELEASE, StorageBackend.OBJECT))
 def test_remote_materialize_has_no_client_calls_and_stays_in_temp(tmp_path: Path, backend: StorageBackend) -> None:
     client = MemoryClient()
     adapter = (
         ReleaseStorageAdapter(ReleaseConfig("desinfect-archive", "rki/Bulletins"), client)
         if backend is StorageBackend.RELEASE
-        else ObjectStorageAdapter(ObjectConfig("desinfect", "rki/Bulletins"), client)
+        else object_adapter(client)
     )
     temp_root = tmp_path / "temp"
     temp_root.mkdir()
@@ -84,7 +89,7 @@ def test_remote_apply_is_idempotent_and_returns_backend_neutral_reference(tmp_pa
     adapter = (
         ReleaseStorageAdapter(ReleaseConfig("desinfect-archive", "rki/Bulletins"), client)
         if backend is StorageBackend.RELEASE
-        else ObjectStorageAdapter(ObjectConfig("desinfect", "rki/Bulletins"), client)
+        else object_adapter(client)
     )
     temp_root = tmp_path / "temp"
     temp_root.mkdir()
@@ -118,7 +123,7 @@ def test_remote_checksum_conflict_fails_closed(tmp_path: Path) -> None:
             }
         }
     )
-    adapter = ObjectStorageAdapter(ObjectConfig("desinfect", "rki/Bulletins"), client)
+    adapter = object_adapter(client)
     temp_root = tmp_path / "temp"
     temp_root.mkdir()
     prepared = adapter.materialize(
@@ -129,3 +134,64 @@ def test_remote_checksum_conflict_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(StorageError, match="Konflikt"):
         adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
     assert not any(call[0] == "put" for call in client.calls)
+
+
+def test_invalid_remote_client_raises_storage_error() -> None:
+    class InvalidClient:
+        pass
+
+    with pytest.raises(StorageError, match="RemoteClient"):
+        ObjectStorageAdapter(ObjectConfig("desinfect", "rki/Bulletins"), InvalidClient())
+
+
+def test_remote_apply_rehashes_prepared_path_before_upload(tmp_path: Path) -> None:
+    client = MemoryClient()
+    adapter = object_adapter(client)
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    prepared = adapter.materialize(
+        intent(tmp_path),
+        temp_root=temp_root,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root),
+    )
+    prepared.path.write_bytes(b"tampered after preparation")
+
+    with pytest.raises(StorageError, match="Größe|SHA-256|vorbereitet"):
+        adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
+
+    assert not any(call[0] == "put" for call in client.calls)
+
+
+def test_remote_verify_reads_actual_payload_instead_of_trusting_metadata(tmp_path: Path) -> None:
+    key = "rki/Bulletins/Jahre/1994/archive.zip"
+    expected = b"archive"
+    client = MemoryClient(
+        objects={
+            key: {
+                "sha256": hashlib.sha256(expected).hexdigest(),
+                "size": len(expected),
+                "public_reference": None,
+                "artifact_id": "artifact-1",
+                "visibility": "public",
+                "rights_state": "approved",
+                "payload": b"corrupt",
+            }
+        }
+    )
+    adapter = object_adapter(client)
+    reference = StorageReference(
+        artifact_id="artifact-1",
+        relative_path=key,
+        storage_backend=StorageBackend.OBJECT,
+        storage_object_id=f"object:{key}",
+        sha256=hashlib.sha256(expected).hexdigest(),
+        size=len(expected),
+        visibility="public",
+        rights_state="approved",
+        public_reference=None,
+    )
+
+    with pytest.raises(StorageError, match="Integrität|SHA-256|Größe"):
+        adapter.verify(reference)
+
+    assert ("get", key) in client.calls
