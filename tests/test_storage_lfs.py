@@ -23,6 +23,11 @@ from scripts.rki_pipeline.storage.lfs import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+_TRACKING = (
+    "rki/Bulletins/**/*.pdf filter=lfs diff=lfs merge=lfs -text\n"
+    "rki/Bulletins/Quellen/**/*.md filter=lfs diff=lfs merge=lfs -text\n"
+    "rki/Bulletins/**/*.zip filter=lfs diff=lfs merge=lfs -text\n"
+)
 
 
 def config() -> LfsConfig:
@@ -33,6 +38,40 @@ def config() -> LfsConfig:
         warn_total_bytes=30,
         block_total_bytes=40,
     )
+
+
+def repository_with_tracking(root: Path) -> Path:
+    repository = root / "repo"
+    repository.mkdir()
+    (repository / ".git").mkdir()
+    (repository / ".gitattributes").write_text(_TRACKING, encoding="utf-8")
+    return repository
+
+
+def materialized_pdf(
+    tmp_path: Path,
+    adapter: LfsStorageAdapter,
+    *,
+    name: str = "source.pdf",
+    payload: bytes = b"%PDF-1.4\n%%EOF\n",
+):
+    source = tmp_path / name
+    source.write_bytes(payload)
+    intent = StorageIntent.from_path(
+        source,
+        artifact_id=f"artifact-{name}",
+        logical_key=f"Jahre/1994/{name}",
+        visibility="repository_authorized",
+        rights_state="approved",
+    )
+    temp_root = tmp_path / f"temp-{name}"
+    temp_root.mkdir()
+    prepared = adapter.materialize(
+        intent,
+        temp_root=temp_root,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root),
+    )
+    return intent, prepared
 
 
 def test_gitattributes_tracks_only_canonical_archive_classes() -> None:
@@ -116,15 +155,7 @@ def test_lfs_budget_enforces_run_and_total_thresholds() -> None:
 
 
 def test_lfs_adapter_materializes_then_applies_without_git_commit(tmp_path: Path) -> None:
-    repository = tmp_path / "repo"
-    repository.mkdir()
-    (repository / ".git").mkdir()
-    (repository / ".gitattributes").write_text(
-        "rki/Bulletins/**/*.pdf filter=lfs diff=lfs merge=lfs -text\n"
-        "rki/Bulletins/Quellen/**/*.md filter=lfs diff=lfs merge=lfs -text\n"
-        "rki/Bulletins/**/*.zip filter=lfs diff=lfs merge=lfs -text\n",
-        encoding="utf-8",
-    )
+    repository = repository_with_tracking(tmp_path)
     source = tmp_path / "source.pdf"
     source.write_bytes(b"%PDF-1.4\n%%EOF\n")
     intent = StorageIntent.from_path(
@@ -165,15 +196,61 @@ def test_lfs_adapter_materializes_then_applies_without_git_commit(tmp_path: Path
     assert after == before
 
 
-def test_lfs_adapter_verifies_pointer_against_local_object(tmp_path: Path) -> None:
-    repository = tmp_path / "repo"
-    (repository / ".git").mkdir(parents=True)
-    (repository / ".gitattributes").write_text(
-        "rki/Bulletins/**/*.pdf filter=lfs diff=lfs merge=lfs -text\n"
-        "rki/Bulletins/Quellen/**/*.md filter=lfs diff=lfs merge=lfs -text\n"
-        "rki/Bulletins/**/*.zip filter=lfs diff=lfs merge=lfs -text\n",
-        encoding="utf-8",
+def test_lfs_apply_rejects_divergent_existing_target_without_overwrite(tmp_path: Path) -> None:
+    repository = repository_with_tracking(tmp_path)
+    adapter = LfsStorageAdapter(repository_root=repository, config=config())
+    _intent, prepared = materialized_pdf(tmp_path, adapter)
+    target = repository / "rki/Bulletins/Jahre/1994/source.pdf"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"existing archive content")
+
+    with pytest.raises(LfsIntegrityError, match="anderen Inhalt"):
+        adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
+
+    assert target.read_bytes() == b"existing archive content"
+
+
+def test_lfs_apply_uses_shared_ledger_for_per_run_object_budget(tmp_path: Path) -> None:
+    repository = repository_with_tracking(tmp_path)
+    tight = LfsConfig(
+        artifact_root="rki/Bulletins",
+        max_run_objects=1,
+        max_run_bytes=10_000,
+        warn_total_bytes=20_000,
+        block_total_bytes=30_000,
     )
+    adapter = LfsStorageAdapter(repository_root=repository, config=tight)
+    _first_intent, first = materialized_pdf(tmp_path, adapter, name="first.pdf")
+    _second_intent, second = materialized_pdf(tmp_path, adapter, name="second.pdf")
+    ledger = EffectLedger(RunMode.APPLY)
+
+    adapter.apply(first, ledger=ledger)
+    with pytest.raises(LfsBudgetError, match="Laufobjekte"):
+        adapter.apply(second, ledger=ledger)
+
+    assert not (repository / "rki/Bulletins/Jahre/1994/second.pdf").exists()
+
+
+def test_lfs_reference_rejects_symlink_even_when_link_is_inside_repository(tmp_path: Path) -> None:
+    repository = repository_with_tracking(tmp_path)
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"external payload")
+    link = repository / "rki/Bulletins/Jahre/1994/link.pdf"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(outside)
+    adapter = LfsStorageAdapter(repository_root=repository, config=config())
+
+    with pytest.raises(LfsIntegrityError, match="Symlink|Repositoryroots"):
+        adapter.reference_for_path(
+            link,
+            artifact_id="artifact-link",
+            visibility="repository_authorized",
+            rights_state="approved",
+        )
+
+
+def test_lfs_adapter_verifies_pointer_against_local_object(tmp_path: Path) -> None:
+    repository = repository_with_tracking(tmp_path)
     oid, _object_path = write_lfs_object(repository, b"payload")
     target = repository / "rki" / "Bulletins" / "Jahre" / "1994" / "a.pdf"
     target.parent.mkdir(parents=True)
