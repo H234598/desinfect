@@ -1,0 +1,12 @@
+schema_version = 1
+
+[daily]
+max_weeks = 8
+max_months = 3
+max_years = 1
+max_reconciliations = 1
+reconciliation_interval_days = 92
+
+[backfill]
+max_tasks = 1000
+minimum_year = 1994
