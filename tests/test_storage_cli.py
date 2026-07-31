@@ -1,11 +1,37 @@
-"""Regression tests for storage CLI mode boundaries."""
+"""Regression tests for storage CLI mode and manifest boundaries."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
-from scripts.rki_pipeline.storage_cli import build_parser, main
+from scripts.rki_pipeline.storage_cli import _plan, _reference, build_parser, main
+
+
+def reference_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "artifact_id": "artifact-1",
+        "relative_path": "rki/Bulletins/a.pdf",
+        "storage_backend": "lfs",
+        "storage_object_id": "sha256:" + "a" * 64,
+        "sha256": "a" * 64,
+        "bytes": 1,
+        "visibility": "repository_authorized",
+        "rights_state": "approved",
+        "public_reference": None,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def empty_plan_payload() -> dict[str, object]:
+    return {
+        "schema_version": "1.0.0",
+        "source_backend": "lfs",
+        "target_backend": "lfs",
+        "entries": [],
+    }
 
 
 def test_plan_has_no_file_output_argument() -> None:
@@ -25,11 +51,7 @@ def test_materialize_manifest_must_stay_below_temp_root(tmp_path: Path) -> None:
     """Even the prepared manifest is a materialize effect and cannot escape."""
 
     plan = tmp_path / "plan.json"
-    plan.write_text(
-        '{"schema_version":"1.0.0","source_backend":"lfs",'
-        '"target_backend":"lfs","entries":[]}\n',
-        encoding="utf-8",
-    )
+    plan.write_text(json.dumps(empty_plan_payload()) + "\n", encoding="utf-8")
     source = tmp_path / "source"
     source.mkdir()
     (source / ".git").mkdir()
@@ -64,18 +86,93 @@ def test_materialize_manifest_must_stay_below_temp_root(tmp_path: Path) -> None:
 def test_json_integer_fields_reject_boolean_coercion() -> None:
     """Machine inputs must not silently coerce booleans into byte counts."""
 
-    from scripts.rki_pipeline.storage_cli import _reference
-
-    payload = {
-        "artifact_id": "artifact-1",
-        "relative_path": "rki/Bulletins/a.pdf",
-        "storage_backend": "lfs",
-        "storage_object_id": "sha256:" + "a" * 64,
-        "sha256": "a" * 64,
-        "bytes": True,
-        "visibility": "repository_authorized",
-        "rights_state": "approved",
-        "public_reference": None,
-    }
     with pytest.raises(ValueError, match="bytes"):
+        _reference(reference_payload(bytes=True))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("artifact_id", None),
+        ("relative_path", 42),
+        ("storage_backend", None),
+        ("storage_object_id", []),
+        ("sha256", None),
+        ("bytes", None),
+        ("visibility", True),
+        ("rights_state", {}),
+        ("public_reference", 7),
+    ),
+)
+def test_reference_rejects_missing_or_wrongly_typed_fields(field: str, value: object) -> None:
+    payload = reference_payload(**{field: value})
+    with pytest.raises(ValueError, match=field):
         _reference(payload)
+
+
+def test_reference_rejects_missing_required_field() -> None:
+    payload = reference_payload()
+    del payload["artifact_id"]
+    with pytest.raises(ValueError, match="artifact_id"):
+        _reference(payload)
+
+
+def test_plan_rejects_duplicate_artifact_ids() -> None:
+    source = reference_payload()
+    payload = {
+        "schema_version": "1.0.0",
+        "source_backend": "lfs",
+        "target_backend": "lfs",
+        "entries": [
+            {"artifact_id": "artifact-1", "state": "copy", "source": source, "target": None},
+            {"artifact_id": "artifact-1", "state": "copy", "source": source, "target": None},
+        ],
+    }
+    with pytest.raises(ValueError, match="Doppelte|artifact_id"):
+        _plan(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"source_backend": None, "target_backend": "lfs", "entries": []},
+        {"source_backend": "lfs", "target_backend": 3, "entries": []},
+        {"source_backend": "lfs", "target_backend": "lfs", "entries": [None]},
+        {
+            "source_backend": "lfs",
+            "target_backend": "lfs",
+            "entries": [{"artifact_id": None, "state": "copy", "source": {}, "target": None}],
+        },
+    ),
+)
+def test_plan_rejects_malformed_fields_as_value_error(payload: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        _plan(payload)
+
+
+def test_cli_reports_corrupt_plan_without_traceback(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    corrupt = tmp_path / "plan.json"
+    corrupt.write_text('{"source_backend":null,"target_backend":"lfs","entries":[]}', encoding="utf-8")
+    source = tmp_path / "source"
+    source.mkdir()
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    output = temp_root / "prepared.json"
+
+    result = main(
+        [
+            "materialize",
+            "--plan",
+            str(corrupt),
+            "--source-repo",
+            str(source),
+            "--temp-root",
+            str(temp_root),
+            "--output",
+            str(output),
+        ]
+    )
+
+    assert result == 2
+    assert "storage-cli:" in capsys.readouterr().err
+    assert not output.exists()
