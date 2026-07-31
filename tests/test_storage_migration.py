@@ -1,14 +1,14 @@
 """TDD contract for deterministic, resumable, non-destructive migrations."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 from pathlib import Path
 
 import pytest
 
 from scripts.rki_pipeline.run_modes import EffectLedger, RunMode
-from scripts.rki_pipeline.storage.base import StorageError
+from scripts.rki_pipeline.storage.base import PreparedObject, StorageError
 from scripts.rki_pipeline.storage.config import ObjectConfig, ReleaseConfig
 from scripts.rki_pipeline.storage.migrate import (
     MigrationState,
@@ -78,6 +78,22 @@ def adapters(source_client: MigrationClient, target_client: MigrationClient):
     source = ObjectStorageAdapter(ObjectConfig("source", "rki/Bulletins"), source_client)
     target = ReleaseStorageAdapter(ReleaseConfig("target", "rki/Bulletins"), target_client)
     return source, target
+
+
+def materialized_copy(tmp_path: Path):
+    source_client = seeded_client()
+    target_client = MigrationClient()
+    source, target = adapters(source_client, target_client)
+    plan = plan_migration(source, target)
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    prepared = materialize_migration(
+        plan,
+        source,
+        temp_root=temp_root,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root),
+    )
+    return plan, prepared[0], target, target_client
 
 
 def test_migration_plan_is_deterministic_and_classifies_copy(tmp_path: Path) -> None:
@@ -165,3 +181,57 @@ def test_migration_requires_correct_modes(tmp_path: Path) -> None:
             target,
             ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("logical_key", "rki/Bulletins/Jahre/1995/wrong.zip"),
+        ("visibility", "internal"),
+        ("rights_state", "unknown"),
+    ),
+)
+def test_apply_rejects_prepared_metadata_drift_before_any_publish(
+    tmp_path: Path,
+    field: str,
+    value: str,
+) -> None:
+    plan, prepared, target, target_client = materialized_copy(tmp_path)
+    mismatched = replace(prepared, **{field: value})
+
+    with pytest.raises(StorageError, match="Migrationsplan"):
+        apply_migration(
+            plan,
+            (mismatched,),
+            target,
+            ledger=EffectLedger(RunMode.APPLY),
+        )
+
+    assert not any(call[0] == "put" for call in target_client.calls)
+
+
+def test_apply_rejects_prepared_content_identity_drift_before_any_publish(tmp_path: Path) -> None:
+    plan, prepared, target, target_client = materialized_copy(tmp_path)
+    rogue_path = prepared.temp_root / "rogue.zip"
+    rogue_path.write_bytes(b"rogue archive")
+    rogue_hash = hashlib.sha256(rogue_path.read_bytes()).hexdigest()
+    mismatched = PreparedObject(
+        artifact_id=prepared.artifact_id,
+        logical_key=prepared.logical_key,
+        path=rogue_path,
+        temp_root=prepared.temp_root,
+        sha256=rogue_hash,
+        size=rogue_path.stat().st_size,
+        visibility=prepared.visibility,
+        rights_state=prepared.rights_state,
+    )
+
+    with pytest.raises(StorageError, match="Migrationsplan"):
+        apply_migration(
+            plan,
+            (mismatched,),
+            target,
+            ledger=EffectLedger(RunMode.APPLY),
+        )
+
+    assert not any(call[0] == "put" for call in target_client.calls)
