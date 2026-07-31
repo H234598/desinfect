@@ -127,6 +127,38 @@ def materialize_migration(
     return tuple(sorted(prepared, key=lambda item: item.artifact_id))
 
 
+def _validate_prepared_objects(
+    plan: MigrationPlan,
+    prepared_map: dict[str, PreparedObject],
+) -> None:
+    """Bind every prepared object to its immutable plan source before writes."""
+
+    for entry in plan.entries:
+        if entry.state is not MigrationState.COPY:
+            continue
+        prepared = prepared_map[entry.artifact_id]
+        expected = entry.source
+        actual_contract = (
+            prepared.logical_key,
+            prepared.sha256,
+            prepared.size,
+            prepared.visibility,
+            prepared.rights_state,
+        )
+        expected_contract = (
+            expected.relative_path,
+            expected.sha256,
+            expected.size,
+            expected.visibility,
+            expected.rights_state,
+        )
+        if actual_contract != expected_contract:
+            raise StorageError(
+                "Vorbereitetes Objekt weicht vom Migrationsplan ab: "
+                f"{entry.artifact_id}"
+            )
+
+
 def apply_migration(
     plan: MigrationPlan,
     prepared: tuple[PreparedObject, ...],
@@ -151,6 +183,7 @@ def apply_migration(
     }
     if set(prepared_map) != expected_copy:
         raise StorageError("Vorbereitete Objekte stimmen nicht mit Copy-Einträgen überein")
+    _validate_prepared_objects(plan, prepared_map)
 
     references: list[StorageReference] = []
     for entry in plan.entries:
