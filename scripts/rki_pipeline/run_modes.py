@@ -7,11 +7,14 @@ from enum import StrEnum
 import hashlib
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 from typing import Iterable
 
 from scripts.rki_pipeline.io_utils import normalize_posix_path
+
+_SHA40 = re.compile(r"^[0-9a-f]{40}$")
 
 
 class ModeViolation(RuntimeError):
@@ -113,8 +116,12 @@ class EffectLedger:
         elif kind in {
             EffectKind.REPOSITORY_FILE,
             EffectKind.STATUS,
+            EffectKind.GIT_INDEX,
         }:
             normalized_target = normalize_posix_path(target)
+        elif kind is EffectKind.GIT_COMMIT:
+            if _SHA40.fullmatch(target) is None:
+                raise ValueError("GIT_COMMIT-Ziel muss der resultierende 40-stellige HEAD-SHA sein")
 
         event = EffectEvent(kind, normalized_target, sha256, size)
         self.events.append(event)
@@ -139,6 +146,7 @@ class RepositorySnapshot:
     worktree: bytes
     index: bytes
     dirty_files: tuple[tuple[str, str | None], ...]
+    staged_files: tuple[tuple[str, str | None], ...]
     protected: tuple[tuple[str, str | None], ...]
     temp_files: tuple[tuple[str, str], ...]
 
@@ -194,7 +202,7 @@ def _tree_snapshot(root: Path | None) -> tuple[tuple[str, str], ...]:
 
 
 def _status_paths(payload: bytes) -> frozenset[str]:
-    """Extract stable destination paths from porcelain-v1 zero output."""
+    """Extract source and destination paths from porcelain-v1 zero output."""
 
     tokens = payload.split(b"\0")
     paths: set[str] = set()
@@ -207,13 +215,21 @@ def _status_paths(payload: bytes) -> frozenset[str]:
         status_code = token[:2]
         path = token[3:]
         if status_code[0] in {"R", "C"} or status_code[1] in {"R", "C"}:
+            paths.add(normalize_posix_path(path))
             if index >= len(tokens) or not tokens[index]:
                 raise ModeViolation("Unvollständiger Rename-/Copy-Status")
-            paths.add(normalize_posix_path(path))
             path = tokens[index].decode("utf-8", errors="strict")
             index += 1
         paths.add(normalize_posix_path(path))
     return frozenset(paths)
+
+
+def _nul_paths(payload: bytes) -> frozenset[str]:
+    return frozenset(
+        normalize_posix_path(token.decode("utf-8", errors="strict"))
+        for token in payload.split(b"\0")
+        if token
+    )
 
 
 def _dirty_snapshot(root: Path, worktree: bytes) -> tuple[tuple[str, str | None], ...]:
@@ -225,6 +241,27 @@ def _dirty_snapshot(root: Path, worktree: bytes) -> tuple[tuple[str, str | None]
             for path in _status_paths(worktree)
         )
     )
+
+
+def _staged_snapshot(root: Path) -> tuple[tuple[str, str | None], ...]:
+    """Fingerprint each path whose index image differs from HEAD."""
+
+    paths = _nul_paths(
+        _git(
+            root,
+            "diff",
+            "--cached",
+            "--name-only",
+            "-z",
+            "--diff-filter=ACMRDTUXB",
+        )
+    )
+    rows: list[tuple[str, str | None]] = []
+    for path in paths:
+        entry = _git(root, "ls-files", "--stage", "--", path, check=False)
+        fingerprint = None if not entry else hashlib.sha256(entry).hexdigest()
+        rows.append((path, fingerprint))
+    return tuple(sorted(rows))
 
 
 def capture_repository_snapshot(
@@ -253,6 +290,7 @@ def capture_repository_snapshot(
         worktree=worktree,
         index=index,
         dirty_files=_dirty_snapshot(root, worktree),
+        staged_files=_staged_snapshot(root),
         protected=protected,
         temp_files=_tree_snapshot(temp_root),
     )
@@ -292,16 +330,27 @@ class SideEffectGuard:
         return self
 
     def __exit__(self, exc_type, exc, traceback) -> bool:
-        if exc_type is not None:
-            return False
         if self._before is None:
             raise RuntimeError("SideEffectGuard wurde nicht betreten")
-        after = capture_repository_snapshot(
-            self.repository_root,
-            protected_paths=self.protected_paths,
-            temp_root=self.temp_root,
-        )
-        self._validate(self._before, after)
+        try:
+            after = capture_repository_snapshot(
+                self.repository_root,
+                protected_paths=self.protected_paths,
+                temp_root=self.temp_root,
+            )
+            self._validate(self._before, after)
+        except BaseException as validation_error:
+            if exc is None:
+                raise
+            group_type = (
+                ExceptionGroup
+                if isinstance(exc, Exception) and isinstance(validation_error, Exception)
+                else BaseExceptionGroup
+            )
+            raise group_type(
+                "Operation und SideEffectGuard-Validierung sind fehlgeschlagen",
+                [exc, validation_error],
+            )
         return False
 
     @staticmethod
@@ -317,18 +366,52 @@ class SideEffectGuard:
             if before.get(path) != after.get(path)
         )
 
+    @staticmethod
+    def _require_exact(
+        *,
+        label: str,
+        actual: frozenset[str],
+        registered: frozenset[str],
+    ) -> None:
+        missing = sorted(actual - registered)
+        extra = sorted(registered - actual)
+        if missing or extra:
+            details: list[str] = []
+            if missing:
+                details.append("nicht registriert: " + ", ".join(missing))
+            if extra:
+                details.append("ohne tatsächlichen Effekt: " + ", ".join(extra))
+            raise ModeViolation(f"{label} stimmt nicht exakt mit dem Ledger überein ({'; '.join(details)})")
+
+    def _committed_paths(self, before: RepositorySnapshot, after: RepositorySnapshot) -> frozenset[str]:
+        if before.head == after.head:
+            return frozenset()
+        return _nul_paths(
+            _git(
+                self.repository_root,
+                "diff",
+                "--name-only",
+                "-z",
+                before.head,
+                after.head,
+            )
+        )
+
     def _validate(
         self,
         before: RepositorySnapshot,
         after: RepositorySnapshot,
     ) -> None:
         dirty_changed = self._changed_rows(before.dirty_files, after.dirty_files)
+        staged_changed = self._changed_rows(before.staged_files, after.staged_files)
+        protected_changed = self._changed_rows(before.protected, after.protected)
         repository_changed = (
             before.head != after.head
             or before.worktree != after.worktree
             or before.index != after.index
             or bool(dirty_changed)
-            or before.protected != after.protected
+            or bool(staged_changed)
+            or bool(protected_changed)
         )
         if self.mode in {RunMode.PLAN, RunMode.MATERIALIZE} and repository_changed:
             raise ModeViolation(
@@ -336,28 +419,53 @@ class SideEffectGuard:
             )
 
         if self.mode is RunMode.APPLY:
-            if before.head != after.head and not self.ledger.targets(
-                EffectKind.GIT_COMMIT
-            ):
-                raise ModeViolation("Git-Commit wurde nicht im Ledger registriert")
-            if before.index != after.index and not self.ledger.targets(
-                EffectKind.GIT_INDEX
-            ):
-                raise ModeViolation("Git-Index wurde nicht im Ledger registriert")
-            changed_paths = (
-                _status_paths(before.worktree)
-                .symmetric_difference(_status_paths(after.worktree))
-                .union(dirty_changed)
+            actual_commits = (
+                frozenset({after.head})
+                if before.head != after.head
+                else frozenset()
             )
-            registered = self.ledger.targets(
+            self._require_exact(
+                label="Git-Commit/HEAD",
+                actual=actual_commits,
+                registered=self.ledger.targets(EffectKind.GIT_COMMIT),
+            )
+            if before.index != after.index and not staged_changed:
+                raise ModeViolation("Git-Index änderte sich ohne zuordenbare Pfade")
+            self._require_exact(
+                label="Git-Index",
+                actual=staged_changed,
+                registered=self.ledger.targets(EffectKind.GIT_INDEX),
+            )
+
+            status_before = _status_paths(before.worktree)
+            status_after = _status_paths(after.worktree)
+            changed_paths = status_before.symmetric_difference(status_after).union(dirty_changed)
+            registered_files = self.ledger.targets(
                 EffectKind.REPOSITORY_FILE,
                 EffectKind.STATUS,
             )
-            missing = sorted(changed_paths - registered)
-            if missing:
+            missing_files = sorted(changed_paths - registered_files)
+            if missing_files:
                 raise ModeViolation(
                     "Repositoryänderung ist nicht im Ledger registriert: "
-                    + ", ".join(missing)
+                    + ", ".join(missing_files)
+                )
+
+            missing_protected = sorted(
+                protected_changed - self.ledger.targets(EffectKind.STATUS)
+            )
+            if missing_protected:
+                raise ModeViolation(
+                    "Geschützter Statuspfad ist nicht als STATUS im Ledger registriert: "
+                    + ", ".join(missing_protected)
+                )
+
+            committed_paths = self._committed_paths(before, after)
+            missing_committed = sorted(committed_paths - registered_files)
+            if missing_committed:
+                raise ModeViolation(
+                    "Commit enthält nicht registrierte Repositorypfade: "
+                    + ", ".join(missing_committed)
                 )
 
         changed_temp = self._changed_rows(before.temp_files, after.temp_files)
