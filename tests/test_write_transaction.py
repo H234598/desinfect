@@ -1,7 +1,7 @@
 """Contracts for one validation and one atomic due-task write set."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import subprocess
 from pathlib import Path
 
@@ -50,13 +50,17 @@ def task(period: str) -> DueTask:
     )
 
 
-def plan(head: str, tasks: tuple[DueTask, ...]) -> DispatchPlan:
+def plan(
+    head: str,
+    tasks: tuple[DueTask, ...],
+    mode: RunMode = RunMode.APPLY,
+) -> DispatchPlan:
     return DispatchPlan.create(
         created_at="2026-07-31T12:00:00Z",
         trigger="workflow_dispatch",
         base_sha=head,
         tasks=tasks,
-        run_mode=RunMode.APPLY,
+        run_mode=mode,
         storage_backend=StorageBackend.LFS,
     )
 
@@ -89,7 +93,14 @@ class Handler:
         previous = target.read_text(encoding="utf-8")
         target.write_text(previous.rstrip() + f" {due.period}\n", encoding="utf-8")
         context.ledger.record(EffectKind.STATUS, "status.json")
-        return (WriteOperation("status.json", change="modify", git_mode="100644", previous_git_mode="100644"),)
+        return (
+            WriteOperation(
+                "status.json",
+                change="modify",
+                git_mode="100644",
+                previous_git_mode="100644",
+            ),
+        )
 
 
 def test_multiple_tasks_share_one_validation_and_one_write_set(tmp_path: Path) -> None:
@@ -109,10 +120,57 @@ def test_multiple_tasks_share_one_validation_and_one_write_set(tmp_path: Path) -
     )
     assert result.validation_count == 1
     assert validations == [("year:2024", "year:2025")]
-    assert result.changed_paths == ("status.json", "status.json")
+    assert result.changed_paths == ("status.json",)
     assert result.commit_required is True
     assert handler.calls.count("apply:year:2024") == 1
     assert handler.calls.count("apply:year:2025") == 1
+
+
+def test_plan_mode_never_creates_temp_root_or_calls_later_phases(tmp_path: Path) -> None:
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    head = init_repo(repository)
+    handler = Handler(repository)
+    temp_root = tmp_path / "temp"
+    result = execute_transaction(
+        plan(head, (task("2025"),), RunMode.PLAN),
+        current_head=head,
+        repository_root=repository,
+        temp_root=temp_root,
+        handlers={TaskKind.YEAR: handler},
+        validator=lambda _values: pytest.fail("plan must not validate materialized output"),
+        now="2026-07-31T12:00:00Z",
+    )
+    assert handler.calls == ["plan:year:2025"]
+    assert not temp_root.exists()
+    assert result.validation_count == 0
+    assert result.commit_required is False
+
+
+def test_materialize_mode_validates_once_but_never_applies(tmp_path: Path) -> None:
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    head = init_repo(repository)
+    handler = Handler(repository)
+    validations = 0
+
+    def validate(_values) -> None:
+        nonlocal validations
+        validations += 1
+
+    result = execute_transaction(
+        plan(head, (task("2025"),), RunMode.MATERIALIZE),
+        current_head=head,
+        repository_root=repository,
+        temp_root=tmp_path / "temp",
+        handlers={TaskKind.YEAR: handler},
+        validator=validate,
+        now="2026-07-31T12:00:00Z",
+    )
+    assert validations == 1
+    assert handler.calls == ["plan:year:2025", "materialize:year:2025"]
+    assert result.commit_required is False
+    assert (repository / "status.json").read_text(encoding="utf-8") == '{"value":0}\n'
 
 
 def test_second_plan_failure_prevents_all_materialize_and_apply(tmp_path: Path) -> None:
@@ -195,6 +253,26 @@ def test_status_updater_runs_only_after_apply_and_verify(tmp_path: Path) -> None
         status_updater=lambda value, _plan: value.update(updated=True) or value,
     )
     assert state["updated"] is True
+
+
+def test_status_updater_is_not_called_on_materialize_mode(tmp_path: Path) -> None:
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    head = init_repo(repository)
+    state = {"updated": False}
+    handler = Handler(repository, write=False)
+    execute_transaction(
+        plan(head, (task("2025"),), RunMode.MATERIALIZE),
+        current_head=head,
+        repository_root=repository,
+        temp_root=tmp_path / "temp",
+        handlers={TaskKind.YEAR: handler},
+        validator=lambda _values: None,
+        now="2026-07-31T12:00:00Z",
+        status=state,
+        status_updater=lambda value, _plan: value.update(updated=True) or value,
+    )
+    assert state["updated"] is False
 
 
 def test_base_sha_mismatch_blocks_before_handler_calls(tmp_path: Path) -> None:
