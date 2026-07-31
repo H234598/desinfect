@@ -191,7 +191,7 @@ def test_remote_verify_reads_actual_payload_instead_of_trusting_metadata(tmp_pat
         public_reference=None,
     )
 
-    with pytest.raises(StorageError, match="Integrität|SHA-256|Größe"):
+    with pytest.raises(StorageError, match="[Ii]ntegrität|SHA-256|Größe"):
         adapter.verify(reference)
 
     assert ("get", key) in client.calls
