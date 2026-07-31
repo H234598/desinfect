@@ -29,7 +29,7 @@
 | P04.1 | RunMode und Seiteneffektwächter | im_review | PR #10; Modusmatrix, EffectLedger und Git-/Status-/TempRoot-Snapshots implementiert |
 | P04.2 | Storage Protocol und echte Adapter | im_review | PR #10; strikte Konfiguration, backendneutrale Referenzen und LFS-/Release-/Object-Adapter implementiert |
 | P04.3 | Git-LFS-Tracking, Objekt- und Budgetprüfung | im_review | PR #10; Tracking-, Pointer-, Objekt- und Budgetgates implementiert |
-| P04.4 | Backend-Migrationswerkzeug | im_review | PR #10; deterministische `copy|unchanged|conflict`-Migration und lokale Drill-CLI implementiert |
+| P04.4 | Backend-Migrationswerkzeug | im_review | PR #10; deterministische Zustände `copy`, `unchanged`, `conflict` und lokale Drill-CLI implementiert |
 
 ### Aktueller Gate-Stand
 
