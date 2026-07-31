@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import sys
+from typing import Any
 
-from scripts.rki_pipeline.io_utils import atomic_write_text, stable_json_dumps
-from scripts.rki_pipeline.run_modes import EffectLedger, RunMode
+from scripts.rki_pipeline.io_utils import (
+    atomic_write_text,
+    relative_path_beneath,
+    stable_json_dumps,
+)
+from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 from scripts.rki_pipeline.storage.base import (
     PreparedObject,
     StorageBackend,
@@ -28,50 +34,126 @@ from scripts.rki_pipeline.storage.migrate import (
 )
 
 
+def _required(payload: dict[str, object], name: str) -> object:
+    if name not in payload:
+        raise ValueError(f"Pflichtfeld fehlt: {name}")
+    return payload[name]
+
+
+def _string(payload: dict[str, object], name: str) -> str:
+    value = _required(payload, name)
+    if type(value) is not str or not value:
+        raise ValueError(f"{name} muss eine nichtleere Zeichenkette sein")
+    return value
+
+
+def _integer(payload: dict[str, object], name: str) -> int:
+    value = _required(payload, name)
+    if type(value) is not int or value < 0:
+        raise ValueError(f"{name} muss eine nichtnegative Ganzzahl sein")
+    return value
+
+
+def _mapping(payload: dict[str, object], name: str) -> dict[str, object]:
+    value = _required(payload, name)
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} muss ein JSON-Objekt sein")
+    return value
+
+
+def _backend(payload: dict[str, object], name: str) -> StorageBackend:
+    raw = _string(payload, name)
+    try:
+        return StorageBackend(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} enthält ein unbekanntes Storage-Backend: {raw}") from exc
+
+
 def _reference(payload: dict[str, object]) -> StorageReference:
+    public_reference = payload.get("public_reference")
+    if public_reference is not None and type(public_reference) is not str:
+        raise ValueError("public_reference muss eine Zeichenkette oder null sein")
     return StorageReference(
-        artifact_id=str(payload["artifact_id"]),
-        relative_path=str(payload["relative_path"]),
-        storage_backend=StorageBackend(str(payload["storage_backend"])),
-        storage_object_id=str(payload["storage_object_id"]),
-        sha256=str(payload["sha256"]),
-        size=int(payload["bytes"]),
-        visibility=str(payload["visibility"]),
-        rights_state=str(payload["rights_state"]),
-        public_reference=(
-            None
-            if payload.get("public_reference") is None
-            else str(payload["public_reference"])
-        ),
+        artifact_id=_string(payload, "artifact_id"),
+        relative_path=_string(payload, "relative_path"),
+        storage_backend=_backend(payload, "storage_backend"),
+        storage_object_id=_string(payload, "storage_object_id"),
+        sha256=_string(payload, "sha256"),
+        size=_integer(payload, "bytes"),
+        visibility=_string(payload, "visibility"),
+        rights_state=_string(payload, "rights_state"),
+        public_reference=public_reference,
     )
 
 
 def _plan(payload: dict[str, object]) -> MigrationPlan:
-    raw_entries = payload.get("entries")
+    if payload.get("schema_version") not in {None, "1.0.0"}:
+        raise ValueError("Unbekannte Migrationsplan-Version")
+    source_backend = _backend(payload, "source_backend")
+    target_backend = _backend(payload, "target_backend")
+    raw_entries = _required(payload, "entries")
     if not isinstance(raw_entries, list):
         raise ValueError("Migrationsplan besitzt keine Eintragsliste")
     entries: list[MigrationEntry] = []
-    for raw in raw_entries:
-        if not isinstance(raw, dict) or not isinstance(raw.get("source"), dict):
-            raise ValueError("Ungültiger Migrationseintrag")
+    seen: set[str] = set()
+    for index, raw in enumerate(raw_entries):
+        if not isinstance(raw, dict):
+            raise ValueError(f"Migrationseintrag {index} muss ein JSON-Objekt sein")
+        artifact_id = _string(raw, "artifact_id")
+        if artifact_id in seen:
+            raise ValueError(f"Doppelte artifact_id im Migrationsplan: {artifact_id}")
+        seen.add(artifact_id)
+        raw_state = _string(raw, "state")
+        try:
+            state = MigrationState(raw_state)
+        except ValueError as exc:
+            raise ValueError(f"Unbekannter Migrationszustand: {raw_state}") from exc
+        source = _reference(_mapping(raw, "source"))
+        if source.artifact_id != artifact_id:
+            raise ValueError(f"source.artifact_id weicht ab: {artifact_id}")
         target_payload = raw.get("target")
+        if target_payload is not None and not isinstance(target_payload, dict):
+            raise ValueError("target muss ein JSON-Objekt oder null sein")
+        target = None if target_payload is None else _reference(target_payload)
+        if target is not None and target.artifact_id != artifact_id:
+            raise ValueError(f"target.artifact_id weicht ab: {artifact_id}")
         entries.append(
             MigrationEntry(
-                artifact_id=str(raw["artifact_id"]),
-                state=MigrationState(str(raw["state"])),
-                source=_reference(raw["source"]),
-                target=(
-                    None
-                    if target_payload is None
-                    else _reference(target_payload)
-                ),
+                artifact_id=artifact_id,
+                state=state,
+                source=source,
+                target=target,
             )
         )
-    return MigrationPlan(
-        StorageBackend(str(payload["source_backend"])),
-        StorageBackend(str(payload["target_backend"])),
-        tuple(entries),
-    )
+    return MigrationPlan(source_backend, target_backend, tuple(entries))
+
+
+def _prepared_objects(payload: dict[str, object]) -> tuple[PreparedObject, ...]:
+    raw_objects = _required(payload, "objects")
+    if not isinstance(raw_objects, list):
+        raise ValueError("Prepared-Manifest besitzt keine Objektliste")
+    prepared: list[PreparedObject] = []
+    seen: set[str] = set()
+    for index, item in enumerate(raw_objects):
+        if not isinstance(item, dict):
+            raise ValueError(f"Prepared-Objekt {index} muss ein JSON-Objekt sein")
+        artifact_id = _string(item, "artifact_id")
+        if artifact_id in seen:
+            raise ValueError(f"Doppelte vorbereitete artifact_id: {artifact_id}")
+        seen.add(artifact_id)
+        prepared.append(
+            PreparedObject(
+                artifact_id=artifact_id,
+                logical_key=_string(item, "logical_key"),
+                path=Path(_string(item, "path")),
+                temp_root=Path(_string(item, "temp_root")),
+                sha256=_string(item, "sha256"),
+                size=_integer(item, "size"),
+                visibility=_string(item, "visibility"),
+                rights_state=_string(item, "rights_state"),
+            )
+        )
+    return tuple(prepared)
 
 
 def _load_json(path: Path) -> dict[str, object]:
@@ -101,7 +183,6 @@ def build_parser() -> argparse.ArgumentParser:
     plan = sub.add_parser("plan", help="Create a deterministic LFS migration plan")
     plan.add_argument("--source-repo", type=Path, required=True)
     plan.add_argument("--target-repo", type=Path, required=True)
-    plan.add_argument("--output", type=Path)
 
     materialize = sub.add_parser("materialize", help="Export copy entries below temp_root")
     materialize.add_argument("--plan", type=Path, required=True)
@@ -130,16 +211,12 @@ def main(argv: list[str] | None = None) -> int:
             source = _lfs_adapter(args.config, args.source_repo)
             target = _lfs_adapter(args.config, args.target_repo)
             migration = plan_migration(source, target)
-            payload = {**migration.to_dict(), "sha256": migration.sha256}
-            rendered = stable_json_dumps(payload)
-            if args.output is None:
-                print(rendered, end="")
-            else:
-                atomic_write_text(args.output, rendered, allowed_root=args.output.parent)
+            print(stable_json_dumps({**migration.to_dict(), "sha256": migration.sha256}), end="")
             return 0
 
         migration = _plan(_load_json(args.plan))
         if args.command == "materialize":
+            relative_path_beneath(args.output, args.temp_root)
             source = _lfs_adapter(args.config, args.source_repo)
             ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=args.temp_root)
             prepared = materialize_migration(
@@ -165,31 +242,24 @@ def main(argv: list[str] | None = None) -> int:
                     for item in prepared
                 ],
             }
-            atomic_write_text(args.output, stable_json_dumps(payload), allowed_root=args.output.parent)
+            rendered = stable_json_dumps(payload)
+            atomic_write_text(args.output, rendered, allowed_root=args.temp_root)
+            encoded = rendered.encode("utf-8")
+            ledger.record(
+                EffectKind.TEMP_FILE,
+                args.output.absolute().as_posix(),
+                sha256=hashlib.sha256(encoded).hexdigest(),
+                size=len(encoded),
+            )
             return 0
 
         if not args.confirm_apply:
             raise StorageError("apply benötigt --confirm-apply")
         prepared_payload = _load_json(args.prepared)
-        if prepared_payload.get("plan_sha256") != migration.sha256:
+        plan_sha256 = prepared_payload.get("plan_sha256")
+        if type(plan_sha256) is not str or plan_sha256 != migration.sha256:
             raise StorageError("Prepared-Manifest gehört zu einem anderen Migrationsplan")
-        raw_objects = prepared_payload.get("objects")
-        if not isinstance(raw_objects, list):
-            raise ValueError("Prepared-Manifest besitzt keine Objektliste")
-        prepared = tuple(
-            PreparedObject(
-                artifact_id=str(item["artifact_id"]),
-                logical_key=str(item["logical_key"]),
-                path=Path(str(item["path"])),
-                temp_root=Path(str(item["temp_root"])),
-                sha256=str(item["sha256"]),
-                size=int(item["size"]),
-                visibility=str(item["visibility"]),
-                rights_state=str(item["rights_state"]),
-            )
-            for item in raw_objects
-            if isinstance(item, dict)
-        )
+        prepared = _prepared_objects(prepared_payload)
         target = _lfs_adapter(args.config, args.target_repo)
         references = apply_migration(
             migration,
