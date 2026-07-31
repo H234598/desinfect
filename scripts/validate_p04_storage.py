@@ -20,7 +20,11 @@ from scripts.rki_pipeline.run_modes import (  # noqa: E402
     RunMode,
 )
 from scripts.rki_pipeline.schema_registry import validate_document  # noqa: E402
-from scripts.rki_pipeline.storage.base import StorageBackend, StorageReference  # noqa: E402
+from scripts.rki_pipeline.storage.base import (  # noqa: E402
+    StorageBackend,
+    StorageError,
+    StorageReference,
+)
 from scripts.rki_pipeline.storage.config import load_storage_config  # noqa: E402
 from scripts.rki_pipeline.storage.lfs import (  # noqa: E402
     LfsBudget,
