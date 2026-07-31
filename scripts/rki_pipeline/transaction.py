@@ -84,10 +84,7 @@ Validator = Callable[[tuple[TaskResult, ...]], None]
 StatusUpdater = Callable[[dict[str, Any], DispatchPlan], dict[str, Any]]
 
 
-def _handler(
-    handlers: Mapping[TaskKind, TaskHandler],
-    task: DueTask,
-) -> TaskHandler:
+def _handler(handlers: Mapping[TaskKind, TaskHandler], task: DueTask) -> TaskHandler:
     value = handlers.get(task.kind)
     if value is None or not isinstance(value, TaskHandler):
         raise TransactionError(f"Kein TaskHandler für {task.kind.value}")
@@ -126,6 +123,51 @@ def _failed_run(
         return run
 
 
+def _coalesce_operations(values: list[WriteOperation]) -> tuple[WriteOperation, ...]:
+    """Collapse identical repeated path declarations or fail on ambiguity."""
+
+    by_path: dict[str, WriteOperation] = {}
+    for value in values:
+        previous = by_path.get(value.path)
+        if previous is not None and previous != value:
+            raise TransactionError(f"Widersprüchliche WriteOperation für {value.path}")
+        by_path[value.path] = value
+    return tuple(by_path[path] for path in sorted(by_path))
+
+
+def _finish(
+    run: dict[str, Any],
+    *,
+    plan: DispatchPlan,
+    now: str,
+    completed_phases: tuple[str, ...],
+    changed_paths: tuple[str, ...] = (),
+    validation_count: int = 0,
+) -> TransactionResult:
+    final_status = "success" if changed_paths else "no_op"
+    run = update_run(
+        run,
+        expected_revision=run["revision"],
+        status=final_status,
+        phase="complete",
+        now=now,
+        completed_phases=completed_phases,
+        metrics={
+            "task_count": len(plan.tasks),
+            "changed_path_count": len(changed_paths),
+            "validation_count": validation_count,
+        },
+    )
+    return TransactionResult(
+        dispatch_plan_sha256=plan.sha256,
+        tasks=tuple(task.task_id for task in plan.tasks),
+        changed_paths=changed_paths,
+        validation_count=validation_count,
+        commit_required=bool(changed_paths),
+        run_manifest=run,
+    )
+
+
 def execute_transaction(
     plan: DispatchPlan,
     *,
@@ -138,11 +180,7 @@ def execute_transaction(
     status: dict[str, Any] | None = None,
     status_updater: StatusUpdater | None = None,
 ) -> TransactionResult:
-    """Execute every due task through one validation and one write set.
-
-    Task handlers may prepare output in ``temp_root`` and may write repository
-    paths only in the shared apply phase. The function produces no Git commit.
-    """
+    """Execute tasks only through the phases permitted by ``plan.run_mode``."""
 
     if not isinstance(plan, DispatchPlan):
         raise TypeError("plan muss DispatchPlan sein")
@@ -150,7 +188,6 @@ def execute_transaction(
         raise TransactionError("Dispatchplan-Basis stimmt nicht mit aktuellem HEAD überein")
     repository = Path(repository_root).absolute()
     temporary = Path(temp_root).absolute()
-    temporary.mkdir(parents=True, exist_ok=True)
     run = new_run(
         workflow="rki-pipeline",
         trigger_source=plan.trigger,
@@ -188,7 +225,15 @@ def execute_transaction(
                 if value.task_id != task.task_id:
                     raise TransactionError(f"TaskPlan-ID driftet: {task.task_id}")
                 planned.append(value)
+        if plan.run_mode is RunMode.PLAN:
+            return _finish(
+                run,
+                plan=plan,
+                now=now,
+                completed_phases=("initialize", "plan"),
+            )
 
+        temporary.mkdir(parents=True, exist_ok=True)
         run = update_run(
             run,
             expected_revision=run["revision"],
@@ -224,6 +269,14 @@ def execute_transaction(
         )
         validator(tuple(materialized))
         validation_count += 1
+        if plan.run_mode is RunMode.MATERIALIZE:
+            return _finish(
+                run,
+                plan=plan,
+                now=now,
+                completed_phases=("initialize", "plan", "materialize", "validate"),
+                validation_count=validation_count,
+            )
 
         run = update_run(
             run,
@@ -242,14 +295,18 @@ def execute_transaction(
             ledger=apply_ledger,
         ):
             for task, result in zip(plan.tasks, materialized, strict=True):
-                applied = _handler(handlers, task).apply(
-                    task,
-                    result,
-                    TransactionContext(repository, None, apply_ledger),
+                operations.extend(
+                    _handler(handlers, task).apply(
+                        task,
+                        result,
+                        TransactionContext(repository, None, apply_ledger),
+                    )
                 )
-                operations.extend(applied)
-        checked = validate_operations(operations, repository_root=repository)
-        changed_paths = tuple(sorted(operation.path for operation in checked))
+        checked = validate_operations(
+            _coalesce_operations(operations),
+            repository_root=repository,
+        )
+        changed_paths = tuple(operation.path for operation in checked)
 
         run = update_run(
             run,
@@ -264,20 +321,12 @@ def execute_transaction(
                 "validate",
                 "apply",
             ),
-            metrics={
-                "task_count": len(plan.tasks),
-                "changed_path_count": len(changed_paths),
-                "validation_count": validation_count,
-            },
         )
         if status is not None and status_updater is not None:
             status_updater(status, plan)
-        final_status = "success" if changed_paths else "no_op"
-        run = update_run(
+        return _finish(
             run,
-            expected_revision=run["revision"],
-            status=final_status,
-            phase="complete",
+            plan=plan,
             now=now,
             completed_phases=(
                 "initialize",
@@ -287,14 +336,8 @@ def execute_transaction(
                 "apply",
                 "verify",
             ),
-        )
-        return TransactionResult(
-            dispatch_plan_sha256=plan.sha256,
-            tasks=tuple(task.task_id for task in plan.tasks),
             changed_paths=changed_paths,
             validation_count=validation_count,
-            commit_required=bool(changed_paths),
-            run_manifest=run,
         )
     except BaseException as exc:
         failed = _failed_run(run, phase=run.get("phase", "initialize"), error=exc, now=now)
