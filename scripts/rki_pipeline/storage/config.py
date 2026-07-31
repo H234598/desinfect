@@ -12,6 +12,7 @@ from scripts.rki_pipeline.storage.base import StorageBackend, StorageConfigurati
 
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_STORAGE_CONFIG = ROOT / "config" / "storage.toml"
+CANONICAL_ARTIFACT_ROOT = "rki/Bulletins"
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +68,15 @@ def _positive_int(table: dict[str, Any], name: str) -> int:
     return value
 
 
+def _canonical_namespace(value: str, name: str) -> str:
+    normalized = normalize_posix_path(value)
+    if normalized != CANONICAL_ARTIFACT_ROOT:
+        raise StorageConfigurationError(
+            f"{name} muss unveränderlich {CANONICAL_ARTIFACT_ROOT!r} sein"
+        )
+    return normalized
+
+
 def load_storage_config(path: Path = DEFAULT_STORAGE_CONFIG) -> StorageConfig:
     """Load the complete, exact-key storage configuration."""
 
@@ -99,7 +109,9 @@ def load_storage_config(path: Path = DEFAULT_STORAGE_CONFIG) -> StorageConfig:
     release = _table(data, "release", frozenset({"tag_prefix", "asset_prefix"}))
     object_table = _table(data, "object", frozenset({"bucket", "namespace"}))
 
-    artifact_root = normalize_posix_path(_string(lfs, "artifact_root"))
+    artifact_root = _canonical_namespace(_string(lfs, "artifact_root"), "artifact_root")
+    release_prefix = _canonical_namespace(_string(release, "asset_prefix"), "asset_prefix")
+    object_namespace = _canonical_namespace(_string(object_table, "namespace"), "namespace")
     max_run_objects = _positive_int(lfs, "max_run_objects")
     max_run_bytes = _positive_int(lfs, "max_run_bytes")
     warn_total_bytes = _positive_int(lfs, "warn_total_bytes")
@@ -118,10 +130,10 @@ def load_storage_config(path: Path = DEFAULT_STORAGE_CONFIG) -> StorageConfig:
         ),
         release=ReleaseConfig(
             tag_prefix=_string(release, "tag_prefix"),
-            asset_prefix=normalize_posix_path(_string(release, "asset_prefix")),
+            asset_prefix=release_prefix,
         ),
         object=ObjectConfig(
             bucket=_string(object_table, "bucket"),
-            namespace=normalize_posix_path(_string(object_table, "namespace")),
+            namespace=object_namespace,
         ),
     )
