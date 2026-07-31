@@ -43,4 +43,13 @@ Das vorhandene `.part`-/`os.replace`-Muster aus `H234598/desinfect@fbcc6e850fec1
 - Neu gehärtet: importfreundliche Abhängigkeitsgrenze, same-origin HTTPS und manuelle Redirectkontrolle, fail-closed Robotsvertrag, Antwort-/PDF-Größenlimits, `%PDF-`/`%%EOF`, descriptor-relative atomare Ablage, strikter Grabber-Resultvertrag, stabile Exitcodes und vollständige Offline-Ports/Fixtures.
 - Die P03-Parser-, Transport-, Download-, API- und Schema-Tests sind Eigenentwicklungen auf Grundlage des eingefrorenen Plans und des ursprünglichen Grabbers.
 
+## P04 – RunModes, Storage und Backendmigration
+
+- `scripts/rki_pipeline/run_modes.py`, das EffectLedger, die Git-/Status-/TempRoot-Snapshots und die Modusmatrix sind Eigenentwicklungen nach den MUSS-17/18-Vorgaben des eingefrorenen Plans.
+- Das Storage Protocol, die backendneutrale `StorageReference`, die strikte `config/storage.toml` und die Adapterfactory sind Eigenentwicklungen nach MUSS-13/15/16/34.
+- Das Git-LFS-Pointerformat und der Objektpfad `.git/lfs/objects/<aa>/<bb>/<oid>` folgen der öffentlichen Git-LFS-Spezifikation; Parser, Trackingregeln, Integritätsprüfung und Budgetpolicy wurden repositoryspezifisch neu implementiert.
+- Release- und Object-Adapter verwenden ausschließlich eigene, injizierbare Ports. Es wurde kein Code aus Cloud- oder GitHub-SDKs übernommen und in P04 kein echter Remotezugriff ausgeführt.
+- Die idempotente Migration `copy|unchanged|conflict`, das nicht destruktive Quellverhalten, die LFS-Drill-CLI und sämtliche P04-Tests sind Eigenentwicklungen nach dem freigegebenen Implementierungsplan.
+- Der offene Draft-PR #8 wurde als Kontext für spätere CI-Schreibpfade geprüft; P04 übernimmt daraus keine fremde Implementierung und führt weiterhin keinen produktiven Writer ein.
+
 Die gesperrten Entscheidungen bleiben unabhängig von diesen Arbeiten unverändert: **ADR-003=A** und **ADR-014=B**.

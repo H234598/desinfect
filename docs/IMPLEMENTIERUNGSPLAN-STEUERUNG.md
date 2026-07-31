@@ -1,10 +1,10 @@
 ---
 title: Implementierungsplan V3 – Steuerung
-status: P03 abgeschlossen; P04 als nächste Phase
+status: P04 im Review
 source_plan_sha256: aa50863cde1313a7039691b4ca596c1ab498d0fab0008da324de5cb69f12ffc4
 repository: H234598/desinfect
-branch: main
-pull_request: null
+branch: agent/p04-runmodes-storage
+pull_request: 10
 ---
 
 # Implementierungsplan V3 – Steuerung
@@ -21,11 +21,17 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 - **P02:** PR #5, Merge `947b2ba86792d5a84e0f2fd972cfbe554c156afc`
 - **P03:** PR #7, Merge `e180b20788072bba840e655d493bac73c7f1a3ee`
 - **P03-Gate:** geprüfter Head `71943a05fe0f6a2a013f1794e64601b32a44d079`; GitHub Actions `30584133252`, CodeRabbit und qlty erfolgreich; alle zehn Reviewthreads aufgelöst.
-- **Fortschritt:** 12 von 60 Arbeitspaketen umgesetzt; 48 offen; 0 in Arbeit; 0 im Review; 0 blockiert.
 
-## Nächste Phase P04
+## Aktive Phase P04
 
-P04.1 bis P04.4 bleiben `offen`, bis der eigene Implementierungsbranch und die planmäßige Evidenz vorliegen. P04 führt die strikt getrennten Modi `plan|materialize|apply`, einen Seiteneffektwächter, das Storage Protocol mit echten Adaptern, Git-LFS-Objekt-/Budgetprüfung und das Backend-Migrationswerkzeug ein.
+- **PR:** #10
+- **Branch:** `agent/p04-runmodes-storage`
+- **P04.1:** im Review – strikt getrennte `plan|materialize|apply`-Modi, EffectLedger und Snapshotwächter.
+- **P04.2:** im Review – backendneutrales Storage Protocol mit LFS-, Release- und Object-Adaptern hinter Ports.
+- **P04.3:** im Review – exakte LFS-Regeln, Pointer-/Objektintegrität und Lauf-/Gesamtbudgets.
+- **P04.4:** im Review – deterministische, idempotente und nicht destruktive Backendmigration.
+- **Fortschritt:** 12 von 60 Arbeitspaketen umgesetzt; 4 im Review; 44 offen.
+- Die P04-Checkboxen bleiben bis Merge, grünem CI, aufgelösten Reviewthreads und vollständiger Abnahmeevidenz offen.
 
 ## Arbeitspakete
 
@@ -41,10 +47,10 @@ P04.1 bis P04.4 bleiben `offen`, bis der eigene Implementierungsbranch und die p
 - [x] **P03.1** Grabber in Parser, HTTP und Orchestrierung schneiden _(umgesetzt, PR #7, Merge `e180b20788072bba840e655d493bac73c7f1a3ee`)_
 - [x] **P03.2** Netzwerk-, Robots- und Downloadhärtung _(umgesetzt, PR #7, Merge `e180b20788072bba840e655d493bac73c7f1a3ee`)_
 - [x] **P03.3** Stabile CLI, API und Resultvertrag _(umgesetzt, PR #7, Merge `e180b20788072bba840e655d493bac73c7f1a3ee`)_
-- [ ] **P04.1** RunMode und Seiteneffektwächter
-- [ ] **P04.2** Storage Protocol und echte Adapter
-- [ ] **P04.3** Git-LFS-Tracking, Objekt- und Budgetprüfung
-- [ ] **P04.4** Backend-Migrationswerkzeug
+- [ ] **P04.1** RunMode und Seiteneffektwächter _(im Review, PR #10)_
+- [ ] **P04.2** Storage Protocol und echte Adapter _(im Review, PR #10)_
+- [ ] **P04.3** Git-LFS-Tracking, Objekt- und Budgetprüfung _(im Review, PR #10)_
+- [ ] **P04.4** Backend-Migrationswerkzeug _(im Review, PR #10)_
 - [ ] **P05.1** Fälligkeitsberechnung und Catch-up
 - [ ] **P05.2** Transaktionaler Pipeline-Orchestrator
 - [ ] **P05.3** GitHub-App-Token, Commit und Push

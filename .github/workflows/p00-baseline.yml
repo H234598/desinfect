@@ -1,10 +1,11 @@
-name: P00/P01/P02/P03 baseline
+name: P00/P01/P02/P03/P04 baseline
 
 on:
   pull_request:
     paths:
       - ".github/workflows/p00-baseline.yml"
       - ".github/CODEOWNERS"
+      - ".gitattributes"
       - "config/**"
       - "docs/**"
       - "schemas/**"
@@ -26,6 +27,7 @@ on:
     paths:
       - ".github/workflows/p00-baseline.yml"
       - ".github/CODEOWNERS"
+      - ".gitattributes"
       - "config/**"
       - "docs/**"
       - "schemas/**"
@@ -48,14 +50,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: p00-p03-baseline-${{ github.ref }}
+  group: p00-p04-baseline-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   baseline:
-    name: Validate governance, P01/P02 foundations, and P03 grabber
+    name: Validate governance and P01-P04 foundations
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - name: Checkout without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -112,7 +114,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: p03-dependency-resolver-${{ github.run_id }}
+          name: p04-dependency-resolver-${{ github.run_id }}
           path: build/dependency-reports/
           if-no-files-found: warn
           retention-days: 7
@@ -151,12 +153,19 @@ jobs:
           set -Eeuo pipefail
           python3 scripts/validate_p03_grabber.py
 
-      - name: Smoke-test runtime status and grabber CLIs
+      - name: Validate P04 run modes and storage
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/validate_p04_storage.py
+
+      - name: Smoke-test runtime, grabber, and storage CLIs
         shell: bash
         run: |
           set -Eeuo pipefail
           python3 -m scripts.rki_pipeline.runtime_status_cli --help
           python3 -m scripts.rki_grabber.rki_epidbull_grabber --help
+          python3 -m scripts.rki_pipeline.storage_cli --help
 
       - name: Compile Python sources
         shell: bash

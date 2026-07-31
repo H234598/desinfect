@@ -1,0 +1,17 @@
+schema_version = 1
+backend = "lfs"
+
+[lfs]
+artifact_root = "rki/Bulletins"
+max_run_objects = 1000
+max_run_bytes = 1073741824
+warn_total_bytes = 8589934592
+block_total_bytes = 10737418240
+
+[release]
+tag_prefix = "desinfect-archive"
+asset_prefix = "rki/Bulletins"
+
+[object]
+bucket = "desinfect"
+namespace = "rki/Bulletins"

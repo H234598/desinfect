@@ -28,4 +28,15 @@
 - Externe Titel und Dateinamen werden nur als Daten behandelt; dauerhafte Pfade enthalten die versionierte Handle-Identität.
 - Das Resultat enthält keine Kontaktangabe, keine absoluten Runnerpfade und keine ungefilterten Transportobjekte.
 
+## P04-RunMode- und Storage-Grenzen
+
+- `plan` besitzt eine leere Effekt-Allowlist und darf weder Repository, Index, `HEAD`, `status.json`, TempRoot noch Remote-Spies verändern.
+- `materialize` benötigt einen expliziten `temp_root`; nur dort registrierte `TEMP_FILE`-Effekte sind erlaubt. Repository-, Status-, Git- und Remoteeffekte blockieren.
+- `apply` akzeptiert nur explizit im `EffectLedger` registrierte Effekte. `SideEffectGuard` vergleicht Git-/Dateisnapshots und blockiert nicht registrierte Änderungen.
+- `config/storage.toml` ist streng typisiert; unbekannte Backends oder Schlüssel brechen fail-closed ab. Git LFS bleibt das initiale Backend.
+- Git-LFS-Pointer und lokale Objekte werden auf Version, OID, Größe, Objektpfad und SHA-256 geprüft. Lauf- und Gesamtbudgets blockieren Überläufe vor der Publikation.
+- Release- und Object-Adapter importieren keine Netzwerk-SDKs und funktionieren nur mit injizierten Ports. P04 führt keine echten Remotezugriffe aus.
+- Migrationen klassifizieren `copy|unchanged|conflict`, materialisieren ausschließlich unter `temp_root`, veröffentlichen nur in `apply`, verifizieren jedes Ziel und löschen niemals automatisch Quellobjekte.
+- Die Wahl des Backends ändert keinen Rechtezustand. **ADR-003=A** bleibt maßgeblich; **ADR-014=B** hält Analyse- und öffentliche Spiegelvollständigkeit getrennt.
+
 Sicherheitsrelevante Funde sollen nicht in öffentlichen Issues mit Secrets oder ungekürzten sensitiven Daten veröffentlicht werden. Der konkrete private Meldeweg wird in P11.3 zusammen mit der vollständigen Supply-Chain-Policy festgelegt.

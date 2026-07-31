@@ -7,7 +7,7 @@
 
 | Gesamt | Offen | In Arbeit | Im Review | Umgesetzt | Blockiert |
 |---:|---:|---:|---:|---:|---:|
-| 60 | 48 | 0 | 0 | 12 | 0 |
+| 60 | 44 | 0 | 4 | 12 | 0 |
 
 ## Abgeschlossene Phasen
 
@@ -18,33 +18,28 @@
 | P02 | #5 | `947b2ba86792d5a84e0f2fd972cfbe554c156afc` | Actions `30342761383`, CodeRabbit, qlty, 9 Reviewthreads |
 | P03 | #7 | `e180b20788072bba840e655d493bac73c7f1a3ee` | Actions `30584133252`, CodeRabbit, qlty, 10 Reviewthreads |
 
-## Abgeschlossene Phase P03
+## Aktive Phase P04
 
-**PR:** #7 — `feat(p03): RKI-Grabber modularisieren und härten`  
-**Merge:** `e180b20788072bba840e655d493bac73c7f1a3ee`  
-**Geprüfter Head:** `71943a05fe0f6a2a013f1794e64601b32a44d079`
+**PR: #10**  
+**Branch:** `agent/p04-runmodes-storage`  
+**Basis:** `main@762eb90a5be858e34abfbad63492f300b215cbeb`
 
-| ID | Titel | Status | Evidenz |
+| ID | Titel | Status | Evidenzstand |
 |---|---|---|---|
-| P03.1 | Grabber in Parser, HTTP und Orchestrierung schneiden | umgesetzt | PR #7, Merge `e180b2078807`, Actions `30584133252` |
-| P03.2 | Netzwerk-, Robots- und Downloadhärtung | umgesetzt | PR #7, Merge `e180b2078807`, Actions `30584133252` |
-| P03.3 | Stabile CLI, API und Resultvertrag | umgesetzt | PR #7, Merge `e180b2078807`, Actions `30584133252` |
+| P04.1 | RunMode und Seiteneffektwächter | im_review | PR #10; Modusmatrix, EffectLedger und Git-/Status-/TempRoot-Snapshots implementiert |
+| P04.2 | Storage Protocol und echte Adapter | im_review | PR #10; strikte Konfiguration, backendneutrale Referenzen und LFS-/Release-/Object-Adapter implementiert |
+| P04.3 | Git-LFS-Tracking, Objekt- und Budgetprüfung | im_review | PR #10; Tracking-, Pointer-, Objekt- und Budgetgates implementiert |
+| P04.4 | Backend-Migrationswerkzeug | im_review | PR #10; deterministische Zustände `copy`, `unchanged`, `conflict` und lokale Drill-CLI implementiert |
 
-## Abnahme P03
+### Aktueller Gate-Stand
 
-- GitHub Actions: erfolgreich
-- CodeRabbit: erfolgreich
-- qlty: erfolgreich
-- ungelöste Reviewthreads: 0
-- behobene Reviewthreads: 10
-- Pytest: 90 Tests erfolgreich
-- Abgenommen am: `2026-07-30T21:45:22Z`
-- Abgenommen durch: `H234598`
-- Kein echter RKI-Abruf, kein historischer Backfill, kein LFS-Import und kein produktiver Writer wurden in P03 ausgeführt.
+- GitHub Actions `30586996977`: erfolgreich
+- Pytest: 126 Tests erfolgreich
+- Unittest, Compile, Node und P00–P04-Validatoren: erfolgreich
+- PR bleibt bis zum Abschluss von CodeRabbit, qlty und Reviewthreads offen.
+- Es wurden keine echten Release-, Object-Storage-, LFS-Transfer-, Commit-, Push- oder Scheduler-Seiteneffekte ausgeführt.
 
-## Nächster Schritt
-
-P04.1 bis P04.4 bleiben `offen`, bis ihr eigener Implementierungsbranch und PR vorliegen. Die Phase führt RunModes, Seiteneffektwächter, Storage-Adapter, Git LFS und Backendmigration ein.
+Die P04-Pakete bleiben bis zum tatsächlichen Merge, grüner finaler CI, aufgelösten Reviewthreads und eingetragener Abnahmeevidenz offen.
 
 ## Gesperrte Architekturentscheidungen
 
