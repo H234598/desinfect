@@ -132,6 +132,45 @@ def test_period_archive_manifest_validates_and_unknown_field_fails_closed() -> N
         validate_document("period-archive-manifest", changed)
 
 
+@pytest.mark.parametrize(
+    ("artifact_field", "sha256_field", "artifact_id", "sha256"),
+    [
+        ("pdf_artifact_id", "pdf_sha256", None, "a" * 64),
+        ("pdf_artifact_id", "pdf_sha256", "pdf-artifact", None),
+        ("markdown_artifact_id", "markdown_sha256", None, "b" * 64),
+        ("markdown_artifact_id", "markdown_sha256", "markdown-artifact", None),
+    ],
+)
+def test_period_archive_manifest_rejects_unpaired_artifact_identity(
+    artifact_field: str,
+    sha256_field: str,
+    artifact_id: str | None,
+    sha256: str | None,
+) -> None:
+    fixture = json.loads(
+        (ROOT / "tests" / "fixtures" / "schemas" / "period-archive-manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    fixture["documents"] = [
+        {
+            "document_id": "rki-176904-12345-v2",
+            "version": 2,
+            "source_id": "rki:176904/12345.2",
+            "publication_date": "2026-07-01",
+            "pdf_artifact_id": None,
+            "pdf_sha256": None,
+            "markdown_artifact_id": None,
+            "markdown_sha256": None,
+        }
+    ]
+    fixture["documents"][0][artifact_field] = artifact_id
+    fixture["documents"][0][sha256_field] = sha256
+
+    with pytest.raises(SchemaContractError):
+        validate_document("period-archive-manifest", fixture)
+
+
 def test_storage_reference_rejects_non_sha256() -> None:
     payload = _storage_reference_payload()
     payload["sha256"] = "bad"

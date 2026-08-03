@@ -13,6 +13,52 @@
     },
     "document": {
       "additionalProperties": false,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "pdf_artifact_id": {"type": "null"},
+                "pdf_sha256": {"type": "null"}
+              }
+            },
+            {
+              "properties": {
+                "pdf_artifact_id": {
+                  "pattern": "^[a-z0-9][a-z0-9._-]{2,200}$",
+                  "type": "string"
+                },
+                "pdf_sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "markdown_artifact_id": {"type": "null"},
+                "markdown_sha256": {"type": "null"}
+              }
+            },
+            {
+              "properties": {
+                "markdown_artifact_id": {
+                  "pattern": "^[a-z0-9][a-z0-9._-]{2,200}$",
+                  "type": "string"
+                },
+                "markdown_sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                }
+              }
+            }
+          ]
+        }
+      ],
       "properties": {
         "document_id": {
           "pattern": "^rki-176904-[0-9]+-v[1-9][0-9]*$",
