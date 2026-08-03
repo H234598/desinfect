@@ -201,7 +201,7 @@ git commit -m "feat(p06): add stable RKI identities"
 - Produces: `canonical_document_paths(*, document_id: str, bitstream_id: str, document_type: DocumentType, publication_date: str) -> CanonicalDocumentPaths`.
 - Produces: `repository_document_paths(*, document_id: str, bitstream_id: str, document_type: DocumentType, publication_date: str) -> CanonicalDocumentPaths`, prefixing existing `CANONICAL_ARTIFACT_ROOT` exactly once.
 
-- [ ] **Step 1: Write failing exact-path and boundary tests**
+- [x] **Step 1: Write failing exact-path and boundary tests**
 
 Use hand-derived literals:
 
@@ -230,7 +230,7 @@ def test_article_paths_use_publication_month() -> None:
 
 Add cases for `1999-12-31` vs `2000-01-01`, title independence, missing/invalid date, Windows reserved components, casefold collisions, trailing dot/space, and an overlong ID. Assert every emitted component is `<=240` UTF-8 bytes and the overlong result contains full 64-hex document/bitstream hash tokens.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -240,7 +240,7 @@ Run:
 
 Expected: collection failure because `scripts.rki_pipeline.paths` does not exist.
 
-- [ ] **Step 3: Implement path builder using existing safety primitives**
+- [x] **Step 3: Implement path builder using existing safety primitives**
 
 Define:
 
@@ -262,7 +262,7 @@ class CanonicalDocumentPaths:
 
 Parse date with `date.fromisoformat`. Build directories exactly as above. First try readable stem. If either `.pdf`/`.md` component exceeds 240 UTF-8 bytes, use `<date>_<type>_d-<sha256(document_id)>_b-<sha256(bitstream_id)>`. Validate each component against case-insensitive `CON|PRN|AUX|NUL|COM1..COM9|LPT1..LPT9`, trailing dot/space, control characters, and 240-byte ceiling. Then run existing `normalize_posix_path`, `detect_path_collisions`, and `relative_path_beneath`/root-prefix checks.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run:
 
@@ -272,7 +272,7 @@ Run:
 
 Expected: all path tests pass.
 
-- [ ] **Step 5: Write failing grabber and LFS integration tests**
+- [x] **Step 5: Write failing grabber and LFS integration tests**
 
 Change `target_relative_path` expectation to exact `Jahre/1996/PDF/...`. In `test_grabber_api.py`, assert downloaded files stay below `output_root/Jahre/...` and two sequence candidates do not overwrite each other. Replace LFS expected Markdown tracking line with:
 
@@ -280,7 +280,7 @@ Change `target_relative_path` expectation to exact `Jahre/1996/PDF/...`. In `tes
 rki/Bulletins/**/Markdown/**/*.md filter=lfs diff=lfs merge=lfs -text
 ```
 
-- [ ] **Step 6: Verify RED**
+- [x] **Step 6: Verify RED**
 
 Run:
 
@@ -290,11 +290,11 @@ Run:
 
 Expected: legacy title-based `issues/1996` path and `Quellen/**/*.md` tracking fail literal behavior assertions.
 
-- [ ] **Step 7: Delegate target path and migrate LFS Markdown rule**
+- [x] **Step 7: Delegate target path and migrate LFS Markdown rule**
 
 Make `target_relative_path` map `Scope.ISSUES` to `DocumentType.ISSUE`, `Scope.ARTICLES` to `DocumentType.ARTICLE`, reject `Scope.ALL`, and return `.pdf` from `canonical_document_paths`. Remove unused legacy `safe_component` only if no caller remains. Update `.gitattributes`, `_REQUIRED_TRACKING`, tests, and operator doc to canonical `**/Markdown/**/*.md`.
 
-- [ ] **Step 8: Verify Task 2 and commit**
+- [x] **Step 8: Verify Task 2 and commit**
 
 Run:
 
