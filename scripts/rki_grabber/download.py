@@ -24,6 +24,7 @@ from scripts.rki_pipeline.io_utils import (
 )
 from scripts.rki_pipeline.pdf_validation import (
     PdfByteValidationError,
+    PdfEmptyError,
     PdfSizeLimitError,
     validate_pdf_fd,
 )
@@ -162,6 +163,8 @@ def _hash_and_validate_fd(
             max_bytes=max_bytes,
             expected_md5=expected_md5,
         )
+    except PdfEmptyError as exc:
+        raise PdfIntegrityError(str(exc)) from exc
     except PdfSizeLimitError as exc:
         raise ResponseTooLargeError(str(exc)) from exc
     except PdfByteValidationError as exc:

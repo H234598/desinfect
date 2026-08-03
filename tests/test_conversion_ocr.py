@@ -30,6 +30,8 @@ def _result(
 
 
 class _OcrRunner:
+    locale_environment = (("LANG", "C.UTF-8"), ("LC_ALL", "C.UTF-8"))
+
     def __init__(
         self,
         page_text: tuple[bytes, ...],
@@ -417,7 +419,7 @@ def test_ocr_requires_exact_deu_eng_tessdata(
     runner = _OcrRunner((b"text",))
     tessdata = tuple(tmp_path / f"{name}.traineddata" for name in names)
 
-    with pytest.raises(ValueError, match="deu.*eng"):
+    with pytest.raises(ValueError, match=r"deu.*eng"):
         ocr.extract_text(
             _source(tmp_path),
             workdir=tmp_path,

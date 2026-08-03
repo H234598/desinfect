@@ -38,6 +38,7 @@ _FIXED_ENV = {
     "PATH": os.defpath,
     "TZ": "UTC",
 }
+FIXED_RUNNER_LOCALE = (("LANG", "C.UTF-8"), ("LC_ALL", "C.UTF-8"))
 
 
 class PdfValidationError(ValueError):
@@ -50,6 +51,10 @@ class PdfByteValidationError(PdfValidationError):
 
 class PdfSizeLimitError(PdfByteValidationError):
     """PDF byte size lies outside the configured boundary."""
+
+
+class PdfEmptyError(PdfByteValidationError):
+    """PDF contains no bytes and therefore cannot be valid."""
 
 
 class PdfParserError(PdfValidationError):
@@ -99,6 +104,8 @@ class PdfLimits:
     stdout_bytes: int = 512 * 1024 * 1024
     stderr_bytes: int = 1024 * 1024
     total_output_bytes: int = 512 * 1024 * 1024
+    tree_depth: int = 64
+    tree_entries: int = 4_096
 
     def __post_init__(self) -> None:
         for name in self.__dataclass_fields__:
@@ -156,6 +163,8 @@ class ValidatedPdfCopy:
 class Runner(Protocol):
     """Injected bounded-process port used by PDF validation tests."""
 
+    locale_environment: tuple[tuple[str, str], ...]
+
     def run(
         self,
         executable: str | Path,
@@ -188,9 +197,11 @@ def validate_pdf_fd(
         raise PdfByteValidationError(
             "PDF-Deskriptor verweist nicht auf eine reguläre Datei"
         )
-    if before.st_size <= 0 or before.st_size > max_bytes:
+    if before.st_size == 0:
+        raise PdfEmptyError("PDF ist leer")
+    if before.st_size > max_bytes:
         raise PdfSizeLimitError(
-            f"PDF-Größe {before.st_size} liegt außerhalb 1..{max_bytes} Bytes"
+            f"PDF-Größe {before.st_size} überschreitet {max_bytes} Bytes"
         )
     try:
         prefix = os.pread(descriptor, 5, 0)
@@ -419,9 +430,49 @@ def _capture_bounded(
     return bytes(buffers["stdout"]), bytes(buffers["stderr"])
 
 
-def _snapshot_output_tree(cwd: Path) -> dict[str, tuple[int, int, int, int, int, int]]:
+def require_fixed_runner_locale(runner: Runner) -> None:
+    """Reject injected runners that cannot prove the recorded locale contract."""
+
+    if getattr(runner, "locale_environment", None) != FIXED_RUNNER_LOCALE:
+        raise ProcessRunnerError("Runner erfüllt festen Locale-Vertrag nicht")
+
+
+def _bounded_output_walk(
+    cwd: Path,
+    limits: PdfLimits,
+) -> Iterator[tuple[Path, list[str], list[str]]]:
+    entries = 0
+    stack = [(cwd, 0)]
+    while stack:
+        root, depth = stack.pop()
+        directories: list[str] = []
+        files: list[str] = []
+        with os.scandir(root) as scanner:
+            for entry in scanner:
+                entries += 1
+                if entries > limits.tree_entries:
+                    raise ProcessOutputLimitError(
+                        f"Tool-Arbeitsbaum überschreitet {limits.tree_entries} Einträge"
+                    )
+                target = directories if entry.is_dir(follow_symlinks=False) else files
+                target.append(entry.name)
+        if depth >= limits.tree_depth and directories:
+            raise ProcessOutputLimitError(
+                f"Tool-Arbeitsbaum überschreitet {limits.tree_depth} Ebenen"
+            )
+        yield root, directories, files
+        stack.extend(
+            (root / name, depth + 1)
+            for name in reversed(directories)
+        )
+
+
+def _snapshot_output_tree(
+    cwd: Path,
+    limits: PdfLimits,
+) -> dict[str, tuple[int, int, int, int, int, int]]:
     snapshot: dict[str, tuple[int, int, int, int, int, int]] = {}
-    for root, directories, files in os.walk(cwd, followlinks=False):
+    for root, directories, files in _bounded_output_walk(cwd, limits):
         for name in (*directories, *files):
             path = Path(root) / name
             metadata = path.stat(follow_symlinks=False)
@@ -460,7 +511,7 @@ def _validate_output_tree(
             raise ProcessOutputLimitError(
                 f"Tool veränderte vorhandenen Arbeitsbaum-Eintrag: {relative}"
             )
-    for root, directories, files in os.walk(cwd, followlinks=False):
+    for root, directories, files in _bounded_output_walk(cwd, limits):
         for name in (*directories, *files):
             path = Path(root) / name
             metadata = path.stat(follow_symlinks=False)
@@ -484,6 +535,8 @@ def _validate_output_tree(
 
 class ProcessRunner:
     """Run one local tool with fixed environment and hard POSIX boundaries."""
+
+    locale_environment = FIXED_RUNNER_LOCALE
 
     def run(
         self,
@@ -531,7 +584,7 @@ class ProcessRunner:
                 if _fd_identity(executable_fd) != executable_identity:
                     raise ProcessRunnerError("Tool änderte sich vor dem Prozessstart")
                 argv = (resolved.as_posix(), *arguments)
-                before = _snapshot_output_tree(workdir)
+                before = _snapshot_output_tree(workdir, limits)
                 try:
                     process = subprocess.Popen(
                         argv,
@@ -595,17 +648,41 @@ class _OwnedDirectory:
 def _remove_owned_contents(directory_fd: int) -> None:
     """Delete owned entries descriptor-relatively without following symlinks."""
 
-    for name in os.listdir(directory_fd):
-        metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
-            child_fd = open_directory_beneath(directory_fd, (name,))
+    stack: list[tuple[tuple[str, ...], bool]] = [((), False)]
+    while stack:
+        parts, expanded = stack.pop()
+        if expanded:
+            if not parts:
+                continue
+            parent_fd = (
+                directory_fd
+                if len(parts) == 1
+                else open_directory_beneath(directory_fd, parts[:-1])
+            )
             try:
-                _remove_owned_contents(child_fd)
+                os.rmdir(parts[-1], dir_fd=parent_fd)
             finally:
-                os.close(child_fd)
-            os.rmdir(name, dir_fd=directory_fd)
-        else:
-            os.unlink(name, dir_fd=directory_fd)
+                if parent_fd != directory_fd:
+                    os.close(parent_fd)
+            continue
+
+        current_fd = (
+            directory_fd
+            if not parts
+            else open_directory_beneath(directory_fd, parts)
+        )
+        try:
+            names = os.listdir(current_fd)
+            stack.append((parts, True))
+            for name in names:
+                metadata = os.stat(name, dir_fd=current_fd, follow_symlinks=False)
+                if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+                    stack.append(((*parts, name), False))
+                else:
+                    os.unlink(name, dir_fd=current_fd)
+        finally:
+            if current_fd != directory_fd:
+                os.close(current_fd)
 
 
 def _remove_owned_directory(parent_fd: int, name: str) -> None:

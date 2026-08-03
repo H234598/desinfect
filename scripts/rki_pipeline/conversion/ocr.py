@@ -26,6 +26,7 @@ from scripts.rki_pipeline.pdf_validation import (
     ProcessRunner,
     ProcessRunnerError,
     Runner,
+    require_fixed_runner_locale,
 )
 
 
@@ -367,6 +368,10 @@ def extract_text(
         raise OcrError("OCR-Rasterverzeichnis konnte nicht angelegt werden") from exc
 
     active_runner = runner if runner is not None else ProcessRunner()
+    try:
+        require_fixed_runner_locale(active_runner)
+    except ProcessRunnerError as exc:
+        raise OcrError("OCR-Runner erfüllt festen Locale-Vertrag nicht") from exc
     pdftoppm_probe = _probe(
         active_runner,
         pdftoppm_executable,

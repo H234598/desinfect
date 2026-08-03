@@ -192,6 +192,21 @@ def test_wrong_content_type_truncation_and_oversize_leave_no_partial(tmp_path: P
     assert not (tmp_path / ".minimal.pdf.part").exists()
 
 
+def test_zero_byte_existing_pdf_is_integrity_failure(tmp_path: Path) -> None:
+    target = tmp_path / "minimal.pdf"
+    target.write_bytes(b"")
+
+    with pytest.raises(PdfIntegrityError):
+        download_pdf(
+            build_client(FakeTransport({})),
+            candidate(),
+            target,
+            allowed_root=tmp_path,
+            force=False,
+            max_bytes=1024 * 1024,
+        )
+
+
 def test_symlinked_output_component_is_rejected(tmp_path: Path) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()

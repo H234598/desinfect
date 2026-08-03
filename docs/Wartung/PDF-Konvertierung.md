@@ -63,7 +63,8 @@ DPI, Graustufen, `deu+eng`, PSM 3 und OEM 1. OCR-Ergebnis bleibt immer
 - Wand- und CPU-Zeit je Toollauf: 120 Sekunden;
 - Adressraum: 2 GiB; offene Dateien: 256;
 - erzeugte Einzeldatei, stdout und Gesamtausgabe: jeweils 512 MiB;
-- stderr: 1 MiB; Conversion Manifest: 1 MiB.
+- stderr: 1 MiB; Conversion Manifest: 1 MiB;
+- Tool-Arbeitsbaum: 64 Ebenen und 4.096 Einträge.
 
 Toolprozesse laufen ohne Shell, mit fester Umgebung, festen Argumentlisten,
 Prozessgruppen- und Bytegrenzen sowie privaten markierten Arbeitsverzeichnissen.

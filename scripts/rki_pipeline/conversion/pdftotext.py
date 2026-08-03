@@ -12,6 +12,7 @@ from scripts.rki_pipeline.pdf_validation import (
     ProcessRunner,
     ProcessRunnerError,
     Runner,
+    require_fixed_runner_locale,
 )
 
 
@@ -94,13 +95,22 @@ def extract_text(
     cwd = Path(workdir)
     active_runner = runner if runner is not None else ProcessRunner()
     try:
+        require_fixed_runner_locale(active_runner)
+    except ProcessRunnerError as exc:
+        raise TextExtractionError(
+            "pdftotext-Runner erfüllt festen Locale-Vertrag nicht"
+        ) from exc
+    try:
         version_result = active_runner.run(
             executable,
             ("-v",),
             cwd=cwd,
             limits=limits,
         )
-        arguments = (*_ARGUMENT_TEMPLATE[:-2], source_path.as_posix(), "-")
+        arguments = tuple(
+            source_path.as_posix() if value == "$INPUT" else value
+            for value in _ARGUMENT_TEMPLATE
+        )
         extraction_result = active_runner.run(
             executable,
             arguments,
@@ -109,6 +119,10 @@ def extract_text(
         )
     except ProcessRunnerError as exc:
         raise TextExtractionError("pdftotext konnte nicht ausgeführt werden") from exc
+    if extraction_result.returncode != 0:
+        raise TextExtractionError(
+            f"pdftotext endete mit Status {extraction_result.returncode}"
+        )
     if version_result.executable_sha256 != extraction_result.executable_sha256:
         raise TextExtractionError("pdftotext-Executable driftete zwischen Aufrufen")
 

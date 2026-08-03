@@ -36,6 +36,10 @@ class StagingConflictError(StagingError):
     """A create-if-absent publication found a concurrently published target."""
 
 
+class StagingUnsupportedError(StagingError):
+    """Host filesystem cannot provide atomic no-replace publication."""
+
+
 @dataclass(slots=True)
 class StagingState:
     """Observable publication state for ledger/error reconciliation."""
@@ -49,7 +53,9 @@ def _rename_noreplace(parent_fd: int, source: str, target: str) -> None:
     try:
         renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
     except AttributeError as exc:
-        raise StagingError("Atomare NOREPLACE-Veröffentlichung wird nicht unterstützt") from exc
+        raise StagingUnsupportedError(
+            "Atomare NOREPLACE-Veröffentlichung wird nicht unterstützt"
+        ) from exc
     renameat2.argtypes = (
         ctypes.c_int,
         ctypes.c_char_p,
@@ -70,6 +76,14 @@ def _rename_noreplace(parent_fd: int, source: str, target: str) -> None:
     error = ctypes.get_errno()
     if error in {errno.EEXIST, errno.ENOTEMPTY}:
         raise StagingConflictError(f"Ziel wurde parallel veröffentlicht: {target}")
+    if error in {
+        errno.ENOSYS,
+        errno.EINVAL,
+        getattr(errno, "EOPNOTSUPP", errno.ENOTSUP),
+    }:
+        raise StagingUnsupportedError(
+            "Atomare NOREPLACE-Veröffentlichung wird nicht unterstützt"
+        )
     raise StagingError(
         f"Atomare NOREPLACE-Veröffentlichung fehlgeschlagen: {os.strerror(error)}"
     )

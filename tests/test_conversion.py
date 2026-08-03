@@ -119,7 +119,7 @@ def test_evidence_is_immutable_sorted_and_contains_no_machine_paths() -> None:
     with pytest.raises(FrozenInstanceError):
         tool.name = "changed"
     with pytest.raises(base.EvidenceError, match="Maschinenpfad"):
-        replace(tool, argv=("pdftotext", "/tmp/input.pdf"))
+        replace(tool, argv=("pdftotext", "/absolute/input.pdf"))
     with pytest.raises(base.EvidenceError, match="Maschinenpfad"):
         replace(tool, version_output="pdftotext from /usr/local/bin")
     with pytest.raises(base.EvidenceError, match="sortiert"):
@@ -137,9 +137,9 @@ def test_evidence_is_immutable_sorted_and_contains_no_machine_paths() -> None:
 @pytest.mark.parametrize(
     "argument",
     (
-        "--input=/tmp/input.pdf",
+        "--input=/absolute/input.pdf",
         '-I/usr/include',
-        "file:///tmp/input.pdf",
+        "file:///absolute/input.pdf",
     ),
 )
 def test_evidence_rejects_embedded_machine_paths(argument: str) -> None:
@@ -245,9 +245,18 @@ def test_quality_rejects_non_positive_expected_page_count() -> None:
 
 
 class _PdftotextRunner:
-    def __init__(self, output: bytes, *, drift: bool = False) -> None:
+    locale_environment = (("LANG", "C.UTF-8"), ("LC_ALL", "C.UTF-8"))
+
+    def __init__(
+        self,
+        output: bytes,
+        *,
+        drift: bool = False,
+        extraction_returncode: int = 0,
+    ) -> None:
         self.output = output
         self.drift = drift
+        self.extraction_returncode = extraction_returncode
         self.calls: list[tuple[str | Path, tuple[str, ...], Path]] = []
 
     def run(self, executable, arguments, *, cwd, limits):
@@ -264,7 +273,7 @@ class _PdftotextRunner:
         return validation.ProcessResult(
             argv=("/usr/bin/pdftotext", *arguments),
             executable_sha256=("e" if self.drift else "d") * 64,
-            returncode=0,
+            returncode=self.extraction_returncode,
             stdout=self.output,
             stderr=b"",
         )
@@ -315,6 +324,37 @@ def test_pdftotext_uses_fixed_argv_and_exact_page_markers(tmp_path: Path) -> Non
         "-",
     )
     assert result.tool.version_output == "pdftotext version 26.01.0"
+
+
+def test_pdftotext_rejects_nonzero_extraction_with_plausible_pages(tmp_path: Path) -> None:
+    pdftotext = import_module("scripts.rki_pipeline.conversion.pdftotext")
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"unused by injected runner")
+    runner = _PdftotextRunner(b"First page\n\f", extraction_returncode=7)
+
+    with pytest.raises(pdftotext.TextExtractionError, match="Status 7"):
+        pdftotext.extract_text(
+            source,
+            workdir=tmp_path,
+            expected_page_count=1,
+            runner=runner,
+        )
+
+
+def test_pdftotext_rejects_runner_without_fixed_locale(tmp_path: Path) -> None:
+    pdftotext = import_module("scripts.rki_pipeline.conversion.pdftotext")
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"unused by injected runner")
+    runner = _PdftotextRunner(b"First page\n\f")
+    runner.locale_environment = (("LANG", "de_DE.UTF-8"), ("LC_ALL", "de_DE.UTF-8"))
+
+    with pytest.raises(pdftotext.TextExtractionError, match="Locale"):
+        pdftotext.extract_text(
+            source,
+            workdir=tmp_path,
+            expected_page_count=1,
+            runner=runner,
+        )
 
 
 @pytest.mark.parametrize(

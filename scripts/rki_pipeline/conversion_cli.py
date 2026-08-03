@@ -158,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
             end="",
         )
         return EXIT_NEEDS_REVIEW
-    except (ConversionError, RuntimeEvidenceError) as exc:
+    except (ConversionError, RuntimeEvidenceError, StorageError) as exc:
         print(
             stable_json_dumps(
                 {"status": "failed", "error": str(exc), "temp_root": temp_root.as_posix()}

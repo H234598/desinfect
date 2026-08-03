@@ -46,6 +46,8 @@ def test_default_limits_pin_reviewed_p06_boundaries() -> None:
         stdout_bytes=512 * 1024 * 1024,
         stderr_bytes=1024 * 1024,
         total_output_bytes=512 * 1024 * 1024,
+        tree_depth=64,
+        tree_entries=4_096,
     )
 
 
@@ -216,7 +218,7 @@ def test_validated_pdf_rejects_tool_mutation_of_private_input(
     source.write_bytes(PDF)
     temp_root = tmp_path / "temp"
 
-    with pytest.raises(PdfByteValidationError, match="Tempkopie|Tool"):
+    with pytest.raises(PdfByteValidationError, match=r"Tempkopie|Tool"):
         validate_pdf(source, temp_root=temp_root, runner=MutatingRunner())
 
     assert source.read_bytes() == PDF
@@ -382,6 +384,41 @@ def test_process_runner_enforces_generated_file_limit(tmp_path: Path) -> None:
 
     with pytest.raises(ProcessOutputLimitError, match="Datei"):
         ProcessRunner().run(sys.executable, ("-c", code), cwd=tmp_path, limits=limits)
+
+
+def test_process_runner_rejects_excessive_output_tree_depth(tmp_path: Path) -> None:
+    code = (
+        "import os\n"
+        "fd = os.open('.', os.O_RDONLY | os.O_DIRECTORY)\n"
+        "try:\n"
+        "    for _ in range(70):\n"
+        "        os.mkdir('d', dir_fd=fd)\n"
+        "        child = os.open('d', os.O_RDONLY | os.O_DIRECTORY, dir_fd=fd)\n"
+        "        os.close(fd)\n"
+        "        fd = child\n"
+        "finally:\n"
+        "    os.close(fd)\n"
+    )
+
+    with pytest.raises(ProcessOutputLimitError, match="Ebenen"):
+        ProcessRunner().run(
+            sys.executable,
+            ("-c", code),
+            cwd=tmp_path,
+            limits=replace(DEFAULT_PDF_LIMITS, wall_seconds=5),
+        )
+
+
+def test_process_runner_rejects_excessive_output_tree_entries(tmp_path: Path) -> None:
+    code = "import pathlib;[pathlib.Path(f'f-{n}').touch() for n in range(5)]"
+
+    with pytest.raises(ProcessOutputLimitError, match="Einträge"):
+        ProcessRunner().run(
+            sys.executable,
+            ("-c", code),
+            cwd=tmp_path,
+            limits=replace(DEFAULT_PDF_LIMITS, tree_entries=4),
+        )
 
 
 def test_process_runner_enforces_total_output_limit(tmp_path: Path) -> None:

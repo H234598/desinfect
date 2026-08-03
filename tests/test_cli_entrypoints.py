@@ -18,6 +18,7 @@ from scripts.rki_pipeline.conversion.service import (
     ConversionError,
     ConversionNeedsReview,
 )
+from scripts.rki_pipeline.storage.base import StorageError
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -177,6 +178,7 @@ def test_conversion_cli_result_exit_contract(
     (
         (ConversionNeedsReview("tesseract fehlt"), "needs_review", 4),
         (ConversionError("parser failed"), "failed", 3),
+        (StorageError("authorization drift"), "failed", 3),
     ),
 )
 def test_conversion_cli_visible_error_contracts(

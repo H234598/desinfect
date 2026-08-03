@@ -304,7 +304,7 @@ def test_conversion_manifest_rejects_tampered_derived_identity(field: str) -> No
     payload = _conversion_manifest_payload()
     payload[field] = ("conv-" if field == "conversion_id" else "") + "0" * 64
 
-    with pytest.raises(SchemaContractError, match="Fingerprint|conversion_id"):
+    with pytest.raises(SchemaContractError, match=r"Fingerprint|conversion_id"):
         validate_document("conversion-manifest", payload)
 
 

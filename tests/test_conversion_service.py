@@ -26,6 +26,7 @@ from scripts.rki_pipeline.rights import (
     resolve_rights,
 )
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
+from scripts.rki_pipeline.staging import StagingError
 from scripts.rki_pipeline.storage.base import RightsStorageAuthorizer, StorageIntent
 
 
@@ -36,6 +37,8 @@ BITSTREAM_ID = "rki-bitstream-" + "1" * 64
 
 
 class _ConversionRunner:
+    locale_environment = (("LANG", "C.UTF-8"), ("LC_ALL", "C.UTF-8"))
+
     def __init__(
         self,
         text_output: bytes,
@@ -615,6 +618,7 @@ def test_existing_bundle_swap_during_fd_read_fails_closed(
 ) -> None:
     service, first, ledger, intent = _materialize(tmp_path, monkeypatch)
     target = first.output_path.parent
+    published_document = first.output_path.read_bytes()
     moved = target.with_name(target.name + "-moved")
     real_read = service._read_regular_bounded_with_identity_at
     swapped = False
@@ -646,7 +650,7 @@ def test_existing_bundle_swap_during_fd_read_fails_closed(
         )
 
     assert swapped is True
-    assert moved.joinpath("document.md").read_bytes() == first.output_path.resolve().read_bytes()
+    assert moved.joinpath("document.md").read_bytes() == published_document
 
 
 def test_peer_publish_between_check_and_publish_is_revalidated_and_skipped(
@@ -768,6 +772,35 @@ def test_each_generated_file_obeys_file_limit(
         )
 
     assert tuple(tmp_path.rglob("document.md")) == ()
+
+
+def test_public_service_normalizes_staging_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = import_module("scripts.rki_pipeline.conversion.service")
+    authorizer, intent = _authorizer_and_intent(tmp_path, monkeypatch)
+    temp_root = tmp_path / "materialized"
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root)
+
+    @contextmanager
+    def fail_staging(*args, **kwargs):
+        del args, kwargs
+        raise StagingError("publication failed")
+        yield
+
+    monkeypatch.setattr(service, "staged_directory", fail_staging)
+
+    with pytest.raises(service.ConversionError, match="Staging"):
+        service.materialize_conversion(
+            intent,
+            bitstream_id=BITSTREAM_ID,
+            temp_root=temp_root,
+            ledger=ledger,
+            authorizer=authorizer,
+            runtime=_runtime(),
+            runner=_ConversionRunner(b"A" * 80 + b"\f"),
+        )
 
 
 def test_revocation_before_first_temp_write_rolls_back_bundle_and_ledger(

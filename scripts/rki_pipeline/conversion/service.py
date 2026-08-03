@@ -57,11 +57,13 @@ from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 from scripts.rki_pipeline.schema_registry import validate_document
 from scripts.rki_pipeline.staging import (
     StagingConflictError,
+    StagingError,
     StagingState,
     staged_directory,
 )
 from scripts.rki_pipeline.storage.base import (
     RightsStorageAuthorizer,
+    StorageError,
     StorageIntent,
     authorize_storage_operation,
 )
@@ -713,3 +715,7 @@ def materialize_conversion(
         raise ConversionError(f"PDF-Textextraktion fehlgeschlagen: {exc}") from exc
     except OcrError as exc:
         raise ConversionError(f"PDF-OCR fehlgeschlagen: {exc}") from exc
+    except StagingError as exc:
+        raise ConversionError(f"Conversion-Staging fehlgeschlagen: {exc}") from exc
+    except StorageError as exc:
+        raise ConversionError(f"Conversion-Speicherzugriff fehlgeschlagen: {exc}") from exc
