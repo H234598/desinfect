@@ -15,11 +15,12 @@ import signal
 import stat
 import subprocess
 import time
-from typing import Iterator, Protocol, Sequence
+from typing import Iterator, Protocol
 import uuid
 
 from scripts.rki_pipeline.io_utils import (
     assert_generated_root_fd,
+    fd_directory_path,
     fsync_directory_fd,
     mark_generated_root_fd,
     open_directory_beneath,
@@ -144,6 +145,14 @@ class PdfValidation:
     parser: ProcessResult
 
 
+@dataclass(frozen=True, slots=True)
+class ValidatedPdfCopy:
+    """Validated private source copy that exists only inside its context."""
+
+    path: Path
+    validation: PdfValidation
+
+
 class Runner(Protocol):
     """Injected bounded-process port used by PDF validation tests."""
 
@@ -257,6 +266,41 @@ def _sha256_path(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _sha256_fd(descriptor: int) -> str:
+    digest = hashlib.sha256()
+    offset = 0
+    while True:
+        chunk = os.pread(descriptor, _READ_CHUNK, offset)
+        if not chunk:
+            return digest.hexdigest()
+        offset += len(chunk)
+        digest.update(chunk)
+
+
+def _file_identity(path: Path) -> tuple[int, int, int, int, int, int]:
+    metadata = path.stat(follow_symlinks=False)
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _fd_identity(descriptor: int) -> tuple[int, int, int, int, int, int]:
+    metadata = os.fstat(descriptor)
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
 def _set_child_limits(limits: PdfLimits) -> None:
     os.umask(0o077)
     resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_seconds, limits.cpu_seconds))
@@ -286,10 +330,18 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
             raise ProcessRunnerError("Tool-Prozessgruppe konnte nicht beendet werden") from exc
 
 
+def _close_process_pipes(process: subprocess.Popen[bytes]) -> None:
+    for pipe in (process.stdout, process.stderr):
+        if pipe is not None and not pipe.closed:
+            pipe.close()
+
+
 def _capture_bounded(
     process: subprocess.Popen[bytes],
     *,
     limits: PdfLimits,
+    cwd: Path,
+    before: dict[str, tuple[int, int, int, int, int, int]],
 ) -> tuple[bytes, bytes]:
     if process.stdout is None or process.stderr is None:
         raise ProcessRunnerError("Tool-Capture wurde nicht initialisiert")
@@ -300,19 +352,28 @@ def _capture_bounded(
     ceilings = {"stdout": limits.stdout_bytes, "stderr": limits.stderr_bytes}
     deadline = time.monotonic() + limits.wall_seconds
     try:
-        while selector.get_map():
+        while selector.get_map() or process.poll() is None:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 _kill_process_group(process)
                 raise ProcessTimeoutError(
                     f"Tool überschritt {limits.wall_seconds} Sekunden"
                 )
-            events = selector.select(remaining)
+            _validate_output_tree(
+                cwd,
+                limits,
+                before=before,
+                captured_bytes=sum(map(len, buffers.values())),
+            )
+            events = (
+                selector.select(min(remaining, 0.05))
+                if selector.get_map()
+                else ()
+            )
             if not events:
-                _kill_process_group(process)
-                raise ProcessTimeoutError(
-                    f"Tool überschritt {limits.wall_seconds} Sekunden"
-                )
+                if not selector.get_map() and process.poll() is None:
+                    time.sleep(min(remaining, 0.05))
+                continue
             for key, _mask in events:
                 stream = str(key.data)
                 chunk = os.read(key.fd, _CAPTURE_CHUNK)
@@ -326,17 +387,79 @@ def _capture_bounded(
                     raise ProcessOutputLimitError(
                         f"Tool-{stream} überschreitet {ceilings[stream]} Bytes"
                     )
+                if sum(map(len, buffers.values())) > limits.total_output_bytes:
+                    _kill_process_group(process)
+                    raise ProcessOutputLimitError(
+                        "Tool-Gesamtausgabe aus stdout/stderr überschreitet "
+                        f"{limits.total_output_bytes} Bytes"
+                    )
+                _validate_output_tree(
+                    cwd,
+                    limits,
+                    before=before,
+                    captured_bytes=sum(map(len, buffers.values())),
+                )
+    except BaseException:
+        _kill_process_group(process)
+        raise
     finally:
         selector.close()
-        for pipe in (process.stdout, process.stderr):
-            if not pipe.closed:
-                pipe.close()
-    process.wait()
+        _close_process_pipes(process)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        _kill_process_group(process)
+        raise ProcessTimeoutError(f"Tool überschritt {limits.wall_seconds} Sekunden")
+    try:
+        process.wait(timeout=remaining)
+    except subprocess.TimeoutExpired as exc:
+        _kill_process_group(process)
+        raise ProcessTimeoutError(
+            f"Tool überschritt {limits.wall_seconds} Sekunden"
+        ) from exc
     return bytes(buffers["stdout"]), bytes(buffers["stderr"])
 
 
-def _validate_output_tree(cwd: Path, limits: PdfLimits) -> None:
-    total = 0
+def _snapshot_output_tree(cwd: Path) -> dict[str, tuple[int, int, int, int, int, int]]:
+    snapshot: dict[str, tuple[int, int, int, int, int, int]] = {}
+    for root, directories, files in os.walk(cwd, followlinks=False):
+        for name in (*directories, *files):
+            path = Path(root) / name
+            metadata = path.stat(follow_symlinks=False)
+            if stat.S_ISLNK(metadata.st_mode):
+                raise ProcessOutputLimitError(f"Symlink im Tool-Arbeitsbaum: {path.name}")
+            snapshot[path.relative_to(cwd).as_posix()] = _file_identity(path)
+    return snapshot
+
+
+def _validate_output_tree(
+    cwd: Path,
+    limits: PdfLimits,
+    *,
+    before: dict[str, tuple[int, int, int, int, int, int]],
+    captured_bytes: int,
+) -> None:
+    total = captured_bytes
+    if total > limits.total_output_bytes:
+        raise ProcessOutputLimitError(
+            f"Tool-Gesamtausgabe überschreitet {limits.total_output_bytes} Bytes"
+        )
+    for relative, expected in before.items():
+        path = cwd / relative
+        try:
+            current = _file_identity(path)
+        except FileNotFoundError as exc:
+            raise ProcessOutputLimitError(
+                f"Tool entfernte vorhandenen Arbeitsbaum-Eintrag: {relative}"
+            ) from exc
+        unchanged = (
+            current[:3] == expected[:3]
+            if stat.S_ISDIR(expected[2])
+            else current == expected
+        )
+        if not unchanged:
+            raise ProcessOutputLimitError(
+                f"Tool veränderte vorhandenen Arbeitsbaum-Eintrag: {relative}"
+            )
     for root, directories, files in os.walk(cwd, followlinks=False):
         for name in (*directories, *files):
             path = Path(root) / name
@@ -344,6 +467,9 @@ def _validate_output_tree(cwd: Path, limits: PdfLimits) -> None:
             if stat.S_ISLNK(metadata.st_mode):
                 raise ProcessOutputLimitError(f"Symlink im Tool-Output: {path.name}")
             if not stat.S_ISREG(metadata.st_mode):
+                continue
+            relative = path.relative_to(cwd).as_posix()
+            if relative in before:
                 continue
             if metadata.st_size >= limits.generated_file_bytes:
                 raise ProcessOutputLimitError(
@@ -371,45 +497,93 @@ class ProcessRunner:
             type(value) is not str or "\x00" in value for value in arguments
         ):
             raise ProcessRunnerError("Tool-Argumente müssen ein NUL-freies Tupel sein")
-        workdir = Path(cwd)
-        if workdir.is_symlink():
+        workdir_path = Path(os.path.abspath(cwd))
+        if workdir_path.is_symlink():
             raise ProcessRunnerError("Tool-Arbeitsverzeichnis darf kein Symlink sein")
         try:
-            workdir = workdir.resolve(strict=True)
-        except OSError as exc:
-            raise ProcessRunnerError("Tool-Arbeitsverzeichnis fehlt") from exc
-        if not workdir.is_dir():
-            raise ProcessRunnerError("Tool-Arbeitsverzeichnis ist kein Verzeichnis")
-        resolved = _resolve_executable(executable)
-        executable_sha256 = _sha256_path(resolved)
-        argv = (resolved.as_posix(), *arguments)
-        try:
-            process = subprocess.Popen(
-                argv,
-                cwd=workdir,
-                env=dict(_FIXED_ENV),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                shell=False,
-                close_fds=True,
-                start_new_session=True,
-                preexec_fn=lambda: _set_child_limits(limits),
+            workdir_fd = os.open(
+                workdir_path,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | _CLOEXEC
+                | _NOFOLLOW,
             )
         except OSError as exc:
-            raise ProcessRunnerError(f"Tool konnte nicht gestartet werden: {resolved.name}") from exc
-        stdout, stderr = _capture_bounded(process, limits=limits)
-        _validate_output_tree(workdir, limits)
-        result = ProcessResult(
-            argv=argv,
-            executable_sha256=executable_sha256,
-            returncode=process.returncode,
-            stdout=stdout,
-            stderr=stderr,
-        )
-        if result.returncode != 0:
-            raise ProcessExecutionError(result)
-        return result
+            raise ProcessRunnerError("Tool-Arbeitsverzeichnis fehlt") from exc
+        try:
+            if not stat.S_ISDIR(os.fstat(workdir_fd).st_mode):
+                raise ProcessRunnerError("Tool-Arbeitsverzeichnis ist kein Verzeichnis")
+            workdir = fd_directory_path(workdir_fd)
+            resolved = _resolve_executable(executable)
+            executable_identity = _file_identity(resolved)
+            executable_sha256 = _sha256_path(resolved)
+            if _file_identity(resolved) != executable_identity:
+                raise ProcessRunnerError("Tool änderte sich während der Hashprüfung")
+            try:
+                executable_fd = os.open(resolved, os.O_RDONLY | _CLOEXEC | _NOFOLLOW)
+            except OSError as exc:
+                raise ProcessRunnerError("Tool änderte sich vor dem Prozessstart") from exc
+            try:
+                if _fd_identity(executable_fd) != executable_identity:
+                    raise ProcessRunnerError("Tool änderte sich vor dem Prozessstart")
+                if _sha256_fd(executable_fd) != executable_sha256:
+                    raise ProcessRunnerError("Toolinhalt änderte sich vor dem Prozessstart")
+                if _fd_identity(executable_fd) != executable_identity:
+                    raise ProcessRunnerError("Tool änderte sich vor dem Prozessstart")
+                argv = (resolved.as_posix(), *arguments)
+                before = _snapshot_output_tree(workdir)
+                try:
+                    process = subprocess.Popen(
+                        argv,
+                        executable=fd_directory_path(executable_fd),
+                        cwd=workdir,
+                        env=dict(_FIXED_ENV),
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        shell=False,
+                        close_fds=True,
+                        pass_fds=(workdir_fd, executable_fd),
+                        start_new_session=True,
+                        preexec_fn=lambda: _set_child_limits(limits),
+                    )
+                except (OSError, subprocess.SubprocessError) as exc:
+                    raise ProcessRunnerError(
+                        f"Tool konnte nicht gestartet werden: {resolved.name}"
+                    ) from exc
+                try:
+                    stdout, stderr = _capture_bounded(
+                        process,
+                        limits=limits,
+                        cwd=workdir,
+                        before=before,
+                    )
+                    _validate_output_tree(
+                        workdir,
+                        limits,
+                        before=before,
+                        captured_bytes=len(stdout) + len(stderr),
+                    )
+                    result = ProcessResult(
+                        argv=argv,
+                        executable_sha256=executable_sha256,
+                        returncode=process.returncode,
+                        stdout=stdout,
+                        stderr=stderr,
+                    )
+                    if result.returncode != 0:
+                        raise ProcessExecutionError(result)
+                    _kill_process_group(process)
+                    return result
+                except BaseException:
+                    _kill_process_group(process)
+                    raise
+                finally:
+                    _close_process_pipes(process)
+            finally:
+                os.close(executable_fd)
+        finally:
+            os.close(workdir_fd)
 
 
 @dataclass(frozen=True, slots=True)
@@ -475,7 +649,14 @@ def _owned_directory(parent: Path) -> Iterator[_OwnedDirectory]:
                     fsync_directory_fd(parent_fd)
 
 
-def _copy_descriptor(source_fd: int, target_directory_fd: int, name: str) -> int:
+def _copy_descriptor(
+    source_fd: int,
+    target_directory_fd: int,
+    name: str,
+    *,
+    expected_size: int,
+) -> int:
+    _validate_positive_limit(expected_size, "expected_size")
     target_fd = os.open(
         name,
         os.O_RDWR | os.O_CREAT | os.O_EXCL | _CLOEXEC | _NOFOLLOW,
@@ -484,10 +665,14 @@ def _copy_descriptor(source_fd: int, target_directory_fd: int, name: str) -> int
     )
     try:
         offset = 0
-        while True:
-            chunk = os.pread(source_fd, _READ_CHUNK, offset)
+        while offset < expected_size:
+            chunk = os.pread(
+                source_fd,
+                min(_READ_CHUNK, expected_size - offset),
+                offset,
+            )
             if not chunk:
-                break
+                raise PdfByteValidationError("PDF wurde vor stabiler Tempkopie verkürzt")
             offset += len(chunk)
             view = memoryview(chunk)
             while view:
@@ -501,6 +686,14 @@ def _copy_descriptor(source_fd: int, target_directory_fd: int, name: str) -> int
 
 
 def _open_pdf(path: Path) -> int:
+    absolute = Path(os.path.abspath(path))
+    try:
+        resolved = absolute.resolve(strict=True)
+    except OSError as exc:
+        raise PdfByteValidationError(f"PDF ist nicht lesbar: {path}") from exc
+    if resolved != absolute:
+        raise PdfByteValidationError("PDF-Quellpfad enthält eine Symlink-Komponente")
+    path = absolute
     try:
         metadata = path.stat(follow_symlinks=False)
     except OSError as exc:
@@ -547,22 +740,28 @@ def _parse_pdfinfo(stdout: bytes, *, max_pages: int) -> tuple[int, bool]:
     return pages, encrypted
 
 
-def validate_pdf(
+@contextmanager
+def validated_pdf(
     path: Path,
     *,
     temp_root: Path,
     runner: Runner | None = None,
     limits: PdfLimits = DEFAULT_PDF_LIMITS,
     pdfinfo_executable: str | Path = "pdfinfo",
-) -> PdfValidation:
-    """Validate bytes and parser evidence against one stable private PDF copy."""
+) -> Iterator[ValidatedPdfCopy]:
+    """Yield one parser-validated private copy and securely remove it afterward."""
 
     source = Path(path)
     source_fd = _open_pdf(source)
     try:
         byte_validation = validate_pdf_fd(source_fd, max_bytes=limits.source_bytes)
         with _owned_directory(Path(temp_root)) as owned:
-            copied_fd = _copy_descriptor(source_fd, owned.descriptor, "source.pdf")
+            copied_fd = _copy_descriptor(
+                source_fd,
+                owned.descriptor,
+                "source.pdf",
+                expected_size=byte_validation.size,
+            )
             try:
                 copied_validation = validate_pdf_fd(
                     copied_fd,
@@ -572,7 +771,9 @@ def validate_pdf(
                 os.close(copied_fd)
             if copied_validation != byte_validation:
                 raise PdfByteValidationError("Stabile PDF-Tempkopie driftet von der Quelle")
-            arguments = ("-enc", "UTF-8", (owned.path / "source.pdf").as_posix())
+            if validate_pdf_fd(source_fd, max_bytes=limits.source_bytes) != byte_validation:
+                raise PdfByteValidationError("PDF-Quelle änderte sich während der Tempkopie")
+            arguments = ("-enc", "UTF-8", "source.pdf")
             active_runner = runner if runner is not None else ProcessRunner()
             try:
                 parser = active_runner.run(
@@ -583,7 +784,53 @@ def validate_pdf(
                 )
             except ProcessRunnerError as exc:
                 raise PdfParserError("pdfinfo konnte PDF nicht parserisch öffnen") from exc
+            try:
+                post_tool_fd = os.open(
+                    "source.pdf",
+                    os.O_RDONLY | _CLOEXEC | _NOFOLLOW,
+                    dir_fd=owned.descriptor,
+                )
+            except OSError as exc:
+                raise PdfByteValidationError(
+                    "Tool entfernte oder ersetzte stabile PDF-Tempkopie"
+                ) from exc
+            try:
+                post_tool_validation = validate_pdf_fd(
+                    post_tool_fd,
+                    max_bytes=limits.source_bytes,
+                )
+            except PdfByteValidationError as exc:
+                raise PdfByteValidationError(
+                    "Tool veränderte stabile PDF-Tempkopie"
+                ) from exc
+            finally:
+                os.close(post_tool_fd)
+            if post_tool_validation != byte_validation:
+                raise PdfByteValidationError("Tool veränderte stabile PDF-Tempkopie")
             pages, encrypted = _parse_pdfinfo(parser.stdout, max_pages=limits.pages)
-            return PdfValidation(byte_validation, pages, encrypted, parser)
+            yield ValidatedPdfCopy(
+                owned.path / "source.pdf",
+                PdfValidation(byte_validation, pages, encrypted, parser),
+            )
     finally:
         os.close(source_fd)
+
+
+def validate_pdf(
+    path: Path,
+    *,
+    temp_root: Path,
+    runner: Runner | None = None,
+    limits: PdfLimits = DEFAULT_PDF_LIMITS,
+    pdfinfo_executable: str | Path = "pdfinfo",
+) -> PdfValidation:
+    """Return validation evidence while retaining no private source copy."""
+
+    with validated_pdf(
+        path,
+        temp_root=temp_root,
+        runner=runner,
+        limits=limits,
+        pdfinfo_executable=pdfinfo_executable,
+    ) as value:
+        return value.validation
