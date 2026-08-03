@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import errno
 import fcntl
-import hashlib
 import os
 from pathlib import Path
 import stat
@@ -22,6 +21,11 @@ from scripts.rki_pipeline.io_utils import (
     open_directory_beneath,
     open_root_directory,
     relative_path_beneath,
+)
+from scripts.rki_pipeline.pdf_validation import (
+    PdfByteValidationError,
+    PdfSizeLimitError,
+    validate_pdf_fd,
 )
 
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -150,53 +154,19 @@ def _hash_and_validate_fd(
     max_bytes: int,
     expected_md5: str | None,
 ) -> tuple[int, str, str]:
-    """Stream hashes and validate PDF magic and final EOF marker."""
+    """Map shared PDF byte evidence to stable downloader exceptions."""
 
-    metadata = os.fstat(descriptor)
-    if not stat.S_ISREG(metadata.st_mode):
-        raise PdfIntegrityError(
-            "PDF-Deskriptor verweist nicht auf eine reguläre Datei"
+    try:
+        result = validate_pdf_fd(
+            descriptor,
+            max_bytes=max_bytes,
+            expected_md5=expected_md5,
         )
-    if metadata.st_size <= 0 or metadata.st_size > max_bytes:
-        raise ResponseTooLargeError(
-            f"PDF-Größe {metadata.st_size} liegt außerhalb "
-            f"1..{max_bytes} Bytes"
-        )
-    os.lseek(descriptor, 0, os.SEEK_SET)
-    prefix = os.read(descriptor, 5)
-    if prefix != b"%PDF-":
-        raise PdfIntegrityError(f"Ungültige PDF-Magic: {prefix!r}")
-    os.lseek(descriptor, 0, os.SEEK_SET)
-    md5 = hashlib.md5(usedforsecurity=False)
-    sha256 = hashlib.sha256()
-    total = 0
-    tail = b""
-    while True:
-        chunk = os.read(descriptor, 1024 * 1024)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > max_bytes:
-            raise ResponseTooLargeError(
-                f"PDF überschreitet {max_bytes} Bytes"
-            )
-        md5.update(chunk)
-        sha256.update(chunk)
-        tail = (tail + chunk)[-4096:]
-    if not tail.rstrip().endswith(b"%%EOF"):
-        raise PdfIntegrityError(
-            "PDF besitzt keinen abschließenden %%EOF-Marker"
-        )
-    md5_hex = md5.hexdigest()
-    if (
-        expected_md5 is not None
-        and md5_hex != expected_md5.lower()
-    ):
-        raise PdfIntegrityError(
-            f"MD5-Prüfung fehlgeschlagen: "
-            f"{md5_hex} != {expected_md5.lower()}"
-        )
-    return total, md5_hex, sha256.hexdigest()
+    except PdfSizeLimitError as exc:
+        raise ResponseTooLargeError(str(exc)) from exc
+    except PdfByteValidationError as exc:
+        raise PdfIntegrityError(str(exc)) from exc
+    return result.size, result.md5, result.sha256
 
 
 def _validate_content_type(
