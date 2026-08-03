@@ -2,15 +2,20 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from scripts.rki_pipeline import rights
 from scripts.rki_pipeline.schema_registry import validate_document
+from scripts.rki_pipeline.storage import base as storage_base
 from scripts.rki_pipeline.storage.base import (
     PreparedObject,
     StorageBackend,
     StorageConfigurationError,
+    StorageError,
     StorageIntent,
     StorageReference,
 )
@@ -22,6 +27,11 @@ SOURCE_SHA256 = "b" * 64
 DECISION_SHA256 = "c" * 64
 DOCUMENT_ID = "rki-176904-12345-v2"
 CONVERSION_ID = "conv-" + "d" * 64
+
+
+class AllowAuthorizer:
+    def authorize(self, subject: Any, *, operation: str) -> None:
+        pass
 
 
 def write_config(tmp_path: Path, text: str) -> Path:
@@ -331,10 +341,83 @@ def test_factory_requires_clients_for_remote_backends(tmp_path: Path) -> None:
             config,
             backend=StorageBackend.RELEASE,
             repository_root=tmp_path,
+            authorizer=AllowAuthorizer(),
         )
     with pytest.raises(StorageConfigurationError, match="ObjectClient"):
         build_storage_adapter(
             config,
             backend=StorageBackend.OBJECT,
             repository_root=tmp_path,
+            authorizer=AllowAuthorizer(),
         )
+
+
+def test_factory_requires_explicit_authorizer_without_allow_all_default(
+    tmp_path: Path,
+) -> None:
+    config = load_storage_config(write_config(tmp_path, valid_config()))
+
+    with pytest.raises((TypeError, StorageConfigurationError), match="authorizer"):
+        build_storage_adapter(
+            config,
+            backend=StorageBackend.LFS,
+            repository_root=tmp_path,
+        )
+
+
+def test_rights_storage_authorizer_reloads_and_compares_exact_decision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    register_path = tmp_path / "rights-register.yml"
+
+    def write_decision(state: str) -> str:
+        register_path.write_text(
+            "schema_version: 1\n"
+            "decisions:\n"
+            f'  - source_id: "{SOURCE_ID}"\n'
+            f'    source_sha256: "{SOURCE_SHA256}"\n'
+            f'    state: "{state}"\n'
+            '    basis: "Reviewed RKI reuse terms"\n'
+            '    reviewed_by: "Legal Reviewer"\n'
+            '    reviewed_at: "2026-08-03T08:00:00Z"\n',
+            encoding="utf-8",
+        )
+        decision = rights.load_rights_register(register_path).entries[0]
+        assert decision.decision_sha256 is not None
+        return decision.decision_sha256
+
+    approved_hash = write_decision("approved")
+    monkeypatch.setattr(rights, "DEFAULT_REGISTER_PATH", register_path)
+    authorizer_type = getattr(storage_base, "RightsStorageAuthorizer")
+    authorizer = authorizer_type(
+        authority=rights.load_rights_authority(),
+        policy=rights.load_rights_policy(),
+    )
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"payload")
+    intent = StorageIntent.from_path(
+        source,
+        artifact_id="artifact-1",
+        logical_key="Jahre/1994/a.pdf",
+        source_id=SOURCE_ID,
+        source_sha256=SOURCE_SHA256,
+        decision_sha256=approved_hash,
+        document_id=DOCUMENT_ID,
+        visibility="repository_authorized",
+        rights_state="approved",
+    )
+    authorizer.authorize(intent, operation="materialize")
+
+    for drifted in (
+        replace(intent, source_id="rki:176904/99999.2", document_id=None),
+        replace(intent, source_sha256="e" * 64),
+        replace(intent, decision_sha256="f" * 64),
+        replace(intent, rights_state="metadata_only"),
+    ):
+        with pytest.raises(StorageError, match="Rechte|autorisiert|Entscheidung"):
+            authorizer.authorize(drifted, operation="materialize")
+
+    write_decision("takedown")
+    with pytest.raises(StorageError, match="Rechte|autorisiert|Entscheidung"):
+        authorizer.authorize(intent, operation="apply")

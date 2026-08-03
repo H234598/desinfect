@@ -13,9 +13,11 @@ from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 from scripts.rki_pipeline.storage.base import (
     PreparedObject,
     StorageBackend,
+    StorageAuthorizer,
     StorageError,
     StorageIntent,
     StorageReference,
+    authorize_storage_operation,
     hash_file,
 )
 from scripts.rki_pipeline.storage.config import LfsConfig
@@ -182,7 +184,13 @@ class LfsStorageAdapter:
 
     backend = StorageBackend.LFS
 
-    def __init__(self, *, repository_root: Path, config: LfsConfig) -> None:
+    def __init__(
+        self,
+        *,
+        repository_root: Path,
+        config: LfsConfig,
+        authorizer: StorageAuthorizer,
+    ) -> None:
         try:
             self.repository_root = Path(repository_root).resolve(strict=True)
         except OSError as exc:
@@ -191,6 +199,21 @@ class LfsStorageAdapter:
             raise LfsIntegrityError(f"Repositoryroot ist kein Verzeichnis: {repository_root}")
         self.config = config
         self.artifact_root = normalize_posix_path(config.artifact_root)
+        if not isinstance(authorizer, StorageAuthorizer):
+            raise LfsIntegrityError("authorizer erfüllt das StorageAuthorizer-Protokoll nicht")
+        self.authorizer = authorizer
+
+    def authorize(
+        self,
+        subject: StorageIntent | PreparedObject | StorageReference,
+        *,
+        operation: str,
+    ) -> None:
+        authorize_storage_operation(
+            self.authorizer,
+            subject,
+            operation=operation,
+        )
 
     def _relative_path(self, logical_key: str) -> str:
         normalized = normalize_posix_path(logical_key)
@@ -240,12 +263,19 @@ class LfsStorageAdapter:
         )
 
     def exists(self, intent: StorageIntent) -> StorageReference | None:
+        self.authorize(intent, operation="exists")
         target = self._target(intent.logical_key)
         if not target.exists() and not target.is_symlink():
             return None
         reference = self.reference_for_path(
             target,
             artifact_id=intent.artifact_id,
+            source_id=intent.source_id,
+            source_sha256=intent.source_sha256,
+            document_id=intent.document_id,
+            conversion_id=intent.conversion_id,
+            decision_sha256=intent.decision_sha256,
+            provenance_state="current",
             visibility=intent.visibility,
             rights_state=intent.rights_state,
         )
@@ -256,6 +286,7 @@ class LfsStorageAdapter:
     def materialize(self, intent: StorageIntent, *, temp_root: Path, ledger: EffectLedger) -> PreparedObject:
         if ledger.mode is not RunMode.MATERIALIZE:
             raise LfsIntegrityError("LFS-Materialisierung benötigt RunMode materialize")
+        self.authorize(intent, operation="materialize")
         target = Path(temp_root) / normalize_posix_path(intent.logical_key)
         atomic_write_bytes(target, intent.source_path.read_bytes(), allowed_root=Path(temp_root))
         ledger.record(EffectKind.TEMP_FILE, target.absolute().as_posix(), sha256=intent.sha256, size=intent.size)
@@ -266,6 +297,11 @@ class LfsStorageAdapter:
             temp_root=Path(temp_root),
             sha256=intent.sha256,
             size=intent.size,
+            source_id=intent.source_id,
+            source_sha256=intent.source_sha256,
+            decision_sha256=intent.decision_sha256,
+            document_id=intent.document_id,
+            conversion_id=intent.conversion_id,
             visibility=intent.visibility,
             rights_state=intent.rights_state,
         )
@@ -275,6 +311,7 @@ class LfsStorageAdapter:
             raise LfsIntegrityError("LFS-Export benötigt RunMode materialize")
         if reference.storage_backend is not StorageBackend.LFS:
             raise LfsIntegrityError("Referenz gehört nicht zum LFS-Backend")
+        self.authorize(reference, operation="export")
         source, _relative = self._validated_source(
             self.repository_root / normalize_posix_path(reference.relative_path)
         )
@@ -297,6 +334,11 @@ class LfsStorageAdapter:
             temp_root=Path(temp_root),
             sha256=measured_hash,
             size=measured_size,
+            source_id=reference.source_id,
+            source_sha256=reference.source_sha256,
+            decision_sha256=reference.decision_sha256,
+            document_id=reference.document_id,
+            conversion_id=reference.conversion_id,
             visibility=reference.visibility,
             rights_state=reference.rights_state,
         )
@@ -304,6 +346,7 @@ class LfsStorageAdapter:
     def apply(self, prepared: PreparedObject, *, ledger: EffectLedger) -> StorageReference:
         if ledger.mode is not RunMode.APPLY:
             raise LfsIntegrityError("LFS-Publikation benötigt RunMode apply")
+        self.authorize(prepared, operation="apply")
         validate_lfs_tracking(self.repository_root / ".gitattributes")
         payload = self._prepared_payload(prepared)
         relative = self._relative_path(prepared.logical_key)
@@ -312,6 +355,12 @@ class LfsStorageAdapter:
             existing = self.reference_for_path(
                 target,
                 artifact_id=prepared.artifact_id,
+                source_id=prepared.source_id,
+                source_sha256=prepared.source_sha256,
+                document_id=prepared.document_id,
+                conversion_id=prepared.conversion_id,
+                decision_sha256=prepared.decision_sha256,
+                provenance_state="current",
                 visibility=prepared.visibility,
                 rights_state=prepared.rights_state,
             )
@@ -357,6 +406,12 @@ class LfsStorageAdapter:
             storage_object_id=f"sha256:{prepared.sha256}",
             sha256=prepared.sha256,
             size=prepared.size,
+            source_id=prepared.source_id,
+            source_sha256=prepared.source_sha256,
+            document_id=prepared.document_id,
+            conversion_id=prepared.conversion_id,
+            decision_sha256=prepared.decision_sha256,
+            provenance_state="current",
             visibility=prepared.visibility,
             rights_state=prepared.rights_state,
             public_reference=None,
@@ -369,6 +424,12 @@ class LfsStorageAdapter:
         path: Path,
         *,
         artifact_id: str,
+        source_id: str | None,
+        source_sha256: str | None,
+        document_id: str | None,
+        conversion_id: str | None,
+        decision_sha256: str | None,
+        provenance_state: str,
         visibility: str,
         rights_state: str,
     ) -> StorageReference:
@@ -386,6 +447,12 @@ class LfsStorageAdapter:
             storage_object_id=f"sha256:{sha256}",
             sha256=sha256,
             size=size,
+            source_id=source_id,
+            source_sha256=source_sha256,
+            document_id=document_id,
+            conversion_id=conversion_id,
+            decision_sha256=decision_sha256,
+            provenance_state=provenance_state,
             visibility=visibility,
             rights_state=rights_state,
             public_reference=None,
@@ -394,6 +461,7 @@ class LfsStorageAdapter:
     def verify(self, reference: StorageReference) -> None:
         if reference.storage_backend is not StorageBackend.LFS:
             raise LfsIntegrityError("Referenz gehört nicht zum LFS-Backend")
+        self.authorize(reference, operation="verify")
         target, _relative = self._validated_source(
             self.repository_root / normalize_posix_path(reference.relative_path)
         )
@@ -430,6 +498,12 @@ class LfsStorageAdapter:
                 self.reference_for_path(
                     path,
                     artifact_id=f"lfs-{digest}",
+                    source_id=None,
+                    source_sha256=None,
+                    document_id=None,
+                    conversion_id=None,
+                    decision_sha256=None,
+                    provenance_state="legacy_needs_review",
                     visibility="repository_authorized",
                     rights_state="unknown",
                 )

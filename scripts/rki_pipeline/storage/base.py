@@ -11,6 +11,13 @@ import re
 from typing import Protocol, runtime_checkable
 
 from scripts.rki_pipeline.io_utils import normalize_posix_path
+from scripts.rki_pipeline.rights import (
+    RightsAuthority,
+    RightsPolicy,
+    RightsPolicyError,
+    RightsState,
+    resolve_rights,
+)
 from scripts.rki_pipeline.run_modes import EffectLedger
 
 _SHA256 = frozenset("0123456789abcdef")
@@ -32,6 +39,10 @@ class StorageError(RuntimeError):
 
 class StorageConfigurationError(StorageError):
     """Storage configuration is unknown, malformed, or incomplete."""
+
+
+class StorageAuthorizationError(StorageError):
+    """Current canonical rights do not authorize a payload operation."""
 
 
 class StorageBackend(StrEnum):
@@ -306,11 +317,87 @@ class StorageReference:
 
 
 @runtime_checkable
+class StorageAuthorizer(Protocol):
+    """Injected fail-closed gate for every payload byte boundary."""
+
+    def authorize(
+        self,
+        subject: StorageIntent | PreparedObject | StorageReference,
+        *,
+        operation: str,
+    ) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class RightsStorageAuthorizer:
+    """Authorize storage only from a freshly reloaded pinned rights authority."""
+
+    authority: RightsAuthority
+    policy: RightsPolicy
+
+    def authorize(
+        self,
+        subject: StorageIntent | PreparedObject | StorageReference,
+        *,
+        operation: str,
+    ) -> None:
+        if getattr(subject, "provenance_state", "current") != "current":
+            raise StorageAuthorizationError(
+                f"Legacy-Provenienz blockiert Storage-{operation}"
+            )
+        try:
+            decision = resolve_rights(
+                subject.source_id,
+                subject.source_sha256,
+                authority=self.authority,
+                policy=self.policy,
+            )
+        except (AttributeError, RightsPolicyError) as exc:
+            raise StorageAuthorizationError(
+                f"Rechteentscheidung für Storage-{operation} ist ungültig"
+            ) from exc
+        if (
+            decision.decision_sha256 != subject.decision_sha256
+            or decision.state.value != subject.rights_state
+        ):
+            raise StorageAuthorizationError(
+                f"Rechteentscheidung für Storage-{operation} ist veraltet oder falsch"
+            )
+        allowed = (
+            decision.state is RightsState.APPROVED
+            and subject.visibility in self.policy.approved_visibilities
+        ) or (
+            decision.state is RightsState.INTERNAL_ONLY
+            and subject.visibility in self.policy.internal_only_visibilities
+        )
+        if not allowed:
+            raise StorageAuthorizationError(
+                f"Rechteentscheidung autorisiert Storage-{operation} nicht"
+            )
+
+
+def authorize_storage_operation(
+    authorizer: StorageAuthorizer,
+    subject: StorageIntent | PreparedObject | StorageReference,
+    *,
+    operation: str,
+) -> None:
+    """Enforce non-bypassable provenance floor before injected policy."""
+
+    if getattr(subject, "provenance_state", "current") != "current":
+        raise StorageAuthorizationError(
+            f"Legacy-Provenienz blockiert Storage-{operation}"
+        )
+    authorizer.authorize(subject, operation=operation)
+
+
+@runtime_checkable
 class StorageAdapter(Protocol):
     """Required behavior of every testable and migratable backend."""
 
     backend: StorageBackend
 
+    def authorize(self, subject: StorageIntent | PreparedObject | StorageReference, *, operation: str) -> None: ...
     def exists(self, intent: StorageIntent) -> StorageReference | None: ...
     def materialize(self, intent: StorageIntent, *, temp_root: Path, ledger: EffectLedger) -> PreparedObject: ...
     def export(self, reference: StorageReference, *, temp_root: Path, ledger: EffectLedger) -> PreparedObject: ...

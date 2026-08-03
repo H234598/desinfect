@@ -10,11 +10,31 @@ from scripts.rki_pipeline.io_utils import atomic_write_bytes, normalize_posix_pa
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 from scripts.rki_pipeline.storage.base import (
     PreparedObject,
+    StorageAuthorizer,
     StorageBackend,
     StorageError,
     StorageIntent,
     StorageReference,
+    authorize_storage_operation,
     hash_file,
+)
+
+_REMOTE_METADATA_FIELDS = frozenset(
+    {
+        "schema_version",
+        "artifact_id",
+        "sha256",
+        "size",
+        "source_id",
+        "source_sha256",
+        "document_id",
+        "conversion_id",
+        "decision_sha256",
+        "provenance_state",
+        "visibility",
+        "rights_state",
+        "public_reference",
+    }
 )
 
 
@@ -23,7 +43,12 @@ class RemoteClient(Protocol):
     """Minimal client port implemented by release and object integrations."""
 
     def head(self, key: str) -> dict[str, Any] | None: ...
-    def put(self, key: str, source_path: Path, sha256: str, size: int) -> str | None: ...
+    def put(
+        self,
+        key: str,
+        source_path: Path,
+        metadata: dict[str, object],
+    ) -> str | None: ...
     def get(self, key: str, target_path: Path) -> None: ...
     def list(self, prefix: str) -> tuple[dict[str, Any], ...]: ...
 
@@ -34,12 +59,34 @@ class RemoteStorageAdapter:
     backend: StorageBackend
     effect_kind: EffectKind
 
-    def __init__(self, *, client: RemoteClient, prefix: str, object_prefix: str) -> None:
+    def __init__(
+        self,
+        *,
+        client: RemoteClient,
+        prefix: str,
+        object_prefix: str,
+        authorizer: StorageAuthorizer,
+    ) -> None:
         if not isinstance(client, RemoteClient):
             raise StorageError("client erfüllt das RemoteClient-Protokoll nicht")
         self.client = client
         self.prefix = normalize_posix_path(prefix)
         self.object_prefix = object_prefix
+        if not isinstance(authorizer, StorageAuthorizer):
+            raise StorageError("authorizer erfüllt das StorageAuthorizer-Protokoll nicht")
+        self.authorizer = authorizer
+
+    def authorize(
+        self,
+        subject: StorageIntent | PreparedObject | StorageReference,
+        *,
+        operation: str,
+    ) -> None:
+        authorize_storage_operation(
+            self.authorizer,
+            subject,
+            operation=operation,
+        )
 
     def _key(self, logical_key: str) -> str:
         normalized = normalize_posix_path(logical_key)
@@ -47,7 +94,23 @@ class RemoteStorageAdapter:
             return normalized
         return normalize_posix_path(f"{self.prefix}/{normalized}")
 
-    def _reference(self, *, artifact_id: str, key: str, sha256: str, size: int, visibility: str, rights_state: str, public_reference: str | None) -> StorageReference:
+    def _reference(
+        self,
+        *,
+        artifact_id: str,
+        key: str,
+        sha256: str,
+        size: int,
+        source_id: str | None,
+        source_sha256: str | None,
+        document_id: str | None,
+        conversion_id: str | None,
+        decision_sha256: str | None,
+        provenance_state: str,
+        visibility: str,
+        rights_state: str,
+        public_reference: str | None,
+    ) -> StorageReference:
         return StorageReference(
             artifact_id=artifact_id,
             relative_path=key,
@@ -55,27 +118,87 @@ class RemoteStorageAdapter:
             storage_object_id=f"{self.object_prefix}:{key}",
             sha256=sha256,
             size=size,
+            source_id=source_id,
+            source_sha256=source_sha256,
+            document_id=document_id,
+            conversion_id=conversion_id,
+            decision_sha256=decision_sha256,
+            provenance_state=provenance_state,
             visibility=visibility,
             rights_state=rights_state,
             public_reference=public_reference,
         )
 
-    def _reference_from_metadata(self, key: str, metadata: dict[str, Any], *, fallback: StorageIntent | PreparedObject | None = None) -> StorageReference:
-        def value(name: str) -> Any:
-            if name in metadata:
-                return metadata[name]
-            if fallback is not None:
-                return getattr(fallback, name)
-            raise StorageError(f"Remote-Metadaten fehlen: {name}")
+    def _reference_from_metadata(
+        self,
+        key: str,
+        metadata: dict[str, Any],
+        *,
+        listed: bool = False,
+    ) -> StorageReference:
+        if not isinstance(metadata, dict):
+            raise StorageError("Remote-Metadaten sind kein Objekt")
+        expected = _REMOTE_METADATA_FIELDS | ({"key"} if listed else set())
+        if set(metadata) != expected or metadata.get("schema_version") != "1.1.0":
+            raise StorageError("Remote-Metadaten erfüllen Vertrag 1.1.0 nicht")
+        try:
+            return self._reference(
+                artifact_id=metadata["artifact_id"],
+                key=key,
+                sha256=metadata["sha256"],
+                size=metadata["size"],
+                source_id=metadata["source_id"],
+                source_sha256=metadata["source_sha256"],
+                document_id=metadata["document_id"],
+                conversion_id=metadata["conversion_id"],
+                decision_sha256=metadata["decision_sha256"],
+                provenance_state=metadata["provenance_state"],
+                visibility=metadata["visibility"],
+                rights_state=metadata["rights_state"],
+                public_reference=metadata["public_reference"],
+            )
+        except (TypeError, ValueError) as exc:
+            raise StorageError("Remote-Metadaten sind ungültig") from exc
 
+    @staticmethod
+    def _metadata(subject: StorageIntent | PreparedObject) -> dict[str, object]:
+        return {
+            "schema_version": "1.1.0",
+            "artifact_id": subject.artifact_id,
+            "sha256": subject.sha256,
+            "size": subject.size,
+            "source_id": subject.source_id,
+            "source_sha256": subject.source_sha256,
+            "document_id": subject.document_id,
+            "conversion_id": subject.conversion_id,
+            "decision_sha256": subject.decision_sha256,
+            "provenance_state": "current",
+            "visibility": subject.visibility,
+            "rights_state": subject.rights_state,
+            "public_reference": None,
+        }
+
+    def _expected_reference(
+        self,
+        subject: StorageIntent | PreparedObject,
+        *,
+        key: str,
+        public_reference: str | None,
+    ) -> StorageReference:
         return self._reference(
-            artifact_id=value("artifact_id"),
+            artifact_id=subject.artifact_id,
             key=key,
-            sha256=value("sha256"),
-            size=value("size"),
-            visibility=value("visibility"),
-            rights_state=value("rights_state"),
-            public_reference=metadata.get("public_reference"),
+            sha256=subject.sha256,
+            size=subject.size,
+            source_id=subject.source_id,
+            source_sha256=subject.source_sha256,
+            document_id=subject.document_id,
+            conversion_id=subject.conversion_id,
+            decision_sha256=subject.decision_sha256,
+            provenance_state="current",
+            visibility=subject.visibility,
+            rights_state=subject.rights_state,
+            public_reference=public_reference,
         )
 
     def exists(self, intent: StorageIntent) -> StorageReference | None:
@@ -83,14 +206,20 @@ class RemoteStorageAdapter:
         metadata = self.client.head(key)
         if metadata is None:
             return None
-        reference = self._reference_from_metadata(key, metadata, fallback=intent)
-        if (reference.sha256, reference.size) != (intent.sha256, intent.size):
+        reference = self._reference_from_metadata(key, metadata)
+        expected = self._expected_reference(
+            intent,
+            key=key,
+            public_reference=reference.public_reference,
+        )
+        if reference != expected:
             raise StorageError(f"Remote-Konflikt für {key}")
         return reference
 
     def materialize(self, intent: StorageIntent, *, temp_root: Path, ledger: EffectLedger) -> PreparedObject:
         if ledger.mode is not RunMode.MATERIALIZE:
             raise StorageError("Remote-Materialisierung benötigt RunMode materialize")
+        self.authorize(intent, operation="materialize")
         target = Path(temp_root) / normalize_posix_path(intent.logical_key)
         atomic_write_bytes(target, intent.source_path.read_bytes(), allowed_root=Path(temp_root))
         ledger.record(EffectKind.TEMP_FILE, target.absolute().as_posix(), sha256=intent.sha256, size=intent.size)
@@ -101,6 +230,11 @@ class RemoteStorageAdapter:
             temp_root=Path(temp_root),
             sha256=intent.sha256,
             size=intent.size,
+            source_id=intent.source_id,
+            source_sha256=intent.source_sha256,
+            decision_sha256=intent.decision_sha256,
+            document_id=intent.document_id,
+            conversion_id=intent.conversion_id,
             visibility=intent.visibility,
             rights_state=intent.rights_state,
         )
@@ -112,6 +246,7 @@ class RemoteStorageAdapter:
             raise StorageError("Remote-Export benötigt RunMode materialize")
         if reference.storage_backend is not self.backend:
             raise StorageError("Referenz gehört zu einem anderen Backend")
+        self.authorize(reference, operation="export")
         target = Path(temp_root) / normalize_posix_path(reference.relative_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         part = target.with_name(f".{target.name}.export.part")
@@ -132,6 +267,11 @@ class RemoteStorageAdapter:
             temp_root=Path(temp_root),
             sha256=sha256,
             size=size,
+            source_id=reference.source_id,
+            source_sha256=reference.source_sha256,
+            decision_sha256=reference.decision_sha256,
+            document_id=reference.document_id,
+            conversion_id=reference.conversion_id,
             visibility=reference.visibility,
             rights_state=reference.rights_state,
         )
@@ -154,11 +294,17 @@ class RemoteStorageAdapter:
     def apply(self, prepared: PreparedObject, *, ledger: EffectLedger) -> StorageReference:
         if ledger.mode is not RunMode.APPLY:
             raise StorageError("Remote-Publikation benötigt RunMode apply")
+        self.authorize(prepared, operation="apply")
         key = self._key(prepared.logical_key)
         metadata = self.client.head(key)
         if metadata is not None:
-            reference = self._reference_from_metadata(key, metadata, fallback=prepared)
-            if (reference.sha256, reference.size) != (prepared.sha256, prepared.size):
+            reference = self._reference_from_metadata(key, metadata)
+            expected = self._expected_reference(
+                prepared,
+                key=key,
+                public_reference=reference.public_reference,
+            )
+            if reference != expected:
                 raise StorageError(f"Remote-Konflikt für {key}")
             self.verify(reference)
             return reference
@@ -171,8 +317,7 @@ class RemoteStorageAdapter:
             public_reference = self.client.put(
                 key,
                 snapshot,
-                measured_hash,
-                measured_size,
+                self._metadata(prepared),
             )
         ledger.record(
             self.effect_kind,
@@ -185,6 +330,12 @@ class RemoteStorageAdapter:
             key=key,
             sha256=measured_hash,
             size=measured_size,
+            source_id=prepared.source_id,
+            source_sha256=prepared.source_sha256,
+            document_id=prepared.document_id,
+            conversion_id=prepared.conversion_id,
+            decision_sha256=prepared.decision_sha256,
+            provenance_state="current",
             visibility=prepared.visibility,
             rights_state=prepared.rights_state,
             public_reference=public_reference,
@@ -195,11 +346,13 @@ class RemoteStorageAdapter:
     def verify(self, reference: StorageReference) -> None:
         if reference.storage_backend is not self.backend:
             raise StorageError("Referenz gehört zu einem anderen Backend")
+        self.authorize(reference, operation="verify")
         metadata = self.client.head(reference.relative_path)
         if metadata is None:
             raise StorageError(f"Remote-Objekt fehlt: {reference.relative_path}")
-        if (metadata.get("sha256"), metadata.get("size")) != (reference.sha256, reference.size):
-            raise StorageError(f"Remote-Objektintegrität weicht ab: {reference.relative_path}")
+        remote_reference = self._reference_from_metadata(reference.relative_path, metadata)
+        if remote_reference != reference:
+            raise StorageError(f"Remote-Metadaten driften: {reference.relative_path}")
         with TemporaryDirectory(prefix="desinfect-remote-verify-") as temporary:
             target = Path(temporary) / "payload.bin"
             self.client.get(reference.relative_path, target)
@@ -214,5 +367,7 @@ class RemoteStorageAdapter:
         for metadata in self.client.list(self.prefix):
             if not isinstance(metadata, dict) or type(metadata.get("key")) is not str:
                 raise StorageError("Remote-Liste enthält ungültige Metadaten")
-            references.append(self._reference_from_metadata(metadata["key"], metadata))
+            references.append(
+                self._reference_from_metadata(metadata["key"], metadata, listed=True)
+            )
         return tuple(sorted(references, key=lambda reference: reference.artifact_id))

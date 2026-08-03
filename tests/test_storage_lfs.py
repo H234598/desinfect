@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -23,11 +24,25 @@ from scripts.rki_pipeline.storage.lfs import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ID = "rki:176904/12345.2"
+SOURCE_SHA256 = "b" * 64
+DECISION_SHA256 = "c" * 64
+DOCUMENT_ID = "rki-176904-12345-v2"
 _TRACKING = (
     "rki/Bulletins/**/*.pdf filter=lfs diff=lfs merge=lfs -text\n"
     "rki/Bulletins/**/Markdown/**/*.md filter=lfs diff=lfs merge=lfs -text\n"
     "rki/Bulletins/**/*.zip filter=lfs diff=lfs merge=lfs -text\n"
 )
+
+
+class AllowAuthorizer:
+    def authorize(self, subject: Any, *, operation: str) -> None:
+        pass
+
+
+class DenyAuthorizer:
+    def authorize(self, subject: Any, *, operation: str) -> None:
+        raise LfsIntegrityError(f"nicht autorisiert: {operation}")
 
 
 def config() -> LfsConfig:
@@ -61,6 +76,10 @@ def materialized_pdf(
         source,
         artifact_id=f"artifact-{name}",
         logical_key=f"Jahre/1994/{name}",
+        source_id=SOURCE_ID,
+        source_sha256=SOURCE_SHA256,
+        decision_sha256=DECISION_SHA256,
+        document_id=DOCUMENT_ID,
         visibility="repository_authorized",
         rights_state="approved",
     )
@@ -162,13 +181,21 @@ def test_lfs_adapter_materializes_then_applies_without_git_commit(tmp_path: Path
         source,
         artifact_id="artifact-pdf",
         logical_key="Jahre/1994/source.pdf",
+        source_id=SOURCE_ID,
+        source_sha256=SOURCE_SHA256,
+        decision_sha256=DECISION_SHA256,
+        document_id=DOCUMENT_ID,
         visibility="repository_authorized",
         rights_state="approved",
     )
     temp_root = tmp_path / "temp"
     temp_root.mkdir()
     materialize_ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root)
-    adapter = LfsStorageAdapter(repository_root=repository, config=config())
+    adapter = LfsStorageAdapter(
+        repository_root=repository,
+        config=config(),
+        authorizer=AllowAuthorizer(),
+    )
     prepared = adapter.materialize(intent, temp_root=temp_root, ledger=materialize_ledger)
     assert prepared.path.read_bytes() == source.read_bytes()
     assert materialize_ledger.events[-1].kind is EffectKind.TEMP_FILE
@@ -198,7 +225,11 @@ def test_lfs_adapter_materializes_then_applies_without_git_commit(tmp_path: Path
 
 def test_lfs_apply_rejects_divergent_existing_target_without_overwrite(tmp_path: Path) -> None:
     repository = repository_with_tracking(tmp_path)
-    adapter = LfsStorageAdapter(repository_root=repository, config=config())
+    adapter = LfsStorageAdapter(
+        repository_root=repository,
+        config=config(),
+        authorizer=AllowAuthorizer(),
+    )
     _intent, prepared = materialized_pdf(tmp_path, adapter)
     target = repository / "rki/Bulletins/Jahre/1994/source.pdf"
     target.parent.mkdir(parents=True)
@@ -219,7 +250,11 @@ def test_lfs_apply_uses_shared_ledger_for_per_run_object_budget(tmp_path: Path) 
         warn_total_bytes=20_000,
         block_total_bytes=30_000,
     )
-    adapter = LfsStorageAdapter(repository_root=repository, config=tight)
+    adapter = LfsStorageAdapter(
+        repository_root=repository,
+        config=tight,
+        authorizer=AllowAuthorizer(),
+    )
     _first_intent, first = materialized_pdf(tmp_path, adapter, name="first.pdf")
     _second_intent, second = materialized_pdf(tmp_path, adapter, name="second.pdf")
     ledger = EffectLedger(RunMode.APPLY)
@@ -238,12 +273,22 @@ def test_lfs_reference_rejects_symlink_even_when_link_is_inside_repository(tmp_p
     link = repository / "rki/Bulletins/Jahre/1994/link.pdf"
     link.parent.mkdir(parents=True)
     link.symlink_to(outside)
-    adapter = LfsStorageAdapter(repository_root=repository, config=config())
+    adapter = LfsStorageAdapter(
+        repository_root=repository,
+        config=config(),
+        authorizer=AllowAuthorizer(),
+    )
 
     with pytest.raises(LfsIntegrityError, match="Symlink|Repositoryroots"):
         adapter.reference_for_path(
             link,
             artifact_id="artifact-link",
+            source_id=SOURCE_ID,
+            source_sha256=SOURCE_SHA256,
+            document_id=DOCUMENT_ID,
+            conversion_id=None,
+            decision_sha256=DECISION_SHA256,
+            provenance_state="current",
             visibility="repository_authorized",
             rights_state="approved",
         )
@@ -260,10 +305,20 @@ def test_lfs_adapter_verifies_pointer_against_local_object(tmp_path: Path) -> No
         "size 7\n",
         encoding="utf-8",
     )
-    adapter = LfsStorageAdapter(repository_root=repository, config=config())
+    adapter = LfsStorageAdapter(
+        repository_root=repository,
+        config=config(),
+        authorizer=AllowAuthorizer(),
+    )
     reference = adapter.reference_for_path(
         target,
         artifact_id="artifact-1",
+        source_id=SOURCE_ID,
+        source_sha256=SOURCE_SHA256,
+        document_id=DOCUMENT_ID,
+        conversion_id=None,
+        decision_sha256=DECISION_SHA256,
+        provenance_state="current",
         visibility="repository_authorized",
         rights_state="approved",
     )
@@ -293,10 +348,81 @@ def test_lfs_reference_inventory_excludes_noncanonical_markdown(tmp_path: Path) 
     (artifacts / "Jahre" / "1994" / "PDF" / "upper.PDF").write_bytes(b"%PDF")
     (artifacts / "Jahre" / "1994" / "upper.ZIP").write_bytes(b"PK")
 
-    adapter = LfsStorageAdapter(repository_root=repository, config=config())
+    adapter = LfsStorageAdapter(
+        repository_root=repository,
+        config=config(),
+        authorizer=AllowAuthorizer(),
+    )
 
-    assert {reference.relative_path for reference in adapter.list_references()} == {
+    references = adapter.list_references()
+    assert {reference.relative_path for reference in references} == {
         "rki/Bulletins/Jahre/1994/Markdown/bulletin.md",
         "rki/Bulletins/Jahre/1994/PDF/bulletin.pdf",
         "rki/Bulletins/Jahre/1994/bundle.zip",
     }
+    assert all(
+        reference.provenance_state == "legacy_needs_review"
+        and reference.source_id is None
+        and reference.decision_sha256 is None
+        for reference in references
+    )
+
+
+def test_lfs_authorization_precedes_temp_and_repository_writes(tmp_path: Path) -> None:
+    repository = repository_with_tracking(tmp_path)
+    source = tmp_path / "denied.pdf"
+    source.write_bytes(b"denied")
+    intent = StorageIntent.from_path(
+        source,
+        artifact_id="artifact-denied",
+        logical_key="Jahre/1994/denied.pdf",
+        source_id=SOURCE_ID,
+        source_sha256=SOURCE_SHA256,
+        decision_sha256=DECISION_SHA256,
+        document_id=DOCUMENT_ID,
+        visibility="repository_authorized",
+        rights_state="approved",
+    )
+    temp_root = tmp_path / "temp-denied"
+    temp_root.mkdir()
+    materialize_ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root)
+    denied = LfsStorageAdapter(
+        repository_root=repository,
+        config=config(),
+        authorizer=DenyAuthorizer(),
+    )
+
+    with pytest.raises(LfsIntegrityError, match="nicht autorisiert"):
+        denied.materialize(intent, temp_root=temp_root, ledger=materialize_ledger)
+
+    assert tuple(temp_root.rglob("*")) == ()
+    assert materialize_ledger.events == []
+
+    allowed = LfsStorageAdapter(
+        repository_root=repository,
+        config=config(),
+        authorizer=AllowAuthorizer(),
+    )
+    prepared = allowed.materialize(
+        intent,
+        temp_root=temp_root,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root),
+    )
+    apply_ledger = EffectLedger(RunMode.APPLY)
+
+    with pytest.raises(LfsIntegrityError, match="nicht autorisiert"):
+        denied.apply(prepared, ledger=apply_ledger)
+
+    assert not (repository / "rki").exists()
+    assert apply_ledger.events == []
+
+    reference = allowed.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
+    target = repository / reference.relative_path
+    before = target.read_bytes()
+    denied_ledger = EffectLedger(RunMode.APPLY)
+
+    with pytest.raises(LfsIntegrityError, match="nicht autorisiert"):
+        denied.apply(prepared, ledger=denied_ledger)
+
+    assert target.read_bytes() == before
+    assert denied_ledger.events == []

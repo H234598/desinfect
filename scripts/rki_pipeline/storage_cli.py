@@ -15,9 +15,11 @@ from scripts.rki_pipeline.io_utils import (
     stable_json_dumps,
 )
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
+from scripts.rki_pipeline.rights import load_rights_authority, load_rights_policy
 from scripts.rki_pipeline.schema_registry import migrate_document
 from scripts.rki_pipeline.storage.base import (
     PreparedObject,
+    RightsStorageAuthorizer,
     StorageBackend,
     StorageError,
     StorageReference,
@@ -204,10 +206,15 @@ def _load_json(path: Path) -> dict[str, object]:
 
 def _lfs_adapter(config_path: Path, repository_root: Path):
     config = load_storage_config(config_path)
+    authorizer = RightsStorageAuthorizer(
+        authority=load_rights_authority(),
+        policy=load_rights_policy(),
+    )
     return build_storage_adapter(
         config,
         backend=StorageBackend.LFS,
         repository_root=repository_root,
+        authorizer=authorizer,
     )
 
 

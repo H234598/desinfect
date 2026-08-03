@@ -483,6 +483,25 @@ def evaluate_rights(
     )
 
 
+def resolve_rights(
+    source_id: str,
+    source_sha256: str,
+    *,
+    authority: RightsAuthority,
+    policy: RightsPolicy,
+) -> RightsDecision:
+    """Reload canonical authority and resolve one exact source tuple."""
+
+    _validate_policy_instance(policy)
+    _validate_authority_instance(authority)
+    return evaluate_rights(
+        source_id,
+        source_sha256,
+        register=load_rights_register(authority._register_source),
+        policy=policy,
+    )
+
+
 def _validate_policy_instance(policy: RightsPolicy) -> None:
     if type(policy) is not RightsPolicy:
         raise RightsPolicyError("RightsPolicy besitzt keinen exakten Typ")
@@ -526,14 +545,12 @@ def publication_policy(
 ) -> PublicationPolicy:
     """Resolve one exact source tuple and map it to safe publication effects."""
 
-    _validate_policy_instance(policy)
     if visibility not in _VISIBILITIES:
         raise RightsPolicyError(f"Unbekannte Sichtbarkeit: {visibility!r}")
-    _validate_authority_instance(authority)
-    decision = evaluate_rights(
+    decision = resolve_rights(
         source_id,
         source_sha256,
-        register=load_rights_register(authority._register_source),
+        authority=authority,
         policy=policy,
     )
     allowed = (
@@ -564,4 +581,5 @@ __all__ = [
     "load_rights_policy",
     "load_rights_register",
     "publication_policy",
+    "resolve_rights",
 ]

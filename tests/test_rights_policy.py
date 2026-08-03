@@ -92,6 +92,7 @@ def test_rights_policy_exposes_stable_api() -> None:
         "load_rights_policy",
         "load_rights_register",
         "publication_policy",
+        "resolve_rights",
     }
     assert expected <= set(rights.__dict__)
 

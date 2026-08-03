@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 import hashlib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -19,6 +20,23 @@ from scripts.rki_pipeline.storage.migrate import (
 from scripts.rki_pipeline.storage.object import ObjectStorageAdapter
 from scripts.rki_pipeline.storage.release import ReleaseStorageAdapter
 
+SOURCE_ID = "rki:176904/12345.2"
+SOURCE_SHA256 = "b" * 64
+DECISION_SHA256 = "c" * 64
+DOCUMENT_ID = "rki-176904-12345-v2"
+CONVERSION_ID = "conv-" + "d" * 64
+
+
+class AllowAuthorizer:
+    def authorize(self, subject: Any, *, operation: str) -> None:
+        pass
+
+
+class DenySecondAuthorizer:
+    def authorize(self, subject: Any, *, operation: str) -> None:
+        if subject.artifact_id == "artifact-2":
+            raise StorageError(f"nicht autorisiert: {operation}")
+
 
 @dataclass
 class MigrationClient:
@@ -30,15 +48,11 @@ class MigrationClient:
         value = self.objects.get(key)
         return None if value is None else {name: data for name, data in value.items() if name != "payload"}
 
-    def put(self, key: str, source_path: Path, sha256: str, size: int):
+    def put(self, key: str, source_path: Path, metadata: dict[str, object]):
         self.calls.append(("put", key))
         payload = source_path.read_bytes()
         self.objects[key] = {
-            "artifact_id": "artifact-1",
-            "sha256": sha256,
-            "size": size,
-            "visibility": "public",
-            "rights_state": "approved",
+            **metadata,
             "public_reference": f"https://example.invalid/{key}",
             "payload": payload,
         }
@@ -62,9 +76,16 @@ def seeded_client(payload: bytes = b"archive") -> MigrationClient:
     return MigrationClient(
         objects={
             "rki/Bulletins/Jahre/1994/archive.zip": {
+                "schema_version": "1.1.0",
                 "artifact_id": "artifact-1",
                 "sha256": sha256,
                 "size": len(payload),
+                "source_id": SOURCE_ID,
+                "source_sha256": SOURCE_SHA256,
+                "document_id": DOCUMENT_ID,
+                "conversion_id": CONVERSION_ID,
+                "decision_sha256": DECISION_SHA256,
+                "provenance_state": "current",
                 "visibility": "public",
                 "rights_state": "approved",
                 "public_reference": None,
@@ -74,9 +95,23 @@ def seeded_client(payload: bytes = b"archive") -> MigrationClient:
     )
 
 
-def adapters(source_client: MigrationClient, target_client: MigrationClient):
-    source = ObjectStorageAdapter(ObjectConfig("source", "rki/Bulletins"), source_client)
-    target = ReleaseStorageAdapter(ReleaseConfig("target", "rki/Bulletins"), target_client)
+def adapters(
+    source_client: MigrationClient,
+    target_client: MigrationClient,
+    *,
+    source_authorizer: Any | None = None,
+    target_authorizer: Any | None = None,
+):
+    source = ObjectStorageAdapter(
+        ObjectConfig("source", "rki/Bulletins"),
+        source_client,
+        source_authorizer or AllowAuthorizer(),
+    )
+    target = ReleaseStorageAdapter(
+        ReleaseConfig("target", "rki/Bulletins"),
+        target_client,
+        target_authorizer or AllowAuthorizer(),
+    )
     return source, target
 
 
@@ -189,6 +224,11 @@ def test_migration_requires_correct_modes(tmp_path: Path) -> None:
         ("logical_key", "rki/Bulletins/Jahre/1995/wrong.zip"),
         ("visibility", "internal"),
         ("rights_state", "unknown"),
+        ("source_id", "rki:176904/99999.2"),
+        ("source_sha256", "e" * 64),
+        ("decision_sha256", "f" * 64),
+        ("document_id", None),
+        ("conversion_id", None),
     ),
 )
 def test_apply_rejects_prepared_metadata_drift_before_any_publish(
@@ -197,7 +237,10 @@ def test_apply_rejects_prepared_metadata_drift_before_any_publish(
     value: str,
 ) -> None:
     plan, prepared, target, target_client = materialized_copy(tmp_path)
-    mismatched = replace(prepared, **{field: value})
+    changes = {field: value}
+    if field == "source_id":
+        changes["document_id"] = "rki-176904-99999-v2"
+    mismatched = replace(prepared, **changes)
 
     with pytest.raises(StorageError, match="Migrationsplan"):
         apply_migration(
@@ -222,6 +265,11 @@ def test_apply_rejects_prepared_content_identity_drift_before_any_publish(tmp_pa
         temp_root=prepared.temp_root,
         sha256=rogue_hash,
         size=rogue_path.stat().st_size,
+        source_id=prepared.source_id,
+        source_sha256=prepared.source_sha256,
+        decision_sha256=prepared.decision_sha256,
+        document_id=prepared.document_id,
+        conversion_id=prepared.conversion_id,
         visibility=prepared.visibility,
         rights_state=prepared.rights_state,
     )
@@ -235,3 +283,117 @@ def test_apply_rejects_prepared_content_identity_drift_before_any_publish(tmp_pa
         )
 
     assert not any(call[0] == "put" for call in target_client.calls)
+
+
+def test_rights_provenance_drift_is_migration_conflict() -> None:
+    source_client = seeded_client()
+    target_client = seeded_client()
+    key = "rki/Bulletins/Jahre/1994/archive.zip"
+    target_client.objects[key]["decision_sha256"] = "e" * 64
+    source, target = adapters(source_client, target_client)
+
+    plan = plan_migration(source, target)
+
+    assert plan.entries[0].state is MigrationState.CONFLICT
+
+
+def test_legacy_reference_is_plannable_but_export_is_blocked(tmp_path: Path) -> None:
+    source_client = seeded_client()
+    key = "rki/Bulletins/Jahre/1994/archive.zip"
+    source_client.objects[key].update(
+        source_id=None,
+        source_sha256=None,
+        document_id=None,
+        conversion_id=None,
+        decision_sha256=None,
+        provenance_state="legacy_needs_review",
+        rights_state="unknown",
+    )
+    source, target = adapters(source_client, MigrationClient())
+    plan = plan_migration(source, target)
+    assert plan.entries[0].state is MigrationState.COPY
+    before_calls = tuple(source_client.calls)
+
+    with pytest.raises(StorageError, match="legacy|Provenienz|autorisiert"):
+        materialize_migration(
+            plan,
+            source,
+            temp_root=tmp_path,
+            ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        )
+
+    assert not any(call[0] == "get" for call in source_client.calls[len(before_calls):])
+
+
+def two_seeded_client() -> MigrationClient:
+    client = seeded_client(b"first")
+    second = b"second"
+    client.objects["rki/Bulletins/Jahre/1994/second.zip"] = {
+        **{
+            name: value
+            for name, value in next(iter(client.objects.values())).items()
+            if name != "payload"
+        },
+        "artifact_id": "artifact-2",
+        "sha256": hashlib.sha256(second).hexdigest(),
+        "size": len(second),
+        "public_reference": None,
+        "payload": second,
+    }
+    return client
+
+
+def test_migration_preauthorizes_all_exports_before_first_download(
+    tmp_path: Path,
+) -> None:
+    source_client = two_seeded_client()
+    source, target = adapters(
+        source_client,
+        MigrationClient(),
+        source_authorizer=DenySecondAuthorizer(),
+    )
+    plan = plan_migration(source, target)
+    source_client.calls.clear()
+
+    with pytest.raises(StorageError, match="nicht autorisiert"):
+        materialize_migration(
+            plan,
+            source,
+            temp_root=tmp_path,
+            ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        )
+
+    assert not any(call[0] == "get" for call in source_client.calls)
+
+
+def test_migration_preauthorizes_all_applies_before_first_upload(
+    tmp_path: Path,
+) -> None:
+    source_client = two_seeded_client()
+    target_client = MigrationClient()
+    source, target = adapters(
+        source_client,
+        target_client,
+        target_authorizer=DenySecondAuthorizer(),
+    )
+    plan = plan_migration(source, target)
+    temp_root = tmp_path / "preflight"
+    temp_root.mkdir()
+    prepared = materialize_migration(
+        plan,
+        source,
+        temp_root=temp_root,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root),
+    )
+    target_client.calls.clear()
+
+    with pytest.raises(StorageError, match="nicht autorisiert"):
+        apply_migration(
+            plan,
+            prepared,
+            target,
+            ledger=EffectLedger(RunMode.APPLY),
+        )
+
+    assert not any(call[0] in {"head", "put"} for call in target_client.calls)
+    assert target_client.objects == {}
