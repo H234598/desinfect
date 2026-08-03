@@ -97,8 +97,34 @@ def test_storage_reference_v1_to_v1_1_is_deterministic_without_authorization_inv
     validate_document("storage-reference", first)
 
 
+def test_conversion_manifest_v1_to_v1_1_is_deterministic_without_invented_evidence() -> None:
+    source = _fixture("conversion-manifest-v1.0.json")
+    original = deepcopy(source)
+    first = migrate_document("conversion-manifest", source)
+    second = migrate_document("conversion-manifest", deepcopy(source))
+
+    assert source == original
+    assert first == second
+    assert migrate_document("conversion-manifest", first) == first
+    assert first["schema_version"] == "1.1.0"
+    assert first["provenance_state"] == "legacy_needs_review"
+    for field in (
+        "conversion_id",
+        "bitstream_id",
+        "page_count",
+        "toolchain",
+        "runtime",
+        "fingerprint_sha256",
+        "storage_reference",
+    ):
+        assert first[field] is None
+    assert first["output_sha256"] == original["output_sha256"]
+    validate_document("conversion-manifest", first)
+
+
 @pytest.mark.parametrize(
-    "name", ["source-manifest", "document-manifest", "storage-reference"]
+    "name",
+    ["source-manifest", "document-manifest", "conversion-manifest", "storage-reference"],
 )
 def test_manifest_migrations_reject_versions_other_than_exact_v1(name: str) -> None:
     with pytest.raises(SchemaContractError, match="weder aktuell noch"):

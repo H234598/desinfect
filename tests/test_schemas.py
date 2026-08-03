@@ -35,6 +35,46 @@ def _storage_reference_payload() -> dict[str, object]:
     }
 
 
+def _conversion_manifest_payload() -> dict[str, object]:
+    return {
+        "schema_version": "1.1.0",
+        "conversion_id": "conv-41ed0e27745b85bd988ee5fba26182fada5f9c8eacdfd919b2085275eea33637",
+        "document_id": "rki-176904-12345-v2",
+        "bitstream_id": "rki-bitstream-" + "1" * 64,
+        "source_sha256": "a" * 64,
+        "converter": "pdftotext-layout",
+        "converter_version": "25.05.0",
+        "options_sha256": "b" * 64,
+        "page_count": 2,
+        "toolchain": [
+            {
+                "name": "pdftotext",
+                "version_output": "pdftotext version 25.05.0",
+                "executable_sha256": "d" * 64,
+                "argv": ["pdftotext", "-layout", "$INPUT", "$OUTPUT"],
+                "environment": [
+                    {"name": "LANG", "value": "C.UTF-8"},
+                    {"name": "LC_ALL", "value": "C.UTF-8"},
+                ],
+                "ocr_settings": None,
+            }
+        ],
+        "runtime": {
+            "platform": "linux-x86_64",
+            "libc": "glibc-2.39",
+            "shared_libraries": [{"name": "libpoppler.so.140", "sha256": "e" * 64}],
+            "fonts": [{"name": "DejaVuSans.ttf", "sha256": "f" * 64}],
+        },
+        "fingerprint_sha256": "316fea4aac5ed8691386869d43dc2d89a92f658f516232ed89fbb129b528b234",
+        "output_sha256": "c" * 64,
+        "storage_reference": "markdown-rki-176904-12345-v2",
+        "state": "converted",
+        "quality": "good",
+        "ocr_used": False,
+        "provenance_state": "current",
+    }
+
+
 def test_all_registered_schemas_are_strict_draft_2020_12() -> None:
     registry = load_registry()
     assert len(registry["contracts"]) == 12
@@ -149,11 +189,16 @@ def test_storage_reference_schema_rejects_document_outside_source_version(
         validate_document("storage-reference", payload)
 
 
-def test_schema_validator_checks_storage_reference_predecessor(
+@pytest.mark.parametrize(
+    "corrupt_fixture",
+    ["storage-reference-v1.0.json", "conversion-manifest-v1.0.json"],
+)
+def test_schema_validator_checks_every_p06_predecessor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    corrupt_fixture: str,
 ) -> None:
-    """Removing the storage 1.0 migration check must expose a corrupt predecessor."""
+    """Every registered P06 predecessor must be loaded and migrated."""
 
     fixture_root = tmp_path / "tests" / "fixtures" / "schemas"
     fixture_root.mkdir(parents=True)
@@ -162,11 +207,14 @@ def test_schema_validator_checks_storage_reference_predecessor(
         "status-v2.json",
         "source-manifest-v1.0.json",
         "document-manifest-v1.0.json",
+        "storage-reference-v1.0.json",
+        "conversion-manifest-v1.0.json",
     ):
-        (fixture_root / name).write_bytes(
-            (ROOT / "tests" / "fixtures" / "schemas" / name).read_bytes()
-        )
-    (fixture_root / "storage-reference-v1.0.json").write_text(
+        target = fixture_root / name
+        if name == corrupt_fixture:
+            continue
+        target.write_bytes((ROOT / "tests" / "fixtures" / "schemas" / name).read_bytes())
+    (fixture_root / corrupt_fixture).write_text(
         '{"schema_version":"0.9.0"}\n',
         encoding="utf-8",
     )
@@ -193,3 +241,97 @@ def test_storage_reference_requires_every_provenance_field(field: str) -> None:
 
     with pytest.raises(SchemaContractError, match=rf"'{field}' is a required property"):
         validate_document("storage-reference", payload)
+
+
+def test_current_conversion_manifest_validates_complete_evidence() -> None:
+    validate_document("conversion-manifest", _conversion_manifest_payload())
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "conversion_id",
+        "bitstream_id",
+        "page_count",
+        "toolchain",
+        "runtime",
+        "fingerprint_sha256",
+        "storage_reference",
+        "provenance_state",
+    ],
+)
+def test_conversion_manifest_requires_every_v1_1_field(field: str) -> None:
+    payload = _conversion_manifest_payload()
+    del payload[field]
+
+    with pytest.raises(SchemaContractError, match=rf"'{field}' is a required property"):
+        validate_document("conversion-manifest", payload)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["conversion_id", "bitstream_id", "page_count", "toolchain", "runtime", "fingerprint_sha256"],
+)
+def test_current_conversion_manifest_rejects_null_evidence(field: str) -> None:
+    payload = _conversion_manifest_payload()
+    payload[field] = None
+
+    with pytest.raises(SchemaContractError):
+        validate_document("conversion-manifest", payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("conversion_id", "conversion-bad"),
+        ("bitstream_id", "bitstream-bad"),
+        ("fingerprint_sha256", "bad"),
+        ("page_count", 0),
+    ],
+)
+def test_conversion_manifest_rejects_invalid_identity_evidence(
+    field: str, invalid: str | int
+) -> None:
+    payload = _conversion_manifest_payload()
+    payload[field] = invalid
+
+    with pytest.raises(SchemaContractError):
+        validate_document("conversion-manifest", payload)
+
+
+@pytest.mark.parametrize("field", ["fingerprint_sha256", "conversion_id"])
+def test_conversion_manifest_rejects_tampered_derived_identity(field: str) -> None:
+    payload = _conversion_manifest_payload()
+    payload[field] = ("conv-" if field == "conversion_id" else "") + "0" * 64
+
+    with pytest.raises(SchemaContractError, match="Fingerprint|conversion_id"):
+        validate_document("conversion-manifest", payload)
+
+
+@pytest.mark.parametrize("state", ["converted", "skipped_unchanged"])
+def test_materialized_conversion_requires_output_and_storage_reference(state: str) -> None:
+    payload = _conversion_manifest_payload()
+    payload["state"] = state
+    payload["output_sha256"] = None
+    payload["storage_reference"] = None
+
+    with pytest.raises(SchemaContractError):
+        validate_document("conversion-manifest", payload)
+
+
+@pytest.mark.parametrize("state", ["failed", "not_materialized"])
+def test_unmaterialized_conversion_rejects_output_and_storage_reference(state: str) -> None:
+    payload = _conversion_manifest_payload()
+    payload["state"] = state
+    payload["quality"] = "failed" if state == "failed" else "not_assessed"
+
+    with pytest.raises(SchemaContractError):
+        validate_document("conversion-manifest", payload)
+
+
+def test_conversion_manifest_rejects_nested_unknown_fields() -> None:
+    payload = _conversion_manifest_payload()
+    payload["runtime"]["machine_path"] = "/usr/lib"  # type: ignore[index]
+
+    with pytest.raises(SchemaContractError, match="Additional properties"):
+        validate_document("conversion-manifest", payload)

@@ -35,11 +35,13 @@
       ]
     },
     {
-      "current_version": "1.0.0",
-      "migration": null,
+      "current_version": "1.1.0",
+      "migration": "migrate_conversion_manifest_v1_0_to_v1_1",
       "name": "conversion-manifest",
       "path": "schemas/conversion-manifest.schema.json",
-      "previous_versions": []
+      "previous_versions": [
+        "1.0.0"
+      ]
     },
     {
       "current_version": "1.0.0",

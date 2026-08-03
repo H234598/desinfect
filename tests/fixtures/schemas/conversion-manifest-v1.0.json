@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0.0",
+  "document_id": "rki-176904-12345-v2",
+  "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "converter": "pdftotext-layout",
+  "converter_version": "25.05.0",
+  "options_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "output_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "state": "converted",
+  "quality": "good",
+  "ocr_used": false
+}

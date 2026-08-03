@@ -11,6 +11,13 @@ from typing import Any, Callable
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import SchemaError
 
+from scripts.rki_pipeline.conversion.base import (
+    EvidenceError,
+    RuntimeEvidence,
+    ToolEvidence,
+    conversion_fingerprint,
+    conversion_id,
+)
 from scripts.rki_pipeline.storage.base import validate_storage_provenance_relationship
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -71,6 +78,27 @@ def validate_document(name: str, payload: dict[str, Any]) -> None:
         raise SchemaContractError(f"{name}: {rendered}")
     if name == "source-manifest" and payload["same_content_as"] != sorted(payload["same_content_as"]):
         raise SchemaContractError("source-manifest: same_content_as muss lexikalisch sortiert sein")
+    if name == "conversion-manifest" and payload["provenance_state"] == "current":
+        try:
+            toolchain = tuple(ToolEvidence.from_dict(item) for item in payload["toolchain"])
+            runtime = RuntimeEvidence.from_dict(payload["runtime"])
+            expected_fingerprint = conversion_fingerprint(
+                source_sha256=payload["source_sha256"],
+                options_sha256=payload["options_sha256"],
+                toolchain=toolchain,
+                runtime=runtime,
+            )
+            expected_conversion_id = conversion_id(
+                payload["document_id"],
+                payload["bitstream_id"],
+                expected_fingerprint,
+            )
+        except (EvidenceError, KeyError, TypeError) as exc:
+            raise SchemaContractError(f"conversion-manifest: {exc}") from exc
+        if payload["fingerprint_sha256"] != expected_fingerprint:
+            raise SchemaContractError("conversion-manifest: Fingerprint stimmt nicht mit Evidenz überein")
+        if payload["conversion_id"] != expected_conversion_id:
+            raise SchemaContractError("conversion-manifest: conversion_id stimmt nicht mit Identität überein")
     if name == "storage-reference":
         try:
             validate_storage_provenance_relationship(
@@ -205,6 +233,32 @@ def migrate_document_manifest_v1_0_to_v1_1(payload: dict[str, Any]) -> dict[str,
     return result
 
 
+def migrate_conversion_manifest_v1_0_to_v1_1(payload: dict[str, Any]) -> dict[str, Any]:
+    """Migrate conversion-manifest 1.0.0 without inventing tool evidence."""
+
+    if payload.get("schema_version") != "1.0.0":
+        raise SchemaContractError(
+            "Nicht unterstützte Conversion-Manifest-Migration: "
+            f"{payload.get('schema_version')!r}"
+        )
+    result = deepcopy(payload)
+    result.update(
+        {
+            "schema_version": "1.1.0",
+            "conversion_id": None,
+            "bitstream_id": None,
+            "page_count": None,
+            "toolchain": None,
+            "runtime": None,
+            "fingerprint_sha256": None,
+            "storage_reference": None,
+            "provenance_state": "legacy_needs_review",
+        }
+    )
+    validate_document("conversion-manifest", result)
+    return result
+
+
 def migrate_storage_reference_v1_0_to_v1_1(payload: dict[str, Any]) -> dict[str, Any]:
     """Migrate storage-reference 1.0.0 without inventing authorization."""
 
@@ -232,6 +286,7 @@ MIGRATIONS: dict[tuple[str, str, str], Callable[[dict[str, Any]], dict[str, Any]
     ("status", "2.0.0", "3.0.0"): migrate_status_v2_to_v3,
     ("source-manifest", "1.0.0", "1.1.0"): migrate_source_manifest_v1_0_to_v1_1,
     ("document-manifest", "1.0.0", "1.1.0"): migrate_document_manifest_v1_0_to_v1_1,
+    ("conversion-manifest", "1.0.0", "1.1.0"): migrate_conversion_manifest_v1_0_to_v1_1,
     ("storage-reference", "1.0.0", "1.1.0"): migrate_storage_reference_v1_0_to_v1_1,
 }
 

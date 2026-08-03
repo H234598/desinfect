@@ -121,6 +121,16 @@
       "synthetic": true
     },
     {
+      "bytes": 469,
+      "license_status": "synthetic",
+      "media_type": "application/json",
+      "path": "schemas/conversion-manifest-v1.0.json",
+      "provenance": "H234598/desinfect P06 synthetic migration fixture",
+      "purpose": "deterministic conversion-manifest migration from 1.0.0 to 1.1.0",
+      "sha256": "21c8760f73494b1c006b7d7828ffd4884a076be3e1ec83c2d357b541879307e6",
+      "synthetic": true
+    },
+    {
       "bytes": 450,
       "license_status": "synthetic",
       "media_type": "application/json",
