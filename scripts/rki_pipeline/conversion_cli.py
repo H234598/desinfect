@@ -99,7 +99,12 @@ def _fixture_intent(
 def _temp_root(value: Path | None) -> Path:
     if value is None:
         return Path(tempfile.mkdtemp(prefix="desinfect-p06-materialize-")).resolve()
-    return value.resolve()
+    resolved = value.resolve()
+    try:
+        resolved.relative_to(ROOT)
+    except ValueError:
+        return resolved
+    raise ValueError("temp_root darf nicht im Repository liegen")
 
 
 def _result_payload(result, ledger: EffectLedger, temp_root: Path) -> dict[str, object]:
@@ -126,8 +131,13 @@ def _result_payload(result, ledger: EffectLedger, temp_root: Path) -> dict[str, 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    temp_root = _temp_root(args.temp_root)
+    temp_root = (
+        args.temp_root.absolute()
+        if args.temp_root is not None
+        else Path(tempfile.gettempdir()).resolve()
+    )
     try:
+        temp_root = _temp_root(args.temp_root)
         intent, authorizer = _fixture_intent(args.fixture)
         ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root)
         result = materialize_conversion(

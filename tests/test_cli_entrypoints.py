@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -12,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.rki_pipeline import conversion_cli
-from scripts.rki_pipeline.conversion.runtime import RuntimeEvidenceError
+from scripts.rki_pipeline.conversion import runtime as conversion_runtime
 from scripts.rki_pipeline.conversion.service import (
     ConversionError,
     ConversionNeedsReview,
@@ -100,6 +101,44 @@ def _conversion_args(temp_root: Path) -> list[str]:
     ]
 
 
+def test_conversion_cli_rejects_repository_temp_root(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(conversion_cli, "_fixture_intent", lambda _fixture: (object(), object()))
+    monkeypatch.setattr(conversion_cli, "collect_runtime_evidence", lambda: object())
+
+    def forbidden(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("repository temp root reached materialization")
+
+    monkeypatch.setattr(conversion_cli, "materialize_conversion", forbidden)
+
+    assert conversion_cli.main(_conversion_args(ROOT)) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "invalid"
+    assert "Repository" in payload["error"]
+
+
+def test_runtime_tool_lookup_uses_process_runner_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "pdfinfo"
+    executable.write_bytes(b"tool")
+    observed: list[str | None] = []
+
+    def fake_which(name: str, *, path: str | None = None) -> str:
+        assert name == "pdfinfo"
+        observed.append(path)
+        return executable.as_posix()
+
+    monkeypatch.setattr(conversion_runtime.shutil, "which", fake_which)
+
+    assert conversion_runtime._tool_paths(("pdfinfo",)) == (executable,)
+    assert observed == [os.defpath]
+
+
 @pytest.mark.parametrize(
     ("state", "expected_exit"),
     (("converted", 0), ("skipped_unchanged", 0), ("needs_review", 4)),
@@ -138,7 +177,6 @@ def test_conversion_cli_result_exit_contract(
     (
         (ConversionNeedsReview("tesseract fehlt"), "needs_review", 4),
         (ConversionError("parser failed"), "failed", 3),
-        (RuntimeEvidenceError("pdftotext fehlt"), "failed", 3),
     ),
 )
 def test_conversion_cli_visible_error_contracts(
@@ -162,3 +200,27 @@ def test_conversion_cli_visible_error_contracts(
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == expected_status
     assert str(error) in payload["error"]
+
+
+def test_conversion_cli_reports_missing_runtime_tool(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(conversion_cli, "_fixture_intent", lambda _fixture: (object(), object()))
+
+    def missing_tool():
+        raise conversion_runtime.RuntimeEvidenceError("Konvertierungstool fehlt: pdftotext")
+
+    monkeypatch.setattr(conversion_cli, "collect_runtime_evidence", missing_tool)
+
+    def forbidden(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("missing tool reached materialization")
+
+    monkeypatch.setattr(conversion_cli, "materialize_conversion", forbidden)
+
+    assert conversion_cli.main(_conversion_args(tmp_path / "out")) == 3
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "failed"
+    assert "pdftotext" in payload["error"]

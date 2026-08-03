@@ -82,7 +82,7 @@ def _run(executable: str | Path, arguments: tuple[str, ...]) -> bytes:
 def _tool_paths(tool_names: tuple[str, ...]) -> tuple[Path, ...]:
     paths: list[Path] = []
     for name in tool_names:
-        found = shutil.which(name)
+        found = shutil.which(name, path=os.defpath)
         if found is None:
             raise RuntimeEvidenceError(f"Konvertierungstool fehlt: {name}")
         paths.append(Path(found).resolve(strict=True))
