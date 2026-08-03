@@ -61,9 +61,16 @@ Standardlimits:
 - höchstens 4 GiB ZIP-Dateigröße;
 - höchstens Kompressionsverhältnis 100:1.
 
+Der Sidecar hat eine separate, mit `max_entries` wachsende Grenze: 4 KiB fester
+Overhead plus je Eintrag 500 Codepoints mit maximaler UTF-8-Breite,
+JSON-Escape-Overhead und 16 Byte Strukturreserve. Dieselbe Grenze gilt beim Rendern
+und Lesen. Interne ZIP-Metadaten besitzen entsprechend abgeleitete Einzellimits und
+erben nicht das allgemeine 256-MiB-Payloadlimit.
+
 Validierung erfolgt ohne Extraktion. Sie prüft Dateityp und unveränderte Dateiidentität,
-SHA-256, CRC, lokale und zentrale ZIP-Header, Reihenfolge, Flags, Modus, Zeit,
-Kompressionsmethode, Namen und alle Limits. Danach werden `MANIFEST.json`,
+SHA-256, CRC, EOCD-/Central-Directory-Grenzen, eine lückenlose Kette aller lokalen
+Records ohne Präfix oder Zwischenbytes, lokale und zentrale ZIP-Header, Reihenfolge,
+Flags, Modus, Zeit, Kompressionsmethode, Namen und alle Limits. Danach werden `MANIFEST.json`,
 `SHA256SUMS.txt`, `README.md`, Payloadgrößen und Payload-SHA-256 gegeneinander sowie
 gegen erwarteten Eingabefingerprint und erwartete Ausgabe-SHA-256 geprüft. Doppelte
 JSON-Schlüssel, nichtendliche Zahlen, nichtkanonisches JSON, Symlinks, Geräte,
@@ -80,9 +87,11 @@ Veraltete oder beschädigte reguläre Bundles werden vollständig neu gebaut.
 Neubau erfolgt in einem Generated-Staging-Verzeichnis unter dem expliziten
 `temp_root`. Nach vollständiger Validierung von ZIP und Sidecar werden zwei
 `TEMP_FILE`-Ereignisse vorläufig aufgezeichnet, solange der Staging-Kontext noch offen
-ist. Erst dessen erfolgreicher Abschluss ersetzt das Ziel atomar. Jeder Fehler beim
-Aufzeichnen oder Veröffentlichen entfernt die Stagingdaten, kürzt die vorläufigen
-Ledger-Ereignisse und bewahrt das vorherige veröffentlichte Bundle.
+ist. Bis zum dauerhaften Publication Commit entfernt jeder Fehler die Stagingdaten,
+kürzt die vorläufigen Ledger-Ereignisse und bewahrt das vorherige veröffentlichte
+Bundle. Scheitert erst danach die Bereinigung des alten Backups, bleibt der
+`StagingError` sichtbar; das vollständige neue Bundle und seine Ledger-Ereignisse
+bleiben maßgeblich, und das Backup kann zur Diagnose bestehen bleiben.
 
 ## Offline-Smoke
 

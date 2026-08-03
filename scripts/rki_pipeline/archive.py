@@ -37,7 +37,7 @@ from scripts.rki_pipeline.rights import (
     resolve_rights,
 )
 from scripts.rki_pipeline.schema_registry import SchemaContractError, validate_document
-from scripts.rki_pipeline.staging import staged_directory
+from scripts.rki_pipeline.staging import StagingState, staged_directory
 from scripts.rki_pipeline.storage.base import (
     PreparedObject,
     RightsStorageAuthorizer,
@@ -75,10 +75,10 @@ _CENTRAL_HEADER_SIZE = 46
 _BUNDLE_ZIP = "archive.zip"
 _BUNDLE_MANIFEST = "archive-manifest.json"
 _BUNDLE_FILES = frozenset({GENERATED_ROOT_SENTINEL, _BUNDLE_ZIP, _BUNDLE_MANIFEST})
-_MAX_SIDECAR_BYTES = 8 * 1024 * 1024
 _MAX_ENTRY_PATH_LENGTH = 500
 _METADATA_FIXED_BYTES = 4 * 1024
 _MAX_UTF8_BYTES_PER_CHARACTER = 4
+_MAX_JSON_ESCAPE_OVERHEAD_PER_CHARACTER = 2
 _PILOT_SOURCE_ID = "rki:176904/900000001"
 _PILOT_SOURCE_SHA256 = "4665c3b8cfa6de8d9792a8defb977bfd200465b513575419e0a88541000f5b2a"
 _PILOT_PAYLOAD = b"# Synthetic deterministic archive fixture\n"
@@ -451,11 +451,13 @@ def materialize_archive(
     event_count = len(ledger.events)
     zip_path = bundle_root / _BUNDLE_ZIP
     manifest_path = bundle_root / _BUNDLE_MANIFEST
+    staging_state = StagingState()
     try:
         with staged_directory(
             bundle_root,
             allowed_root=root,
             replace_existing=True,
+            state=staging_state,
         ) as stage:
             staged_build = build_archive(
                 spec,
@@ -465,6 +467,9 @@ def materialize_archive(
             )
             sidecar = _archive_sidecar(spec, staged_build)
             sidecar_bytes = stable_json_dumps(sidecar).encode("utf-8")
+            sidecar_limit = _sidecar_byte_limit(limits)
+            if len(sidecar_bytes) > sidecar_limit:
+                raise ArchiveSecurityError("Archiv-Sidecar überschreitet das abgeleitete Limit")
             stage_fd = os.open(
                 stage,
                 os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
@@ -501,7 +506,8 @@ def materialize_archive(
                     size=event_size,
                 )
     except BaseException:
-        del ledger.events[event_count:]
+        if not staging_state.published:
+            del ledger.events[event_count:]
         raise
     return ArchiveMaterialization(
         root=bundle_root,
@@ -698,7 +704,11 @@ def _inspect_bundle_fd(
     except UnsafePathError as exc:
         raise ArchiveSecurityError("Archiv-Bundle-Sentinel ist unsicher") from exc
     sidecar = _strict_sidecar(
-        _read_bundle_file(bundle_fd, _BUNDLE_MANIFEST, maximum=_MAX_SIDECAR_BYTES)
+        _read_bundle_file(
+            bundle_fd,
+            _BUNDLE_MANIFEST,
+            maximum=_sidecar_byte_limit(limits),
+        )
     )
     expected_entries = [entry.path for entry in sorted(spec.entries, key=lambda entry: entry.path)]
     if (
@@ -964,28 +974,80 @@ def _preflight_zip_container(descriptor: int, size: int, *, limits: ArchiveLimit
     if central_end != eocd_offset:
         raise ArchiveSecurityError("ZIP-Container hat Präfix oder ungültige Central-Directory-Grenzen")
     position = central_offset
-    first_local_offset: int | None = None
+    central_names: set[bytes] = set()
+    central_records: list[tuple[int, int, int, int, bytes]] = []
     for _ in range(total_entries):
         header = _read_descriptor_range(descriptor, position, _CENTRAL_HEADER_SIZE)
         if len(header) != _CENTRAL_HEADER_SIZE or not header.startswith(b"PK\x01\x02"):
             raise ArchiveIntegrityError("ZIP-Central-Directory ist unvollständig oder ungültig")
         fields = struct.unpack("<4s6H3I5H2I", header)
+        extract_version = fields[2]
+        flags = fields[3]
         compressed_size, file_size = fields[8], fields[9]
         name_size, extra_size, member_comment_size, member_disk = fields[10:14]
         local_offset = fields[16]
         if member_disk != 0:
             raise ArchiveSecurityError("Mehrteilige ZIP-Mitglieder sind unzulässig")
-        if compressed_size == 0xFFFFFFFF or file_size == 0xFFFFFFFF or local_offset == 0xFFFFFFFF:
+        if (
+            extract_version != _ZIP_VERSION
+            or compressed_size == 0xFFFFFFFF
+            or file_size == 0xFFFFFFFF
+            or local_offset == 0xFFFFFFFF
+        ):
             raise ArchiveSecurityError("ZIP64-Central-Directory ist unzulässig")
+        central_name = _read_descriptor_range(
+            descriptor,
+            position + _CENTRAL_HEADER_SIZE,
+            name_size,
+        )
+        if len(central_name) != name_size:
+            raise ArchiveIntegrityError("ZIP-Central-Directory-Name ist unvollständig")
+        if central_name in central_names:
+            raise ArchiveSecurityError("Doppelte ZIP-Mitglieder sind unzulässig")
+        central_names.add(central_name)
+        central_records.append(
+            (flags, compressed_size, file_size, local_offset, central_name)
+        )
         position += _CENTRAL_HEADER_SIZE + name_size + extra_size + member_comment_size
         if position > central_end:
             raise ArchiveIntegrityError("ZIP-Central-Directory überschreitet seine deklarierte Grenze")
-        if first_local_offset is None or local_offset < first_local_offset:
-            first_local_offset = local_offset
     if position != central_end:
         raise ArchiveIntegrityError("ZIP-Central-Directory endet nicht an der deklarierten Grenze")
-    if first_local_offset not in (None, 0):
-        raise ArchiveSecurityError("ZIP-Container-Präfix ist unzulässig")
+
+    expected_local_offset = 0
+    for flags, compressed_size, file_size, local_offset, central_name in central_records:
+        if local_offset != expected_local_offset:
+            raise ArchiveSecurityError("Lokale ZIP-Datensätze bilden keine lückenlose Kette")
+        local_header = _read_descriptor_range(descriptor, local_offset, 30)
+        if len(local_header) != 30 or not local_header.startswith(b"PK\x03\x04"):
+            raise ArchiveIntegrityError("Lokaler ZIP-Datensatz ist unvollständig oder ungültig")
+        local_fields = struct.unpack("<4s5H3I2H", local_header)
+        local_extract_version = local_fields[1]
+        local_flags = local_fields[2]
+        local_compressed_size = local_fields[7]
+        local_file_size = local_fields[8]
+        local_name_size = local_fields[9]
+        local_extra_size = local_fields[10]
+        if (
+            local_extract_version != _ZIP_VERSION
+            or local_compressed_size == 0xFFFFFFFF
+            or local_file_size == 0xFFFFFFFF
+        ):
+            raise ArchiveSecurityError("Lokaler ZIP-Datensatz enthält ZIP64 oder falsche Version")
+        if flags & 0x08 or local_flags & 0x08:
+            raise ArchiveSecurityError("ZIP-Data-Descriptor ist unzulässig")
+        if local_compressed_size != compressed_size or local_file_size != file_size:
+            raise ArchiveIntegrityError("Lokaler und zentraler ZIP-Datensatz widersprechen sich")
+        local_name = _read_descriptor_range(descriptor, local_offset + 30, local_name_size)
+        if len(local_name) != local_name_size or local_name != central_name:
+            raise ArchiveIntegrityError("Lokaler und zentraler ZIP-Mitgliedsname widersprechen sich")
+        expected_local_offset = (
+            local_offset + 30 + local_name_size + local_extra_size + local_compressed_size
+        )
+        if expected_local_offset > central_offset:
+            raise ArchiveIntegrityError("Lokaler ZIP-Datensatz überschreitet den Payloadbereich")
+    if expected_local_offset != central_offset:
+        raise ArchiveSecurityError("Lokale ZIP-Datensätze enden nicht lückenlos am Central Directory")
 
 
 def _verify_archive_identity(
@@ -1245,12 +1307,21 @@ def _read_member_bytes(archive: ZipFile, info: ZipInfo) -> bytes:
 
 
 def _metadata_member_limit(name: str, *, limits: ArchiveLimits) -> int:
-    maximum_path_bytes = _MAX_ENTRY_PATH_LENGTH * _MAX_UTF8_BYTES_PER_CHARACTER
+    maximum_path_bytes = _MAX_ENTRY_PATH_LENGTH * (
+        _MAX_UTF8_BYTES_PER_CHARACTER + _MAX_JSON_ESCAPE_OVERHEAD_PER_CHARACTER
+    )
     if name == "README.md":
         return _METADATA_FIXED_BYTES
     if name == "SHA256SUMS.txt":
         return _METADATA_FIXED_BYTES + limits.max_entries * (64 + 2 + maximum_path_bytes + 1)
     return _METADATA_FIXED_BYTES + limits.max_entries * (maximum_path_bytes + 512)
+
+
+def _sidecar_byte_limit(limits: ArchiveLimits) -> int:
+    maximum_path_bytes = _MAX_ENTRY_PATH_LENGTH * (
+        _MAX_UTF8_BYTES_PER_CHARACTER + _MAX_JSON_ESCAPE_OVERHEAD_PER_CHARACTER
+    )
+    return _METADATA_FIXED_BYTES + limits.max_entries * (maximum_path_bytes + 16)
 
 
 def _stream_member_identity(archive: ZipFile, info: ZipInfo) -> tuple[int, str]:

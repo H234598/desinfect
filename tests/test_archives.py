@@ -16,6 +16,7 @@ import pytest
 from scripts.rki_pipeline import archive as archive_module
 from scripts.rki_pipeline import cli as pipeline_cli
 from scripts.rki_pipeline import rights
+from scripts.rki_pipeline import staging as staging_module
 from scripts.rki_pipeline.archive import (
     ArchiveBuild,
     ArchiveEntry,
@@ -40,6 +41,7 @@ from scripts.rki_pipeline.run_modes import (
     RunMode,
 )
 from scripts.rki_pipeline.storage.base import PreparedObject, RightsStorageAuthorizer
+from scripts.rki_pipeline.staging import StagingError
 
 
 SOURCE_ID = "rki:176904/900000001"
@@ -307,6 +309,18 @@ def _add_zip64_end_records(source: Path, destination: Path) -> None:
     )
     locator = struct.pack("<4sLQL", b"PK\x06\x07", 0, eocd_offset, 1)
     destination.write_bytes(payload[:eocd_offset] + zip64_eocd + locator + payload[eocd_offset:])
+
+
+def _insert_gap_before_central_directory(source: Path, destination: Path) -> None:
+    payload = bytearray(source.read_bytes())
+    eocd_offset = payload.rfind(b"PK\x05\x06")
+    assert eocd_offset >= 0
+    central_offset = struct.unpack_from("<I", payload, eocd_offset + 16)[0]
+    gap = b"unreferenced interstitial bytes"
+    shifted = payload[:central_offset] + gap + payload[central_offset:]
+    shifted_eocd_offset = eocd_offset + len(gap)
+    struct.pack_into("<I", shifted, shifted_eocd_offset + 16, central_offset + len(gap))
+    destination.write_bytes(shifted)
 
 
 def test_deterministic_archive_fingerprint_is_order_independent(
@@ -986,6 +1000,25 @@ def test_security_validator_rejects_prefixed_polyglot(
         )
 
 
+def test_security_validator_rejects_gap_before_central_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry, _ = _prepared_entries(tmp_path, monkeypatch)
+    source = tmp_path / "archive.zip"
+    build = build_archive(_spec((entry,)), source, authorizer=_authorizer(tmp_path, monkeypatch))
+    tampered = tmp_path / "interstitial.zip"
+    _insert_gap_before_central_directory(source, tampered)
+    with ZipFile(tampered) as archive:
+        assert archive.read(entry.path) == b"first payload"
+
+    with pytest.raises(ArchiveSecurityError, match="Kette|Lücke|lückenlos|Central"):
+        validate_archive(
+            tampered,
+            expected_fingerprint=build.input_fingerprint,
+            expected_output_sha256=hashlib.sha256(tampered.read_bytes()).hexdigest(),
+        )
+
+
 def test_security_validator_rejects_bad_crc_without_extraction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1135,6 +1168,54 @@ def test_materialization_writes_canonical_schema_sidecar_and_two_events(
         result.zip_path.as_posix(),
         result.manifest_path.as_posix(),
     ]
+
+
+def test_sidecar_limit_scales_beyond_legacy_cap_for_schema_maximum() -> None:
+    limits = ArchiveLimits(max_entries=10_000)
+
+    expected = 4 * 1024 + limits.max_entries * (500 * 6 + 16)
+    assert archive_module._sidecar_byte_limit(limits) == expected
+    assert expected > 8 * 1024 * 1024
+
+
+def test_materialization_round_trips_combined_unicode_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base, _ = _prepared_entries(tmp_path, monkeypatch)
+    entry_count = 2
+    entries: list[ArchiveEntry] = []
+    for index in range(entry_count):
+        prefix = f"U/{index}-"
+        emoji = "\N{GRINNING FACE}" * 10
+        path = prefix + emoji + "\x01" * (500 - len(prefix) - len(emoji))
+        entries.append(ArchiveEntry(path=path, prepared=base.prepared))
+    spec = _spec(tuple(entries))
+    limits = ArchiveLimits(max_entries=entry_count)
+
+    first = materialize_archive(
+        spec,
+        tmp_path / "unicode-sidecar",
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=_authorizer(tmp_path, monkeypatch),
+        limits=limits,
+    )
+    sidecar_bytes = first.manifest_path.read_bytes()
+    sidecar = json.loads(sidecar_bytes)
+    assert sidecar["entries"] == [entry.path for entry in entries]
+    assert len(sidecar_bytes) <= archive_module._sidecar_byte_limit(limits)
+
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+    second = materialize_archive(
+        spec,
+        tmp_path / "unicode-sidecar",
+        temp_root=tmp_path,
+        ledger=ledger,
+        authorizer=_authorizer(tmp_path, monkeypatch),
+        limits=limits,
+    )
+    assert second.changed is False
+    assert ledger.events == []
 
 
 def test_materialization_noop_preserves_mtimes_and_events(
@@ -1475,3 +1556,50 @@ def test_materialization_second_record_failure_preserves_old_bundle_and_ledger(
 
     assert {path.name: path.read_bytes() for path in first.root.iterdir() if path.is_file()} == before
     assert ledger.events == []
+
+
+def test_materialization_post_commit_cleanup_failure_keeps_new_bundle_and_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entries = _prepared_entries(tmp_path, monkeypatch)
+    first = materialize_archive(
+        _spec(entries),
+        tmp_path / "out",
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=_authorizer(tmp_path, monkeypatch),
+    )
+    before = {path.name: path.read_bytes() for path in first.root.iterdir() if path.is_file()}
+    changed_spec = _spec((_with_payload(entries[0], b"changed payload"), entries[1]))
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+    real_remove_tree_at = staging_module.remove_tree_at
+
+    def fail_backup_cleanup(
+        parent_fd: int, name: str, *, require_sentinel: bool = True
+    ) -> None:
+        if name == ".out.backup":
+            raise OSError("injected post-commit cleanup failure")
+        real_remove_tree_at(parent_fd, name, require_sentinel=require_sentinel)
+
+    monkeypatch.setattr(staging_module, "remove_tree_at", fail_backup_cleanup)
+
+    with pytest.raises(StagingError, match="sicher veröffentlicht|Backup"):
+        materialize_archive(
+            changed_spec,
+            tmp_path / "out",
+            temp_root=tmp_path,
+            ledger=ledger,
+            authorizer=_authorizer(tmp_path, monkeypatch),
+        )
+
+    assert len(ledger.events) == 2
+    assert {path.name for path in first.root.iterdir()} == archive_module._BUNDLE_FILES
+    assert first.zip_path.read_bytes() != before["archive.zip"]
+    sidecar = json.loads(first.manifest_path.read_bytes())
+    validate_archive(
+        first.zip_path,
+        expected_fingerprint=archive_input_fingerprint(changed_spec),
+        expected_output_sha256=sidecar["output_sha256"],
+    )
+    backup = tmp_path / ".out.backup"
+    assert {path.name: path.read_bytes() for path in backup.iterdir() if path.is_file()} == before
