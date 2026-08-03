@@ -92,3 +92,29 @@ def test_source_manifest_rejects_unsorted_content_aliases() -> None:
 
     with pytest.raises(SchemaContractError, match="sortiert"):
         validate_document("source-manifest", payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("document_id", "rki-not-canonical"),
+        ("supersedes", "legacy-document"),
+        ("superseded_by", "other-document"),
+    ],
+)
+def test_document_manifest_rejects_noncanonical_relation_ids(field: str, invalid: str) -> None:
+    payload = migrate_document("document-manifest", _fixture("document-manifest-v1.0.json"))
+    payload[field] = invalid
+
+    with pytest.raises(SchemaContractError, match="does not match"):
+        validate_document("document-manifest", payload)
+
+
+def test_document_manifest_accepts_canonical_and_nullable_relation_ids() -> None:
+    payload = migrate_document("document-manifest", _fixture("document-manifest-v1.0.json"))
+    payload["superseded_by"] = "rki-176904-12345-v3"
+    validate_document("document-manifest", payload)
+
+    payload["supersedes"] = None
+    payload["superseded_by"] = None
+    validate_document("document-manifest", payload)

@@ -42,7 +42,7 @@
       "type": "object"
     },
     "document_id": {
-      "pattern": "^rki-[a-z0-9-]{3,180}$",
+      "pattern": "^rki-[0-9]+-[0-9]+-v[1-9][0-9]*$",
       "type": "string"
     },
     "document_type": {
@@ -95,6 +95,7 @@
     },
     "supersedes": {
       "maxLength": 200,
+      "pattern": "^rki-[0-9]+-[0-9]+-v[1-9][0-9]*$",
       "type": [
         "string",
         "null"
@@ -102,6 +103,7 @@
     },
     "superseded_by": {
       "maxLength": 200,
+      "pattern": "^rki-[0-9]+-[0-9]+-v[1-9][0-9]*$",
       "type": [
         "string",
         "null"
