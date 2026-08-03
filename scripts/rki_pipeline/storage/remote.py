@@ -2,8 +2,8 @@
 """Shared offline-testable implementation for injected remote storage ports."""
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
+from secrets import token_hex
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import Any, Protocol, runtime_checkable
 
@@ -40,20 +40,6 @@ _REMOTE_METADATA_FIELDS = frozenset(
 )
 
 
-@dataclass(frozen=True, slots=True)
-class RemotePutReceipt:
-    """Ownership proof for conditionally rolling back exactly one upload."""
-
-    public_reference: str | None
-    rollback_token: str
-
-    def __post_init__(self) -> None:
-        if self.public_reference is not None and type(self.public_reference) is not str:
-            raise ValueError("public_reference muss String oder None sein")
-        if type(self.rollback_token) is not str or not self.rollback_token:
-            raise ValueError("rollback_token muss eine nichtleere Zeichenkette sein")
-
-
 @runtime_checkable
 class RemoteClient(Protocol):
     """Minimal client port implemented by release and object integrations."""
@@ -64,7 +50,8 @@ class RemoteClient(Protocol):
         key: str,
         source_path: Path,
         metadata: dict[str, object],
-    ) -> RemotePutReceipt: ...
+        rollback_token: str,
+    ) -> str | None: ...
     def rollback_put(self, key: str, rollback_token: str) -> bool: ...
     def get(self, key: str, target_path: Path) -> None: ...
     def list(self, prefix: str) -> tuple[dict[str, Any], ...]: ...
@@ -352,22 +339,26 @@ class RemoteStorageAdapter:
             self.authorize(prepared, operation="apply")
             return reference
 
-        self.authorize(prepared, operation="apply")
-        with TemporaryDirectory(prefix="desinfect-remote-upload-") as temporary:
-            snapshot, measured_size, measured_hash = self._snapshot_prepared(
-                prepared,
-                Path(temporary),
-            )
-            metadata = self._metadata(prepared)
-            self.authorize(prepared, operation="apply")
-            receipt = self.client.put(
-                key,
-                snapshot,
-                metadata,
-            )
-        if type(receipt) is not RemotePutReceipt:
-            raise StorageError("Remote-put lieferte keinen gültigen Besitzbeleg")
+        rollback_token = token_hex(32)
+        put_started = False
         try:
+            self.authorize(prepared, operation="apply")
+            with TemporaryDirectory(prefix="desinfect-remote-upload-") as temporary:
+                snapshot, measured_size, measured_hash = self._snapshot_prepared(
+                    prepared,
+                    Path(temporary),
+                )
+                metadata = self._metadata(prepared)
+                self.authorize(prepared, operation="apply")
+                put_started = True
+                public_reference = self.client.put(
+                    key,
+                    snapshot,
+                    metadata,
+                    rollback_token,
+                )
+            if public_reference is not None and type(public_reference) is not str:
+                raise StorageError("Remote-put lieferte keine gültige öffentliche Referenz")
             self.authorize(prepared, operation="apply")
             reference = self._reference(
                 artifact_id=prepared.artifact_id,
@@ -382,13 +373,15 @@ class RemoteStorageAdapter:
                 provenance_state="current",
                 visibility=prepared.visibility,
                 rights_state=prepared.rights_state,
-                public_reference=receipt.public_reference,
+                public_reference=public_reference,
             )
             self.verify(reference)
             self.authorize(prepared, operation="apply")
         except BaseException as exc:
+            if not put_started:
+                raise
             try:
-                rolled_back = self.client.rollback_put(key, receipt.rollback_token)
+                rolled_back = self.client.rollback_put(key, rollback_token)
             except BaseException as rollback_exc:
                 raise StorageError(
                     "Fehlgeschlagenen Remote-Upload konnte nicht sicher zurückrollen"

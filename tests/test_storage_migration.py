@@ -18,7 +18,6 @@ from scripts.rki_pipeline.storage.migrate import (
 )
 from scripts.rki_pipeline.storage.object import ObjectStorageAdapter
 from scripts.rki_pipeline.storage.release import ReleaseStorageAdapter
-from scripts.rki_pipeline.storage.remote import RemotePutReceipt
 
 SOURCE_ID = "rki:176904/12345.2"
 SOURCE_SHA256 = "b" * 64
@@ -36,17 +35,20 @@ class MigrationClient:
     objects: dict[str, dict[str, object]] = field(default_factory=dict)
     calls: list[tuple[str, str]] = field(default_factory=list)
     upload_tokens: dict[str, str] = field(default_factory=dict)
-    upload_sequence: int = 0
 
     def head(self, key: str):
         self.calls.append(("head", key))
         value = self.objects.get(key)
         return None if value is None else {name: data for name, data in value.items() if name != "payload"}
 
-    def put(self, key: str, source_path: Path, metadata: dict[str, object]):
+    def put(
+        self,
+        key: str,
+        source_path: Path,
+        metadata: dict[str, object],
+        rollback_token: str,
+    ):
         self.calls.append(("put", key))
-        self.upload_sequence += 1
-        rollback_token = f"upload-{self.upload_sequence}"
         payload = source_path.read_bytes()
         self.objects[key] = {
             **metadata,
@@ -54,11 +56,14 @@ class MigrationClient:
             "payload": payload,
         }
         self.upload_tokens[key] = rollback_token
-        return RemotePutReceipt(f"https://example.invalid/{key}", rollback_token)
+        return f"https://example.invalid/{key}"
 
     def rollback_put(self, key: str, rollback_token: str) -> bool:
         self.calls.append(("rollback_put", key))
-        if self.upload_tokens.get(key) != rollback_token:
+        current_token = self.upload_tokens.get(key)
+        if current_token is None:
+            return key not in self.objects
+        if current_token != rollback_token:
             return False
         del self.upload_tokens[key]
         del self.objects[key]

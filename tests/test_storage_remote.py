@@ -15,7 +15,7 @@ from scripts.rki_pipeline.storage.config import ObjectConfig, ReleaseConfig
 from scripts.rki_pipeline.storage.object import ObjectStorageAdapter
 from scripts.rki_pipeline.storage.release import ReleaseStorageAdapter
 from scripts.rki_pipeline.storage import remote as remote_storage
-from scripts.rki_pipeline.storage.remote import RemotePutReceipt, RemoteStorageAdapter
+from scripts.rki_pipeline.storage.remote import RemoteStorageAdapter
 
 SOURCE_ID = "rki:176904/12345.2"
 SOURCE_SHA256 = "b" * 64
@@ -32,9 +32,10 @@ class MemoryClient:
     head_hook: Callable[[], None] | None = None
     get_hook: Callable[[], None] | None = None
     put_hook: Callable[[], None] | None = None
+    put_failure: str | None = None
+    invalid_put_result: bool = False
     list_result: tuple[dict[str, object], ...] | None = None
     upload_tokens: dict[str, str] = field(default_factory=dict)
-    upload_sequence: int = 0
 
     def head(self, key: str):
         self.calls.append(("head", key))
@@ -43,10 +44,14 @@ class MemoryClient:
         value = self.objects.get(key)
         return None if value is None else {name: data for name, data in value.items() if name != "payload"}
 
-    def put(self, key: str, source_path: Path, metadata: dict[str, object]):
+    def put(
+        self,
+        key: str,
+        source_path: Path,
+        metadata: dict[str, object],
+        rollback_token: str,
+    ):
         self.calls.append(("put", key))
-        self.upload_sequence += 1
-        rollback_token = f"upload-{self.upload_sequence}"
         self.objects[key] = {
             **metadata,
             "public_reference": f"https://example.invalid/{key}",
@@ -55,11 +60,20 @@ class MemoryClient:
         self.upload_tokens[key] = rollback_token
         if self.put_hook is not None:
             self.put_hook()
-        return RemotePutReceipt(f"https://example.invalid/{key}", rollback_token)
+        if self.put_failure == "oserror":
+            raise OSError("injected post-upload failure")
+        if self.put_failure == "interrupt":
+            raise KeyboardInterrupt
+        if self.invalid_put_result:
+            return object()
+        return f"https://example.invalid/{key}"
 
     def rollback_put(self, key: str, rollback_token: str) -> bool:
         self.calls.append(("rollback_put", key))
-        if self.upload_tokens.get(key) != rollback_token:
+        current_token = self.upload_tokens.get(key)
+        if current_token is None:
+            return key not in self.objects
+        if current_token != rollback_token:
             return False
         del self.upload_tokens[key]
         del self.objects[key]
@@ -769,6 +783,56 @@ def test_remote_apply_rolls_back_its_upload_when_rights_are_revoked_during_put(
     )
 
     with pytest.raises(StorageError, match="Rechte|autorisiert"):
+        adapter.apply(prepared, ledger=ledger)
+
+    assert client.objects == {}
+    assert ledger.events == []
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    (("oserror", OSError), ("interrupt", KeyboardInterrupt)),
+)
+def test_remote_apply_rolls_back_upload_when_put_fails_after_publishing(
+    tmp_path: Path,
+    storage_rights,
+    failure: str,
+    expected: type[BaseException],
+) -> None:
+    client = MemoryClient(put_failure=failure)
+    adapter = object_adapter(client, storage_rights)
+    prepared_root = tmp_path / f"prepared-put-{failure}"
+    prepared_root.mkdir()
+    prepared = adapter.materialize(
+        intent(tmp_path),
+        temp_root=prepared_root,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=prepared_root),
+    )
+    ledger = EffectLedger(RunMode.APPLY)
+
+    with pytest.raises(expected):
+        adapter.apply(prepared, ledger=ledger)
+
+    assert client.objects == {}
+    assert ledger.events == []
+
+
+def test_remote_apply_rolls_back_upload_after_invalid_put_result(
+    tmp_path: Path,
+    storage_rights,
+) -> None:
+    client = MemoryClient(invalid_put_result=True)
+    adapter = object_adapter(client, storage_rights)
+    prepared_root = tmp_path / "prepared-invalid-put-result"
+    prepared_root.mkdir()
+    prepared = adapter.materialize(
+        intent(tmp_path),
+        temp_root=prepared_root,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=prepared_root),
+    )
+    ledger = EffectLedger(RunMode.APPLY)
+
+    with pytest.raises(StorageError, match="Remote-put"):
         adapter.apply(prepared, ledger=ledger)
 
     assert client.objects == {}
