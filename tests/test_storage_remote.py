@@ -4,7 +4,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -13,28 +12,20 @@ from scripts.rki_pipeline.storage.base import StorageBackend, StorageError, Stor
 from scripts.rki_pipeline.storage.config import ObjectConfig, ReleaseConfig
 from scripts.rki_pipeline.storage.object import ObjectStorageAdapter
 from scripts.rki_pipeline.storage.release import ReleaseStorageAdapter
+from scripts.rki_pipeline.storage.remote import RemoteStorageAdapter
 
 SOURCE_ID = "rki:176904/12345.2"
 SOURCE_SHA256 = "b" * 64
-DECISION_SHA256 = "c" * 64
+DECISION_SHA256 = "86209a043bf3571d183ea7c65e24bcc45f5e0f4db15042773b282273c96c264a"
 DOCUMENT_ID = "rki-176904-12345-v2"
 CONVERSION_ID = "conv-" + "d" * 64
-
-
-class AllowAuthorizer:
-    def authorize(self, subject: Any, *, operation: str) -> None:
-        pass
-
-
-class DenyAuthorizer:
-    def authorize(self, subject: Any, *, operation: str) -> None:
-        raise StorageError(f"nicht autorisiert: {operation}")
 
 
 @dataclass
 class MemoryClient:
     objects: dict[str, dict[str, object]] = field(default_factory=dict)
     calls: list[tuple[str, str]] = field(default_factory=list)
+    get_failure: str | None = None
 
     def head(self, key: str):
         self.calls.append(("head", key))
@@ -52,6 +43,12 @@ class MemoryClient:
 
     def get(self, key: str, target_path: Path):
         self.calls.append(("get", key))
+        if self.get_failure == "raise":
+            target_path.write_bytes(b"partial")
+            raise RuntimeError("injected get failure")
+        if self.get_failure == "corrupt":
+            target_path.write_bytes(b"corrupt")
+            return
         target_path.write_bytes(self.objects[key]["payload"])
 
     def list(self, prefix: str):
@@ -80,25 +77,40 @@ def intent(tmp_path: Path) -> StorageIntent:
     )
 
 
-def object_adapter(client: MemoryClient) -> ObjectStorageAdapter:
+def object_adapter(client: MemoryClient, storage_rights) -> ObjectStorageAdapter:
     return ObjectStorageAdapter(
         ObjectConfig("desinfect", "rki/Bulletins"),
         client,
-        AllowAuthorizer(),
+        storage_rights.authorizer,
+    )
+
+
+def tree_snapshot(root: Path) -> tuple[tuple[str, bool, bytes], ...]:
+    return tuple(
+        (
+            path.relative_to(root).as_posix(),
+            path.is_dir(),
+            b"" if path.is_dir() else path.read_bytes(),
+        )
+        for path in sorted(root.rglob("*"))
     )
 
 
 @pytest.mark.parametrize("backend", (StorageBackend.RELEASE, StorageBackend.OBJECT))
-def test_remote_materialize_has_no_client_calls_and_stays_in_temp(tmp_path: Path, backend: StorageBackend) -> None:
+def test_remote_materialize_has_no_client_calls_and_stays_in_temp(
+    tmp_path: Path,
+    backend: StorageBackend,
+    storage_rights,
+) -> None:
     client = MemoryClient()
     adapter = (
         ReleaseStorageAdapter(
             ReleaseConfig("desinfect-archive", "rki/Bulletins"),
             client,
-            AllowAuthorizer(),
+            storage_rights.authorizer,
         )
         if backend is StorageBackend.RELEASE
-        else object_adapter(client)
+        else object_adapter(client, storage_rights)
     )
     temp_root = tmp_path / "temp"
     temp_root.mkdir()
@@ -110,16 +122,21 @@ def test_remote_materialize_has_no_client_calls_and_stays_in_temp(tmp_path: Path
 
 
 @pytest.mark.parametrize("backend,effect", ((StorageBackend.RELEASE, EffectKind.RELEASE), (StorageBackend.OBJECT, EffectKind.OBJECT)))
-def test_remote_apply_is_idempotent_and_returns_backend_neutral_reference(tmp_path: Path, backend: StorageBackend, effect: EffectKind) -> None:
+def test_remote_apply_is_idempotent_and_returns_backend_neutral_reference(
+    tmp_path: Path,
+    backend: StorageBackend,
+    effect: EffectKind,
+    storage_rights,
+) -> None:
     client = MemoryClient()
     adapter = (
         ReleaseStorageAdapter(
             ReleaseConfig("desinfect-archive", "rki/Bulletins"),
             client,
-            AllowAuthorizer(),
+            storage_rights.authorizer,
         )
         if backend is StorageBackend.RELEASE
-        else object_adapter(client)
+        else object_adapter(client, storage_rights)
     )
     temp_root = tmp_path / "temp"
     temp_root.mkdir()
@@ -139,7 +156,7 @@ def test_remote_apply_is_idempotent_and_returns_backend_neutral_reference(tmp_pa
     adapter.verify(first)
 
 
-def test_remote_checksum_conflict_fails_closed(tmp_path: Path) -> None:
+def test_remote_checksum_conflict_fails_closed(tmp_path: Path, storage_rights) -> None:
     client = MemoryClient(
         objects={
             "rki/Bulletins/Jahre/1994/archive.zip": {
@@ -160,7 +177,7 @@ def test_remote_checksum_conflict_fails_closed(tmp_path: Path) -> None:
             }
         }
     )
-    adapter = object_adapter(client)
+    adapter = object_adapter(client, storage_rights)
     temp_root = tmp_path / "temp"
     temp_root.mkdir()
     prepared = adapter.materialize(
@@ -173,7 +190,7 @@ def test_remote_checksum_conflict_fails_closed(tmp_path: Path) -> None:
     assert not any(call[0] == "put" for call in client.calls)
 
 
-def test_invalid_remote_client_raises_storage_error() -> None:
+def test_invalid_remote_client_raises_storage_error(storage_rights) -> None:
     class InvalidClient:
         pass
 
@@ -181,13 +198,16 @@ def test_invalid_remote_client_raises_storage_error() -> None:
         ObjectStorageAdapter(
             ObjectConfig("desinfect", "rki/Bulletins"),
             InvalidClient(),
-            AllowAuthorizer(),
+            storage_rights.authorizer,
         )
 
 
-def test_remote_apply_rehashes_prepared_path_before_upload(tmp_path: Path) -> None:
+def test_remote_apply_rehashes_prepared_path_before_upload(
+    tmp_path: Path,
+    storage_rights,
+) -> None:
     client = MemoryClient()
-    adapter = object_adapter(client)
+    adapter = object_adapter(client, storage_rights)
     temp_root = tmp_path / "temp"
     temp_root.mkdir()
     prepared = adapter.materialize(
@@ -203,7 +223,10 @@ def test_remote_apply_rehashes_prepared_path_before_upload(tmp_path: Path) -> No
     assert not any(call[0] == "put" for call in client.calls)
 
 
-def test_remote_verify_reads_actual_payload_instead_of_trusting_metadata(tmp_path: Path) -> None:
+def test_remote_verify_reads_actual_payload_instead_of_trusting_metadata(
+    tmp_path: Path,
+    storage_rights,
+) -> None:
     key = "rki/Bulletins/Jahre/1994/archive.zip"
     expected = b"archive"
     client = MemoryClient(
@@ -226,7 +249,7 @@ def test_remote_verify_reads_actual_payload_instead_of_trusting_metadata(tmp_pat
             }
         }
     )
-    adapter = object_adapter(client)
+    adapter = object_adapter(client, storage_rights)
     reference = StorageReference(
         artifact_id="artifact-1",
         relative_path=key,
@@ -251,55 +274,62 @@ def test_remote_verify_reads_actual_payload_instead_of_trusting_metadata(tmp_pat
     assert ("get", key) in client.calls
 
 
-def test_remote_authorization_precedes_temp_get_put_and_verify_reads(tmp_path: Path) -> None:
+def test_remote_authorization_precedes_temp_get_put_and_verify_reads(
+    tmp_path: Path,
+    storage_rights,
+) -> None:
     client = MemoryClient()
-    denied = ObjectStorageAdapter(
+    adapter = ObjectStorageAdapter(
         ObjectConfig("desinfect", "rki/Bulletins"),
         client,
-        DenyAuthorizer(),
+        storage_rights.authorizer,
     )
     source_intent = intent(tmp_path)
     temp_root = tmp_path / "denied-temp"
     temp_root.mkdir()
     ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root)
 
-    with pytest.raises(StorageError, match="nicht autorisiert"):
-        denied.materialize(source_intent, temp_root=temp_root, ledger=ledger)
+    storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))
+    with pytest.raises(StorageError, match="Rechte|autorisiert"):
+        adapter.materialize(source_intent, temp_root=temp_root, ledger=ledger)
 
     assert tuple(temp_root.rglob("*")) == ()
     assert ledger.events == []
     assert client.calls == []
 
-    allowed = object_adapter(client)
-    prepared = allowed.materialize(
+    storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "approved"))
+    prepared = adapter.materialize(
         source_intent,
         temp_root=temp_root,
         ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root),
     )
     apply_ledger = EffectLedger(RunMode.APPLY)
 
-    with pytest.raises(StorageError, match="nicht autorisiert"):
-        denied.apply(prepared, ledger=apply_ledger)
+    storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))
+    with pytest.raises(StorageError, match="Rechte|autorisiert"):
+        adapter.apply(prepared, ledger=apply_ledger)
 
     assert not client.objects
     assert not any(call[0] == "put" for call in client.calls)
     assert apply_ledger.events == []
 
-    reference = allowed.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
+    storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "approved"))
+    reference = adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
     client.calls.clear()
     export_root = tmp_path / "denied-export"
     export_root.mkdir()
 
-    with pytest.raises(StorageError, match="nicht autorisiert"):
-        denied.export(
+    storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))
+    with pytest.raises(StorageError, match="Rechte|autorisiert"):
+        adapter.export(
             reference,
             temp_root=export_root,
             ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=export_root),
         )
-    with pytest.raises(StorageError, match="nicht autorisiert"):
-        denied.verify(reference)
-    with pytest.raises(StorageError, match="nicht autorisiert"):
-        denied.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
+    with pytest.raises(StorageError, match="Rechte|autorisiert"):
+        adapter.verify(reference)
+    with pytest.raises(StorageError, match="Rechte|autorisiert"):
+        adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
 
     assert client.calls == []
     assert tuple(export_root.rglob("*")) == ()
@@ -307,6 +337,7 @@ def test_remote_authorization_precedes_temp_get_put_and_verify_reads(tmp_path: P
 
 def test_remote_metadata_requires_full_versioned_provenance_without_fallback(
     tmp_path: Path,
+    storage_rights,
 ) -> None:
     source_intent = intent(tmp_path)
     key = "rki/Bulletins/Jahre/1994/archive.zip"
@@ -342,12 +373,15 @@ def test_remote_metadata_requires_full_versioned_provenance_without_fallback(
         client = MemoryClient(objects={key: incomplete})
 
         with pytest.raises(StorageError, match="Metadaten"):
-            object_adapter(client).exists(source_intent)
+            object_adapter(client, storage_rights).exists(source_intent)
 
 
-def test_remote_verify_rejects_metadata_provenance_drift_before_get(tmp_path: Path) -> None:
+def test_remote_verify_rejects_metadata_provenance_drift_before_get(
+    tmp_path: Path,
+    storage_rights,
+) -> None:
     client = MemoryClient()
-    adapter = object_adapter(client)
+    adapter = object_adapter(client, storage_rights)
     temp_root = tmp_path / "temp"
     temp_root.mkdir()
     prepared = adapter.materialize(
@@ -382,6 +416,7 @@ def test_remote_head_provenance_drift_never_uses_intent_fallback(
     tmp_path: Path,
     field: str,
     value: object,
+    storage_rights,
 ) -> None:
     source_intent = intent(tmp_path)
     key = "rki/Bulletins/Jahre/1994/archive.zip"
@@ -404,12 +439,18 @@ def test_remote_head_provenance_drift_never_uses_intent_fallback(
     metadata[field] = value
 
     with pytest.raises(StorageError, match="Metadaten|Konflikt"):
-        object_adapter(MemoryClient(objects={key: metadata})).exists(source_intent)
+        object_adapter(
+            MemoryClient(objects={key: metadata}),
+            storage_rights,
+        ).exists(source_intent)
 
 
-def test_remote_put_persists_complete_current_metadata(tmp_path: Path) -> None:
+def test_remote_put_persists_complete_current_metadata(
+    tmp_path: Path,
+    storage_rights,
+) -> None:
     client = MemoryClient()
-    adapter = object_adapter(client)
+    adapter = object_adapter(client, storage_rights)
     temp_root = tmp_path / "temp-metadata"
     temp_root.mkdir()
     prepared = adapter.materialize(
@@ -442,3 +483,125 @@ def test_remote_put_persists_complete_current_metadata(tmp_path: Path) -> None:
     }
     assert stored["schema_version"] == "1.1.0"
     assert stored["decision_sha256"] == DECISION_SHA256
+
+
+def test_remote_constructors_reject_structural_authorizer(
+    storage_rights,
+) -> None:
+    class ArbitraryAuthorizer:
+        def authorize(self, subject: object, *, operation: str) -> None:
+            pass
+
+    class DerivedAuthorizer(type(storage_rights.authorizer)):
+        pass
+
+    client = MemoryClient()
+    invalid_authorizers = (
+        ArbitraryAuthorizer(),
+        DerivedAuthorizer(
+            authority=storage_rights.authorizer.authority,
+            policy=storage_rights.authorizer.policy,
+        ),
+    )
+    for authorizer in invalid_authorizers:
+        constructors = (
+            lambda: RemoteStorageAdapter(
+                client=client,
+                prefix="rki/Bulletins",
+                object_prefix="remote:test",
+                authorizer=authorizer,
+            ),
+            lambda: ReleaseStorageAdapter(
+                ReleaseConfig("desinfect-archive", "rki/Bulletins"),
+                client,
+                authorizer,
+            ),
+            lambda: ObjectStorageAdapter(
+                ObjectConfig("desinfect", "rki/Bulletins"),
+                client,
+                authorizer,
+            ),
+        )
+        for construct in constructors:
+            with pytest.raises(StorageError, match="RightsStorageAuthorizer"):
+                construct()
+
+    assert object_adapter(client, storage_rights).authorizer is storage_rights.authorizer
+
+
+def test_remote_exists_authorizes_before_head(tmp_path: Path, storage_rights) -> None:
+    client = MemoryClient()
+    adapter = object_adapter(client, storage_rights)
+    source_intent = intent(tmp_path)
+    storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))
+
+    with pytest.raises(StorageError, match="Rechte|autorisiert"):
+        adapter.exists(source_intent)
+
+    assert client.calls == []
+
+
+@pytest.mark.parametrize("replacement", (b"changed", None))
+def test_remote_materialize_validates_one_source_snapshot_before_temp_write(
+    tmp_path: Path,
+    storage_rights,
+    replacement: bytes | None,
+) -> None:
+    adapter = object_adapter(MemoryClient(), storage_rights)
+    source_intent = intent(tmp_path)
+    if replacement is None:
+        source_intent.source_path.unlink()
+        replacement_path = tmp_path / "replacement.zip"
+        replacement_path.write_bytes(b"archive")
+        source_intent.source_path.symlink_to(replacement_path)
+    else:
+        source_intent.source_path.write_bytes(replacement)
+    temp_root = tmp_path / "snapshot-temp"
+    temp_root.mkdir()
+    (temp_root / "sentinel").write_bytes(b"keep")
+    before = tree_snapshot(temp_root)
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root)
+
+    with pytest.raises(StorageError, match="Größe|SHA-256|reguläre Datei"):
+        adapter.materialize(source_intent, temp_root=temp_root, ledger=ledger)
+
+    assert tree_snapshot(temp_root) == before
+    assert ledger.events == []
+
+
+@pytest.mark.parametrize("failure", ("raise", "corrupt"))
+def test_remote_export_cleans_only_its_unique_partial_file(
+    tmp_path: Path,
+    storage_rights,
+    failure: str,
+) -> None:
+    client = MemoryClient()
+    adapter = object_adapter(client, storage_rights)
+    materialize_root = tmp_path / "materialize"
+    materialize_root.mkdir()
+    prepared = adapter.materialize(
+        intent(tmp_path),
+        temp_root=materialize_root,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=materialize_root),
+    )
+    reference = adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
+    client.calls.clear()
+    client.get_failure = failure
+    export_root = tmp_path / "export"
+    target = export_root / reference.relative_path
+    target.parent.mkdir(parents=True)
+    preexisting_part = target.with_name(f".{target.name}.export.part")
+    preexisting_part.write_bytes(b"caller-owned")
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=export_root)
+
+    with pytest.raises((RuntimeError, StorageError)):
+        adapter.export(reference, temp_root=export_root, ledger=ledger)
+
+    assert preexisting_part.read_bytes() == b"caller-owned"
+    assert not target.exists()
+    assert [
+        path
+        for path in target.parent.iterdir()
+        if path != preexisting_part and path.name.endswith(".part")
+    ] == []
+    assert ledger.events == []

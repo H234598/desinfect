@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -27,11 +26,6 @@ SOURCE_SHA256 = "b" * 64
 DECISION_SHA256 = "c" * 64
 DOCUMENT_ID = "rki-176904-12345-v2"
 CONVERSION_ID = "conv-" + "d" * 64
-
-
-class AllowAuthorizer:
-    def authorize(self, subject: Any, *, operation: str) -> None:
-        pass
 
 
 def write_config(tmp_path: Path, text: str) -> Path:
@@ -334,21 +328,24 @@ def test_storage_config_loads_exact_default_backend(tmp_path: Path) -> None:
     assert config.object.namespace == "rki/Bulletins"
 
 
-def test_factory_requires_clients_for_remote_backends(tmp_path: Path) -> None:
+def test_factory_requires_clients_for_remote_backends(
+    tmp_path: Path,
+    storage_rights,
+) -> None:
     config = load_storage_config(write_config(tmp_path, valid_config()))
     with pytest.raises(StorageConfigurationError, match="ReleaseClient"):
         build_storage_adapter(
             config,
             backend=StorageBackend.RELEASE,
             repository_root=tmp_path,
-            authorizer=AllowAuthorizer(),
+            authorizer=storage_rights.authorizer,
         )
     with pytest.raises(StorageConfigurationError, match="ObjectClient"):
         build_storage_adapter(
             config,
             backend=StorageBackend.OBJECT,
             repository_root=tmp_path,
-            authorizer=AllowAuthorizer(),
+            authorizer=storage_rights.authorizer,
         )
 
 
@@ -363,6 +360,43 @@ def test_factory_requires_explicit_authorizer_without_allow_all_default(
             backend=StorageBackend.LFS,
             repository_root=tmp_path,
         )
+
+
+def test_factory_rejects_structural_authorizer(
+    tmp_path: Path,
+    storage_rights,
+) -> None:
+    class ArbitraryAuthorizer:
+        def authorize(self, subject: object, *, operation: str) -> None:
+            pass
+
+    class DerivedAuthorizer(storage_base.RightsStorageAuthorizer):
+        pass
+
+    config = load_storage_config(write_config(tmp_path, valid_config()))
+    invalid_authorizers = (
+        ArbitraryAuthorizer(),
+        DerivedAuthorizer(
+            authority=storage_rights.authorizer.authority,
+            policy=storage_rights.authorizer.policy,
+        ),
+    )
+    for authorizer in invalid_authorizers:
+        with pytest.raises(StorageConfigurationError, match="RightsStorageAuthorizer"):
+            build_storage_adapter(
+                config,
+                backend=StorageBackend.LFS,
+                repository_root=tmp_path,
+                authorizer=authorizer,
+            )
+
+    adapter = build_storage_adapter(
+        config,
+        backend=StorageBackend.LFS,
+        repository_root=tmp_path,
+        authorizer=storage_rights.authorizer,
+    )
+    assert adapter.authorizer is storage_rights.authorizer
 
 
 def test_rights_storage_authorizer_reloads_and_compares_exact_decision(

@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from scripts.rki_pipeline.storage.base import (
+    RightsStorageAuthorizer,
     StorageAdapter,
-    StorageAuthorizer,
     StorageBackend,
     StorageConfigurationError,
 )
@@ -19,7 +19,7 @@ def build_storage_adapter(
     *,
     backend: StorageBackend | None = None,
     repository_root: Path,
-    authorizer: StorageAuthorizer,
+    authorizer: RightsStorageAuthorizer,
     release_client: Any | None = None,
     object_client: Any | None = None,
 ) -> StorageAdapter:
@@ -28,9 +28,9 @@ def build_storage_adapter(
     selected = config.backend if backend is None else backend
     if not isinstance(selected, StorageBackend):
         raise StorageConfigurationError("backend muss ein StorageBackend sein")
-    if not isinstance(authorizer, StorageAuthorizer):
+    if type(authorizer) is not RightsStorageAuthorizer:
         raise StorageConfigurationError(
-            "authorizer erfüllt das StorageAuthorizer-Protokoll nicht"
+            "authorizer muss ein exakter RightsStorageAuthorizer sein"
         )
     if selected is StorageBackend.LFS:
         from scripts.rki_pipeline.storage.lfs import LfsStorageAdapter

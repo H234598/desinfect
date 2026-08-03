@@ -138,6 +138,22 @@ def hash_file(path: Path) -> tuple[int, str]:
     return size, digest.hexdigest()
 
 
+def read_verified_payload(path: Path, *, sha256: str, size: int) -> bytes:
+    """Read one regular file once and validate its immutable byte identity."""
+
+    source = Path(path)
+    if source.is_symlink() or not source.is_file():
+        raise StorageError(f"Storagequelle ist keine reguläre Datei: {source}")
+    try:
+        payload = source.read_bytes()
+    except OSError as exc:
+        raise StorageError(f"Storagequelle ist nicht lesbar: {source}") from exc
+    measured = (len(payload), hashlib.sha256(payload).hexdigest())
+    if measured != (size, sha256):
+        raise StorageError("Storagequelle stimmt nicht mit Größe/SHA-256 überein")
+    return payload
+
+
 @dataclass(frozen=True, slots=True)
 class StorageIntent:
     """One immutable source object and its logical backend-neutral key."""
@@ -316,24 +332,21 @@ class StorageReference:
         }
 
 
-@runtime_checkable
-class StorageAuthorizer(Protocol):
-    """Injected fail-closed gate for every payload byte boundary."""
-
-    def authorize(
-        self,
-        subject: StorageIntent | PreparedObject | StorageReference,
-        *,
-        operation: str,
-    ) -> None: ...
-
-
 @dataclass(frozen=True, slots=True)
 class RightsStorageAuthorizer:
     """Authorize storage only from a freshly reloaded pinned rights authority."""
 
     authority: RightsAuthority
     policy: RightsPolicy
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.authority) is not RightsAuthority
+            or type(self.policy) is not RightsPolicy
+        ):
+            raise StorageAuthorizationError(
+                "RightsStorageAuthorizer benötigt versiegelte Authority und Policy"
+            )
 
     def authorize(
         self,
@@ -377,13 +390,17 @@ class RightsStorageAuthorizer:
 
 
 def authorize_storage_operation(
-    authorizer: StorageAuthorizer,
+    authorizer: RightsStorageAuthorizer,
     subject: StorageIntent | PreparedObject | StorageReference,
     *,
     operation: str,
 ) -> None:
     """Enforce non-bypassable provenance floor before injected policy."""
 
+    if type(authorizer) is not RightsStorageAuthorizer:
+        raise StorageAuthorizationError(
+            "authorizer muss ein exakter RightsStorageAuthorizer sein"
+        )
     if getattr(subject, "provenance_state", "current") != "current":
         raise StorageAuthorizationError(
             f"Legacy-Provenienz blockiert Storage-{operation}"

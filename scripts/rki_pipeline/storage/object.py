@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from scripts.rki_pipeline.run_modes import EffectKind
-from scripts.rki_pipeline.storage.base import StorageAuthorizer, StorageBackend
+from scripts.rki_pipeline.storage.base import RightsStorageAuthorizer, StorageBackend
 from scripts.rki_pipeline.storage.config import ObjectConfig
 from scripts.rki_pipeline.storage.remote import RemoteClient, RemoteStorageAdapter
 
@@ -18,7 +18,7 @@ class ObjectStorageAdapter(RemoteStorageAdapter):
         self,
         config: ObjectConfig,
         client: RemoteClient,
-        authorizer: StorageAuthorizer,
+        authorizer: RightsStorageAuthorizer,
     ) -> None:
         self.config = config
         super().__init__(

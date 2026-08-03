@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import Any, Protocol, runtime_checkable
 
 from scripts.rki_pipeline.io_utils import atomic_write_bytes, normalize_posix_path
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 from scripts.rki_pipeline.storage.base import (
     PreparedObject,
-    StorageAuthorizer,
+    RightsStorageAuthorizer,
     StorageBackend,
     StorageError,
     StorageIntent,
     StorageReference,
     authorize_storage_operation,
     hash_file,
+    read_verified_payload,
 )
 
 _REMOTE_METADATA_FIELDS = frozenset(
@@ -65,15 +66,17 @@ class RemoteStorageAdapter:
         client: RemoteClient,
         prefix: str,
         object_prefix: str,
-        authorizer: StorageAuthorizer,
+        authorizer: RightsStorageAuthorizer,
     ) -> None:
         if not isinstance(client, RemoteClient):
             raise StorageError("client erfüllt das RemoteClient-Protokoll nicht")
         self.client = client
         self.prefix = normalize_posix_path(prefix)
         self.object_prefix = object_prefix
-        if not isinstance(authorizer, StorageAuthorizer):
-            raise StorageError("authorizer erfüllt das StorageAuthorizer-Protokoll nicht")
+        if type(authorizer) is not RightsStorageAuthorizer:
+            raise StorageError(
+                "authorizer muss ein exakter RightsStorageAuthorizer sein"
+            )
         self.authorizer = authorizer
 
     def authorize(
@@ -202,6 +205,7 @@ class RemoteStorageAdapter:
         )
 
     def exists(self, intent: StorageIntent) -> StorageReference | None:
+        self.authorize(intent, operation="exists")
         key = self._key(intent.logical_key)
         metadata = self.client.head(key)
         if metadata is None:
@@ -220,8 +224,13 @@ class RemoteStorageAdapter:
         if ledger.mode is not RunMode.MATERIALIZE:
             raise StorageError("Remote-Materialisierung benötigt RunMode materialize")
         self.authorize(intent, operation="materialize")
+        payload = read_verified_payload(
+            intent.source_path,
+            sha256=intent.sha256,
+            size=intent.size,
+        )
         target = Path(temp_root) / normalize_posix_path(intent.logical_key)
-        atomic_write_bytes(target, intent.source_path.read_bytes(), allowed_root=Path(temp_root))
+        atomic_write_bytes(target, payload, allowed_root=Path(temp_root))
         ledger.record(EffectKind.TEMP_FILE, target.absolute().as_posix(), sha256=intent.sha256, size=intent.size)
         return PreparedObject(
             artifact_id=intent.artifact_id,
@@ -249,24 +258,36 @@ class RemoteStorageAdapter:
         self.authorize(reference, operation="export")
         target = Path(temp_root) / normalize_posix_path(reference.relative_path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        part = target.with_name(f".{target.name}.export.part")
-        if part.exists():
-            part.unlink()
-        self.client.get(reference.relative_path, part)
-        size, sha256 = hash_file(part)
-        if (size, sha256) != (reference.size, reference.sha256):
+        with NamedTemporaryFile(
+            prefix=f".{target.name}.export-",
+            suffix=".part",
+            dir=target.parent,
+            delete=False,
+        ) as handle:
+            part = Path(handle.name)
+        try:
+            self.client.get(reference.relative_path, part)
+            payload = read_verified_payload(
+                part,
+                sha256=reference.sha256,
+                size=reference.size,
+            )
+            atomic_write_bytes(target, payload, allowed_root=Path(temp_root))
+        finally:
             part.unlink(missing_ok=True)
-            raise StorageError("Exportiertes Remote-Objekt besitzt falsche Größe/SHA-256")
-        atomic_write_bytes(target, part.read_bytes(), allowed_root=Path(temp_root))
-        part.unlink(missing_ok=True)
-        ledger.record(EffectKind.TEMP_FILE, target.absolute().as_posix(), sha256=sha256, size=size)
+        ledger.record(
+            EffectKind.TEMP_FILE,
+            target.absolute().as_posix(),
+            sha256=reference.sha256,
+            size=reference.size,
+        )
         return PreparedObject(
             artifact_id=reference.artifact_id,
             logical_key=reference.relative_path,
             path=target,
             temp_root=Path(temp_root),
-            sha256=sha256,
-            size=size,
+            sha256=reference.sha256,
+            size=reference.size,
             source_id=reference.source_id,
             source_sha256=reference.source_sha256,
             decision_sha256=reference.decision_sha256,

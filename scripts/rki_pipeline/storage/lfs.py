@@ -12,13 +12,14 @@ from scripts.rki_pipeline.io_utils import atomic_write_bytes, normalize_posix_pa
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 from scripts.rki_pipeline.storage.base import (
     PreparedObject,
+    RightsStorageAuthorizer,
     StorageBackend,
-    StorageAuthorizer,
     StorageError,
     StorageIntent,
     StorageReference,
     authorize_storage_operation,
     hash_file,
+    read_verified_payload,
 )
 from scripts.rki_pipeline.storage.config import LfsConfig
 
@@ -189,7 +190,7 @@ class LfsStorageAdapter:
         *,
         repository_root: Path,
         config: LfsConfig,
-        authorizer: StorageAuthorizer,
+        authorizer: RightsStorageAuthorizer,
     ) -> None:
         try:
             self.repository_root = Path(repository_root).resolve(strict=True)
@@ -199,8 +200,10 @@ class LfsStorageAdapter:
             raise LfsIntegrityError(f"Repositoryroot ist kein Verzeichnis: {repository_root}")
         self.config = config
         self.artifact_root = normalize_posix_path(config.artifact_root)
-        if not isinstance(authorizer, StorageAuthorizer):
-            raise LfsIntegrityError("authorizer erfüllt das StorageAuthorizer-Protokoll nicht")
+        if type(authorizer) is not RightsStorageAuthorizer:
+            raise LfsIntegrityError(
+                "authorizer muss ein exakter RightsStorageAuthorizer sein"
+            )
         self.authorizer = authorizer
 
     def authorize(
@@ -287,8 +290,13 @@ class LfsStorageAdapter:
         if ledger.mode is not RunMode.MATERIALIZE:
             raise LfsIntegrityError("LFS-Materialisierung benötigt RunMode materialize")
         self.authorize(intent, operation="materialize")
+        payload = read_verified_payload(
+            intent.source_path,
+            sha256=intent.sha256,
+            size=intent.size,
+        )
         target = Path(temp_root) / normalize_posix_path(intent.logical_key)
-        atomic_write_bytes(target, intent.source_path.read_bytes(), allowed_root=Path(temp_root))
+        atomic_write_bytes(target, payload, allowed_root=Path(temp_root))
         ledger.record(EffectKind.TEMP_FILE, target.absolute().as_posix(), sha256=intent.sha256, size=intent.size)
         return PreparedObject(
             artifact_id=intent.artifact_id,
