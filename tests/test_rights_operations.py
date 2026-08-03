@@ -27,19 +27,23 @@ def test_rights_register_changes_trigger_and_block_both_workflows() -> None:
     assert "research/**" in triggers["pull_request"]["paths"]
     assert "research/**" in triggers["push"]["paths"]
     command = "python3 scripts/validate_rights_register.py"
+    baseline_job = baseline["jobs"]["baseline"]
+    pipeline_job = pipeline["jobs"]["pipeline"]
     baseline_step = next(
         step
-        for step in baseline["jobs"]["baseline"]["steps"]
+        for step in baseline_job["steps"]
         if step["name"] == "Validate rights register"
     )
     pipeline_step = next(
         step
-        for step in pipeline["jobs"]["pipeline"]["steps"]
+        for step in pipeline_job["steps"]
         if step["name"] == "Run one global blocking validation"
     )
+    assert "continue-on-error" not in baseline_job
+    assert "continue-on-error" not in pipeline_job
     for step in (baseline_step, pipeline_step):
         assert command in step["run"]
-        assert step.get("continue-on-error") is not True
+        assert "continue-on-error" not in step
 
 
 def test_rights_docs_lock_authority_review_and_publication_contract() -> None:

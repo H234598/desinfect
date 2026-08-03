@@ -15,7 +15,8 @@ manuelle rechtliche Prüfung und einen gültigen Eintrag im gepinnten
 3. Lizenzhinweis, Dokumentbedingungen, Rechte Dritter und geplante
    Sichtbarkeit durch einen Menschen prüfen.
 4. Zustand, nachvollziehbare Grundlage, `reviewed_by` und UTC-Zeitpunkt in
-   einem PR eintragen. `CODEOWNERS` erzwingt menschliches Review; automatische
+   einem PR eintragen. `CODEOWNERS` weist menschliche Reviewverantwortung zu;
+   verpflichtend wird sie erst durch passende Repository-Regeln. Automatische
    Schreibpfade dürfen das Register nicht ändern.
 5. `python3 scripts/validate_rights_register.py` ausführen und erst nach grünem
    CI-Gate mergen.
