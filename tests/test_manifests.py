@@ -584,3 +584,12 @@ def test_offline_manifest_fixture_is_valid() -> None:
     from scripts.validate_manifests import validate
 
     validate(Path(__file__).parent / "fixtures" / "manifests")
+
+
+@pytest.mark.parametrize("workflow", ("p00-baseline.yml", "rki-pipeline.yml"))
+def test_manifest_validation_blocks_repository_workflows(workflow: str) -> None:
+    root = Path(__file__).resolve().parents[1]
+    text = (root / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+
+    assert "python3 scripts/validate_manifests.py --root tests/fixtures/manifests" in text
+    assert "tests/test_manifests.py" in text
