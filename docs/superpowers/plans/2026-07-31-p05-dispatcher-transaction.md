@@ -11,7 +11,7 @@ tags:
   - transaction
   - github-app
 type: implementation-plan
-status: active
+status: completed
 created: 2026-07-31T21:35:00Z
 date: 2026-07-31
 ---
@@ -95,7 +95,7 @@ date: 2026-07-31
 - Consumes: schema-valid `status.json`, explicit RFC3339 UTC timestamp.
 - Produces: `DispatchConfig`, `TaskKind`, `DueTask`, `calculate_due_tasks()`, `calculate_backfill_tasks()`.
 
-- [ ] **Step 1: Write failing boundary tests**
+- [x] **Step 1: Write failing boundary tests**
 
 ```python
 def test_week_catchup_stops_at_last_closed_iso_week():
@@ -112,13 +112,13 @@ def test_missing_watermarks_do_not_start_1994_backfill():
 
 Cover ISO year rollover, leap-year February, future watermarks, 92-day reconciliation, hard limits, deterministic ordering, malformed TOML types, and explicit bounded backfill.
 
-- [ ] **Step 2: Run the focused tests and verify RED**
+- [x] **Step 2: Run the focused tests and verify RED**
 
 Run: `python3 -m pytest -q tests/test_due_tasks.py`
 
 Expected: import failure for `scripts.rki_pipeline.due_tasks`.
 
-- [ ] **Step 3: Implement strict config and immutable task types**
+- [x] **Step 3: Implement strict config and immutable task types**
 
 Implement:
 
@@ -140,11 +140,11 @@ class DueTask:
 
 Reject booleans as integers, unknown keys, non-UTC timestamps, invalid ISO periods, and zero/negative limits.
 
-- [ ] **Step 4: Implement period iteration and catch-up rules**
+- [x] **Step 4: Implement period iteration and catch-up rules**
 
 Use `datetime`, `date`, `timezone`, and `calendar`; do not use local time or third-party date libraries. Generate only completed periods and sort by `(kind_order, period)`.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 Run:
 
@@ -169,19 +169,19 @@ Commit: `feat(p05): add deterministic due-task calculation`
 - Consumes: `DueTask`, `RunMode`, `StorageBackend`, status JSON, base SHA.
 - Produces: `DispatchPlan`, `DispatchPlan.from_dict()`, `DispatchPlan.to_dict()`, `DispatchPlan.sha256`, `build_daily_plan()`, `build_backfill_plan()`.
 
-- [ ] **Step 1: Write failing contract tests**
+- [x] **Step 1: Write failing contract tests**
 
 Test canonical hash stability, duplicate task rejection, sort enforcement, exact keys, 40-character lowercase base SHA, strict UTC timestamps, unknown modes/backends, stdout-only CLI, and empty-plan success.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `python3 -m pytest -q tests/test_dispatch_plan.py tests/test_dispatcher.py`
 
-- [ ] **Step 3: Implement canonical serialization**
+- [x] **Step 3: Implement canonical serialization**
 
 Use `stable_json_dumps()` and SHA-256. `from_dict()` validates exact keys and reconstructs typed tasks without `str()`/`int()` coercion.
 
-- [ ] **Step 4: Implement CLI**
+- [x] **Step 4: Implement CLI**
 
 Daily CLI arguments:
 
@@ -202,7 +202,7 @@ backfill --from-year 1994 --to-year 2020 --max-tasks 1000 --run-mode plan|materi
 
 Output exactly one JSON object to stdout and diagnostics to stderr. No output-file option.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 Commit: `feat(p05): add versioned dispatch plans`
 
@@ -218,7 +218,7 @@ Commit: `feat(p05): add versioned dispatch plans`
 - Consumes: `DispatchPlan`, existing `new_run()`, `update_run()`, `RunMode`, `SideEffectGuard`, `WriteOperation`.
 - Produces: `TaskPlan`, `TaskResult`, `TaskHandler`, `TransactionContext`, `TransactionResult`, `execute_transaction()`.
 
-- [ ] **Step 1: Write failing all-or-nothing tests**
+- [x] **Step 1: Write failing all-or-nothing tests**
 
 Required cases:
 
@@ -231,23 +231,23 @@ def test_status_watermarks_change_only_after_verify(): ...
 def test_dispatch_base_sha_mismatch_blocks_before_plan(): ...
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `python3 -m pytest -q tests/test_write_transaction.py`
 
-- [ ] **Step 3: Implement typed handler ports**
+- [x] **Step 3: Implement typed handler ports**
 
 Handlers must not receive Git credentials. `plan()` executes under `RunMode.PLAN`, `materialize()` under one shared temp root, and `apply()` only after the global validator succeeds.
 
-- [ ] **Step 4: Implement state-machine integration**
+- [x] **Step 4: Implement state-machine integration**
 
 Create one run manifest containing all task IDs. Transition through `plan`, `materialize`, `validate`, `apply`, `verify`, and `complete`. On failure, store a redacted structured error and return no commit plan.
 
-- [ ] **Step 5: Prove one validation call**
+- [x] **Step 5: Prove one validation call**
 
 The validator is an injected callable returning `None` or raising. Call it exactly once after all materialization and before any apply.
 
-- [ ] **Step 6: Run tests and commit**
+- [x] **Step 6: Run tests and commit**
 
 Commit: `feat(p05): orchestrate tasks in one transaction`
 
@@ -263,21 +263,21 @@ Commit: `feat(p05): orchestrate tasks in one transaction`
 - Consumes: validated changed paths, blob hashes, Git modes, base SHA, dispatch SHA.
 - Produces: `TreeEntry`, `CommitPlan`, `build_commit_plan()`.
 
-- [ ] **Step 1: Write failing tree-hash tests**
+- [x] **Step 1: Write failing tree-hash tests**
 
 Verify path-order independence, mode sensitivity, content sensitivity, duplicate/collision rejection, no external title data, deterministic subject/body, and empty-change rejection.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
-- [ ] **Step 3: Implement exact typed validation**
+- [x] **Step 3: Implement exact typed validation**
 
 `TreeEntry.path` uses `normalize_posix_path`; mode is one of `100644`, `100755`; blob SHA is lowercase SHA-256. `CommitPlan.expected_base_sha` is lowercase 40-hex.
 
-- [ ] **Step 4: Implement tree SHA and message**
+- [x] **Step 4: Implement tree SHA and message**
 
 Hash newline-delimited canonical rows: `<mode>\0<path>\0<sha256>\n`. Subject: `chore(rki): apply <N> scheduled task(s)`. Body lists sorted task IDs and `Dispatch-Plan-SHA256:`.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 Commit: `feat(p05): add deterministic commit contract`
 
@@ -296,17 +296,17 @@ Commit: `feat(p05): add deterministic commit contract`
 - Consumes: `CommitPlan`, `validate_index()`, injected `GitRunner`.
 - Produces: `GitWriteResult`, `apply_commit_plan()`, repository-level CI mutation findings.
 
-- [ ] **Step 1: Port PR #8 tests and add P05 writer tests**
+- [x] **Step 1: Port PR #8 tests and add P05 writer tests**
 
 Cover CIW001–CIW011, multiple writers in one step/workflow, multi-line audit bypasses, no-op staged diff, extra staged path, wrong base SHA, changed remote base, exact one commit, no force push, and token-free command diagnostics.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
-- [ ] **Step 3: Implement GitRunner and repository snapshots**
+- [x] **Step 3: Implement GitRunner and repository snapshots**
 
 All subprocess calls use argument arrays, `check=True`, captured output, no shell. Reject non-local repository roots and symlinked `.git` paths.
 
-- [ ] **Step 4: Implement write sequence**
+- [x] **Step 4: Implement write sequence**
 
 ```text
 assert clean baseline
@@ -324,11 +324,11 @@ push HEAD:main without force
 
 The token is supplied through Git’s HTTP extra-header environment by the workflow and is never part of arguments, remotes, exceptions, or logs.
 
-- [ ] **Step 5: Integrate Variant-B validator**
+- [x] **Step 5: Integrate Variant-B validator**
 
 Adapt PR #8 to current workflows. Require every `git commit`/`git push` step to include no-op guard and diagnostics; reject audit bypasses and mutations outside analyzable steps.
 
-- [ ] **Step 6: Run tests and commit**
+- [x] **Step 6: Run tests and commit**
 
 Commit: `feat(p05): add exact Git writer safety gates`
 
@@ -344,21 +344,21 @@ Commit: `feat(p05): add exact Git writer safety gates`
 - Consumes: DispatchPlan JSON from stdin/path, transaction handlers, Git writer.
 - Produces: commands `execute`, `validate-plan`, `commit` with machine-readable outputs.
 
-- [ ] **Step 1: Write failing CLI tests**
+- [x] **Step 1: Write failing CLI tests**
 
 Cover malformed plans, base mismatch, no-op, missing confirmation for apply, missing app token at commit time, secret redaction, and exit codes `0=success/no-op`, `2=blocked/config`, `3=transaction failed`.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
-- [ ] **Step 3: Implement placeholder-safe P05 handlers**
+- [x] **Step 3: Implement placeholder-safe P05 handlers**
 
 Until P06/P07 exist, register deterministic infrastructure handlers that can update only run/status metadata and produce no archive content. Unknown task kinds fail closed; no fake completion watermark is written for unimplemented domain work.
 
-- [ ] **Step 4: Implement commands and JSON outputs**
+- [x] **Step 4: Implement commands and JSON outputs**
 
 The CLI returns `run-manifest`, transaction result, changed paths, and commit-required flag. It never emits credentials.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 Commit: `feat(p05): expose transactional pipeline CLI`
 
@@ -377,7 +377,7 @@ Commit: `feat(p05): expose transactional pipeline CLI`
 - Pipeline accepts `dispatch_plan_json` and `confirm_apply` inputs.
 - Backfill calls pipeline with bounded manual inputs.
 
-- [ ] **Step 1: Write workflow contract tests**
+- [x] **Step 1: Write workflow contract tests**
 
 Parse YAML using `yaml.safe_load`. Assert:
 
@@ -393,21 +393,21 @@ Parse YAML using `yaml.safe_load`. Assert:
 - pipeline never force-pushes;
 - backfill apply requires literal `APPLY` confirmation.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
-- [ ] **Step 3: Implement dispatcher workflow**
+- [x] **Step 3: Implement dispatcher workflow**
 
 Use one daily cron at `17 04 * * *` UTC and `workflow_dispatch`. Calculate `main` SHA from checkout and generate plan to `$GITHUB_OUTPUT` without writing the repository.
 
-- [ ] **Step 4: Implement reusable pipeline workflow**
+- [x] **Step 4: Implement reusable pipeline workflow**
 
 Setup dependencies, validate plan, execute plan/materialize/validate/apply, create a repository-scoped GitHub App token using `WACHHUND_APP_CLIENT_ID` and `WACHHUND_APP_PRIVATE_KEY`, then run exact writer. Keep token creation and Git push in one job because installation tokens are revoked in the action post-step and expire after one hour.
 
-- [ ] **Step 5: Implement manual backfill workflow**
+- [x] **Step 5: Implement manual backfill workflow**
 
 Validate year bounds and maximum tasks before constructing the plan. Call the same reusable pipeline; do not duplicate writer steps.
 
-- [ ] **Step 6: Run tests and commit**
+- [x] **Step 6: Run tests and commit**
 
 Commit: `ci(p05): add dispatcher pipeline and backfill workflows`
 
@@ -424,21 +424,21 @@ Commit: `ci(p05): add dispatcher pipeline and backfill workflows`
 **Interfaces:**
 - Produces one blocking command: `python3 scripts/validate_p05_dispatcher.py`.
 
-- [ ] **Step 1: Write failing validator tests**
+- [x] **Step 1: Write failing validator tests**
 
 Mutate fixture workflows to prove the validator rejects a second schedule, divergent concurrency, write-capable default permissions, token-before-validation, force push, missing Variant-B diagnostics, and absent P05 test files.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
-- [ ] **Step 3: Implement structural and behavioral validator**
+- [x] **Step 3: Implement structural and behavioral validator**
 
 The validator loads dispatcher config, exercises due-task boundaries, verifies workflow contracts, runs Variant-B analysis, validates exact requirement IDs, and prints a stable success line.
 
-- [ ] **Step 4: Add CI steps**
+- [x] **Step 4: Add CI steps**
 
 Add P05 validator and focused tests before full unittest/pytest. Expand path filters to include all P05 files and workflows.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 Commit: `ci(p05): block unsafe dispatcher and writer changes`
 
@@ -457,23 +457,23 @@ Commit: `ci(p05): block unsafe dispatcher and writer changes`
 - Modify: `docs/implementation-status.json`
 - Modify: `config/plan-source.json`
 
-- [ ] **Step 1: Document operator prerequisites**
+- [x] **Step 1: Document operator prerequisites**
 
 Document GitHub App `Wachhund`, repository variable `WACHHUND_APP_CLIENT_ID`, secret `WACHHUND_APP_PRIVATE_KEY`, required repository permission `Contents: Read and write`, installation scope limited to `H234598/desinfect`, and absence of a `GITHUB_TOKEN` write fallback.
 
-- [ ] **Step 2: Document daily/backfill behavior**
+- [x] **Step 2: Document daily/backfill behavior**
 
 Explain UTC cron, catch-up limits, one transaction/validation/commit, no-op behavior, concurrency, retry on base drift, and manual `APPLY` confirmation.
 
-- [ ] **Step 3: Record PR #8 provenance**
+- [x] **Step 3: Record PR #8 provenance**
 
 State that Variant-B concepts were adapted from `agent/ci-variant-b-20260730@8abf3b0071046ecd3ce3bc4547c63b69a5286fac`; preserve authorship and note P05 integration changes.
 
-- [ ] **Step 4: Mark P05 packages `im_review`**
+- [x] **Step 4: Mark P05 packages `im_review`**
 
 Set active branch/PR after opening the implementation PR. Keep checkboxes open until merge and separate closeout evidence.
 
-- [ ] **Step 5: Recompute control hash and commit**
+- [x] **Step 5: Recompute control hash and commit**
 
 Commit: `docs(p05): document transactional dispatcher operations`
 
@@ -485,7 +485,7 @@ Commit: `docs(p05): document transactional dispatcher operations`
 - All P05 files.
 - Separate closeout branch after implementation merge.
 
-- [ ] **Step 1: Run complete local-equivalent verification**
+- [x] **Step 1: Run complete local-equivalent verification**
 
 ```bash
 python3 scripts/validate_all_baseline.py
@@ -503,25 +503,34 @@ python3 -m pytest -q
 npm test
 ```
 
-- [ ] **Step 2: Open implementation PR**
+- [x] **Step 2: Open implementation PR**
 
 Include explicit non-goals, GitHub App prerequisites, test counts, no real RKI/backfill/write run, and locked ADRs.
 
-- [ ] **Step 3: Repair until all gates are green**
+- [x] **Step 3: Repair until all gates are green**
 
 Address every still-valid CodeRabbit finding with a regression test. Require GitHub Actions, CodeRabbit, qlty, and zero unresolved threads.
 
-- [ ] **Step 4: Squash merge with expected head SHA**
+- [x] **Step 4: Squash merge with expected head SHA**
 
 Never merge a moved or unverified head.
 
-- [ ] **Step 5: Create separate closeout PR**
+- [x] **Step 5: Create separate closeout PR**
 
 Set P05.1–P05.4 to `umgesetzt`, close checkboxes, attach merge SHA, CI run, check statuses, tests, requirement IDs, acceptance timestamp, and next phase P06.
 
-- [ ] **Step 6: Close PR #8 as superseded**
+- [x] **Step 6: Close PR #8 as superseded**
 
 Only after the P05 implementation containing its safety contract is merged. Link the replacement PR and preserve provenance.
+
+## Closeout Evidence
+
+- Implementation PR: #12, Merge `b1e6b0fa417b1ea879fe373795e320b1950970ba`, verified head `d9e1c5b39cc7fb714ba61d089119bfa5b81c080b`.
+- Gates: GitHub Actions `30784217751`, CodeRabbit and qlty successful; 0 unresolved and 10 resolved review threads.
+- Tests: 249 Pytest, 9 Unittest, and 2 Node tests successful.
+- Requirements: `MUSS-03`, `MUSS-05`, `MUSS-06`, `V2-05-DISPATCH-001` through `V2-05-DISPATCH-010`, and `V2-14-GIT-001` through `V2-14-GIT-007`.
+- Accepted at `2026-08-03T04:29:27Z` by `H234598`; next phase: P06.
+- Superseded PR #8 was closed unmerged at `2026-08-03T04:32:36Z` after replacement comment `5162329352` linked PR #12 and its merge.
 
 ## Plan self-review
 

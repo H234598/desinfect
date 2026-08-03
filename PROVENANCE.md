@@ -50,6 +50,11 @@ Das vorhandene `.part`-/`os.replace`-Muster aus `H234598/desinfect@fbcc6e850fec1
 - Das Git-LFS-Pointerformat und der Objektpfad `.git/lfs/objects/<aa>/<bb>/<oid>` folgen der öffentlichen Git-LFS-Spezifikation; Parser, Trackingregeln, Integritätsprüfung und Budgetpolicy wurden repositoryspezifisch neu implementiert.
 - Release- und Object-Adapter verwenden ausschließlich eigene, injizierbare Ports. Es wurde kein Code aus Cloud- oder GitHub-SDKs übernommen und in P04 kein echter Remotezugriff ausgeführt.
 - Die idempotente Migration `copy|unchanged|conflict`, das nicht destruktive Quellverhalten, die LFS-Drill-CLI und sämtliche P04-Tests sind Eigenentwicklungen nach dem freigegebenen Implementierungsplan.
-- Der offene Draft-PR #8 wurde als Kontext für spätere CI-Schreibpfade geprüft; P04 übernimmt daraus keine fremde Implementierung und führt weiterhin keinen produktiven Writer ein.
+- Der damalige Draft-PR #8 wurde in P04 nur als Kontext für spätere CI-Schreibpfade geprüft; P04 übernahm daraus keine Implementierung und führte keinen produktiven Writer ein. Die erst in P05 erfolgte angepasste Integration ist unten ausgewiesen.
+
+## P05 – Dispatcher, Transaktion und GitHub-App-Writer
+
+- Die Variante-B-Konzepte für mutationssichere CI-Schreibschritte stammen aus dem von `H234598` erstellten Draft-PR #8 „CI: Variante-B-Vertrag für spätere Schreibpfade“, Branch `agent/ci-variant-b-20260730`, Head `8abf3b0071046ecd3ce3bc4547c63b69a5286fac`. Diese Quelle und Urheberschaft bleiben für die in P05/PR #12 angepasst integrierten Teile maßgeblich; der Draft wurde nicht unverändert gemergt.
+- P05 übertrug den Vertrag auf die aktuellen Workflows `rki-dispatcher.yml`, `rki-pipeline.yml` und `rki-backfill.yml` und ergänzte strukturiert ausgewertete YAML-Workflowtests. Die Integration behandelt einen leeren staged Diff als No-op, protokolliert `git status --short` und den staged `--name-status`-Diff und lässt Audit- sowie Mutation-Safety-Gates blockierend.
 
 Die gesperrten Entscheidungen bleiben unabhängig von diesen Arbeiten unverändert: **ADR-003=A** und **ADR-014=B**.
