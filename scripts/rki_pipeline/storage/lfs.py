@@ -419,10 +419,10 @@ class LfsStorageAdapter:
                 raise LfsIntegrityError(f"Symlink im LFS-Artefaktbestand: {path}")
             relative = path.relative_to(root)
             is_canonical_markdown = (
-                path.suffix.lower() == ".md" and "Markdown" in relative.parts
+                path.suffix == ".md" and "Markdown" in relative.parts
             )
             if not path.is_file() or (
-                path.suffix.lower() not in {".pdf", ".zip"} and not is_canonical_markdown
+                path.suffix not in {".pdf", ".zip"} and not is_canonical_markdown
             ):
                 continue
             digest = hashlib.sha256(relative.as_posix().encode("utf-8")).hexdigest()[:24]

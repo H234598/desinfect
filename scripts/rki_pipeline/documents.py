@@ -8,10 +8,12 @@ from urllib.parse import parse_qsl, quote, urlencode, unquote, urlsplit, urlunsp
 
 
 _HANDLE_RE = re.compile(
-    r"^(?P<prefix>[0-9]+)/(?P<number>[0-9]+)(?:\.(?P<version>[1-9][0-9]*))?$"
+    r"^(?P<prefix>176904)/(?P<number>[0-9]+)"
+    r"(?:\.(?P<version>[2-9]|[1-9][0-9]+))?$"
 )
 _PDF_PATH_RE = re.compile(
-    r"^/bitstream/handle/(?P<handle>176904/[0-9]+(?:\.[0-9]+)?)/.+\.pdf$",
+    r"^/bitstream/handle/(?P<handle>176904/[0-9]+"
+    r"(?:\.(?:[2-9]|[1-9][0-9]+))?)/.+\.pdf$",
     re.IGNORECASE,
 )
 

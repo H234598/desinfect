@@ -94,6 +94,30 @@ def test_item_parser_collapses_exact_duplicate_bitstream_urls() -> None:
 
 
 @pytest.mark.parametrize(
+    "invalid_query",
+    ("foo=bar", "sequence=0", "sequence=1&sequence=2"),
+)
+def test_item_parser_skips_invalid_pdf_query_candidate(invalid_query: str) -> None:
+    """One malformed PDF link must not discard valid siblings from the item."""
+
+    metadata = parse_item_metadata(
+        f"""
+        <a href="/bitstream/handle/176904/12345/bad.pdf?{invalid_query}">bad.pdf</a>
+        <a href="/bitstream/handle/176904/12345/good.pdf?sequence=2">good.pdf</a>
+        """,
+        scope=Scope.ISSUES,
+        item_handle="176904/12345",
+        item_url="https://edoc.rki.de/handle/176904/12345",
+        fallback_year=1996,
+        base_url=BASE_URL,
+    )
+
+    assert [candidate.url for candidate in metadata.pdfs] == [
+        "https://edoc.rki.de/bitstream/handle/176904/12345/good.pdf?sequence=2"
+    ]
+
+
+@pytest.mark.parametrize(
     "html",
     (
         """

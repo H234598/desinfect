@@ -37,10 +37,16 @@ def test_unversioned_handle_is_explicit_version_one() -> None:
 
 @pytest.mark.parametrize(
     "handle",
-    ("176904/12345.0", "176904/12345.00", "176904/12345.01"),
+    (
+        "176904/12345.0",
+        "176904/12345.00",
+        "176904/12345.01",
+        "176904/12345.1",
+        "999999/12345",
+    ),
 )
 def test_document_identity_rejects_noncanonical_explicit_versions(handle: str) -> None:
-    """Explicit zero and leading-zero suffixes must not collide with version one."""
+    """Only unversioned RKI handles may represent version one."""
 
     with pytest.raises(DocumentIdentityError):
         document_identity(handle)
@@ -75,6 +81,7 @@ def test_bitstream_identity_canonicalizes_access_flag_without_losing_sequence() 
         "https://edoc.rki.de/bitstream/handle/176904/12345/file.pdf?sequence=0",
         "https://edoc.rki.de/bitstream/handle/176904/12345/file.pdf?sequence=one",
         "https://edoc.rki.de/bitstream/handle/176904/12345/file.pdf?unknown=value",
+        "https://edoc.rki.de/bitstream/handle/176904/12345.1/file.pdf",
         "https://edoc.rki.de/bitstream/handle/176904/12345/file.txt",
     ),
 )

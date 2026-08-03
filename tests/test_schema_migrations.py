@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts.rki_pipeline.documents import bitstream_identity
 from scripts.rki_pipeline.schema_registry import SchemaContractError, migrate_document, validate_document
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -94,6 +95,15 @@ def test_source_manifest_rejects_unsorted_content_aliases() -> None:
         validate_document("source-manifest", payload)
 
 
+def test_source_manifest_accepts_canonical_uppercase_pdf_extension() -> None:
+    payload = migrate_document("source-manifest", _fixture("source-manifest-v1.0.json"))
+    payload["bitstream_url"] = bitstream_identity(
+        "https://edoc.rki.de/bitstream/handle/176904/12345.2/file.PDF?sequence=2"
+    ).canonical_url
+
+    validate_document("source-manifest", payload)
+
+
 @pytest.mark.parametrize(
     ("field", "invalid"),
     [
@@ -118,3 +128,30 @@ def test_document_manifest_accepts_canonical_and_nullable_relation_ids() -> None
     payload["supersedes"] = None
     payload["superseded_by"] = None
     validate_document("document-manifest", payload)
+
+
+@pytest.mark.parametrize(
+    ("name", "field", "invalid"),
+    [
+        ("source-manifest", "handle", "176904/12345.1"),
+        ("source-manifest", "source_id", "rki:176904/12345.1"),
+        (
+            "source-manifest",
+            "bitstream_url",
+            "https://edoc.rki.de/bitstream/handle/176904/12345.1/file.pdf",
+        ),
+        ("source-manifest", "handle", "999999/12345"),
+        ("document-manifest", "document_id", "rki-999999-12345-v1"),
+        ("document-manifest", "source_id", "rki:999999/12345"),
+        ("document-manifest", "supersedes", "rki-999999-12345-v1"),
+        ("document-manifest", "superseded_by", "rki-999999-12345-v3"),
+    ],
+)
+def test_manifest_contracts_reject_non_rki_or_explicit_v1_handles(
+    name: str, field: str, invalid: str
+) -> None:
+    payload = migrate_document(name, _fixture(f"{name}-v1.0.json"))
+    payload[field] = invalid
+
+    with pytest.raises(SchemaContractError, match="does not match"):
+        validate_document(name, payload)

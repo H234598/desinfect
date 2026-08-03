@@ -214,12 +214,13 @@ def test_only_error_records_are_failed_not_partial(tmp_path: Path) -> None:
     """A run with no usable record must use the failed outcome and exit code four."""
 
     broken = responses(include_pdf=False)
-    broken[PDF_URL] = FakeResponse(
-        200,
-        PDF_URL,
-        b"not-a-pdf",
-        {"content-type": "application/pdf"},
-    )
+    for pdf_url in PDF_URLS:
+        broken[pdf_url] = FakeResponse(
+            200,
+            pdf_url,
+            b"not-a-pdf",
+            {"content-type": "application/pdf"},
+        )
     result = grab(
         GrabberRequest(
             scope=Scope.ISSUES,
@@ -236,7 +237,10 @@ def test_only_error_records_are_failed_not_partial(tmp_path: Path) -> None:
     )
     assert result.outcome is Outcome.FAILED
     assert result.exit_code == 4
-    assert result.records[0].state is RecordState.ERROR
+    assert len(result.records) == 2
+    assert {record.pdf_url for record in result.records} == set(PDF_URLS)
+    assert {record.state for record in result.records} == {RecordState.ERROR}
+    assert {record.error_code for record in result.records} == {"download.integrity"}
 
 
 def test_robots_block_on_pdf_path_remains_global_block(tmp_path: Path) -> None:

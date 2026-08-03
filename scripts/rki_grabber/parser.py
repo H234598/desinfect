@@ -16,6 +16,7 @@ from scripts.rki_grabber.models import (
     RightsMetadata,
     Scope,
 )
+from scripts.rki_pipeline.documents import DocumentIdentityError, bitstream_identity
 from scripts.rki_pipeline.paths import DocumentPathError, DocumentType, canonical_document_paths
 
 HANDLE_PATH_RE = re.compile(
@@ -284,8 +285,13 @@ def _pdf_candidates(
             match = MD5_RE.search(parent.get_text(" ", strip=True))
             if match is not None:
                 expected_md5 = match.group(1).lower()
+        candidate_url = urlunsplit(("https", parsed.netloc, parsed.path, parsed.query, ""))
+        try:
+            bitstream_identity(candidate_url)
+        except DocumentIdentityError:
+            continue
         candidate = PdfCandidate(
-            url=urlunsplit(("https", parsed.netloc, parsed.path, parsed.query, "")),
+            url=candidate_url,
             source_name=unquote(source_name),
             expected_md5=expected_md5,
         )
