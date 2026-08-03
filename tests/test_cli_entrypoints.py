@@ -208,11 +208,14 @@ def test_conversion_cli_reports_missing_runtime_tool(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(conversion_cli, "_fixture_intent", lambda _fixture: (object(), object()))
+    pdfinfo = tmp_path / "pdfinfo"
+    pdfinfo.write_bytes(b"tool")
 
-    def missing_tool():
-        raise conversion_runtime.RuntimeEvidenceError("Konvertierungstool fehlt: pdftotext")
+    def missing_tool(name: str, *, path: str | None = None) -> str | None:
+        assert path == os.defpath
+        return pdfinfo.as_posix() if name == "pdfinfo" else None
 
-    monkeypatch.setattr(conversion_cli, "collect_runtime_evidence", missing_tool)
+    monkeypatch.setattr(conversion_runtime.shutil, "which", missing_tool)
 
     def forbidden(*args, **kwargs):
         del args, kwargs
