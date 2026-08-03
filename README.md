@@ -31,6 +31,8 @@ python3 scripts/validate_p04_storage.py
 python3 scripts/validate_p05_dispatcher.py
 python3 scripts/validate_rights_register.py
 python3 scripts/validate_manifests.py --root tests/fixtures/manifests
+python3 scripts/validate_fixture_manifest.py
+python3 scripts/validate_schemas.py
 python3 scripts/validate_ci_mutation_safety.py
 python3 -m scripts.rki_pipeline.runtime_status_cli --help
 python3 -m scripts.rki_grabber.rki_epidbull_grabber --help
@@ -38,6 +40,7 @@ python3 -m scripts.rki_pipeline.storage_cli --help
 python3 -m compileall -q scripts tests
 python3 -m unittest discover -s tests -p "test_*.py"
 python3 -m pytest -q
+ruff check scripts tests
 npm test
 ```
 

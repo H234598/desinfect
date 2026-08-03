@@ -41,6 +41,7 @@
 - Pytest: 782 Tests erfolgreich
 - Unittest: 9 Tests erfolgreich
 - Node: 2 Tests erfolgreich
+- Ruff: `ruff check scripts tests` erfolgreich
 - Security-Diff-Scan auf finalem P06.4-Head: 0 Findings, 31/31 Dateien abgedeckt
 - Abgenommen am: `2026-08-03T17:54:15Z`
 - Abgenommen durch: `H234598`
