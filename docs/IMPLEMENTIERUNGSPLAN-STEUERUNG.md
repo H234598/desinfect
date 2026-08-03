@@ -1,6 +1,6 @@
 ---
 title: Implementierungsplan V3 – Steuerung
-status: P05 abgeschlossen; P06 als nächste Phase
+status: P06 abgeschlossen; P07 als nächste Phase
 source_plan_sha256: aa50863cde1313a7039691b4ca596c1ab498d0fab0008da324de5cb69f12ffc4
 repository: H234598/desinfect
 branch: main
@@ -25,11 +25,16 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 - **P04-Gate:** geprüfter Head `62ef771edaba96d5e3212d1525164367d3e46dbe`; GitHub Actions `30665523318`, CodeRabbit und qlty erfolgreich; alle 19 Reviewthreads aufgelöst; 171 Pytest-, 9 Unittest- und 2 Node-Tests erfolgreich.
 - **P05:** PR #12, Merge `b1e6b0fa417b1ea879fe373795e320b1950970ba`
 - **P05-Gate:** geprüfter Head `d9e1c5b39cc7fb714ba61d089119bfa5b81c080b`; GitHub Actions `30784217751`, CodeRabbit und qlty erfolgreich; alle zehn Reviewthreads aufgelöst; 249 Pytest-, 9 Unittest- und 2 Node-Tests erfolgreich; PR #8 wurde nach Replacement-Kommentar `5162329352` geschlossen und nicht gemergt.
-- **Fortschritt:** 20 von 60 Arbeitspaketen umgesetzt; 40 offen; 0 in Arbeit; 0 im Review; 0 blockiert.
+- **P06.1:** PR #14, Merge `c477be9ea08b338d0d981bb052abd023b7f10a87`
+- **P06.2:** PR #15, Merge `0e4fe01624d45b750f8a8dd4abf3b5d160e7e46e`
+- **P06.3:** PR #16, Merge `54da0963f1b7b0458ae7bb4a0311a02a32e7649e`
+- **P06.4:** PR #17, Merge `71f8a58b5c737ad5034da55aad908b7bd2b91080`
+- **P06-Gate:** geprüfte Heads `9c38fb5`, `3b1d4bc`, `5a04bee` und `ce27bf1`; GitHub Actions `30798406250`, `30814619838`, `30831150430`, `30838403022` sowie Nach-Merge-Lauf `30838723565` erfolgreich; CodeRabbit und qlty erfolgreich; alle 23 Reviewthreads aufgelöst; 782 Pytest-, 9 Unittest- und 2 Node-Tests erfolgreich; finaler Security-Diff-Scan ohne Finding.
+- **Fortschritt:** 24 von 60 Arbeitspaketen umgesetzt; 36 offen; 0 in Arbeit; 0 im Review; 0 blockiert.
 
-## Nächste Phase P06
+## Nächste Phase P07
 
-P06.1 bis P06.4 bleiben `offen`, bis der eigene Implementierungsbranch und die planmäßige Evidenz vorliegen. P06 führt stabile Dokument-IDs, Pfade und Quellmanifeste, Rechte- und Lizenzpolicy, PDF-Validierung und Konvertierung sowie Dokument-, Konvertierungs- und Storage-Manifeste ein.
+P07.1 bis P07.3 bleiben `offen`, bis Implementierungsbranch und planmäßige Evidenz vorliegen. P07 führt deterministische ZIP-Produkte für Woche, Monat und Jahr, eine definierte Nachzüglerbehandlung und quartalsweise Reconciliation ein.
 
 ## Arbeitspakete
 
@@ -53,10 +58,10 @@ P06.1 bis P06.4 bleiben `offen`, bis der eigene Implementierungsbranch und die p
 - [x] **P05.2** Transaktionaler Pipeline-Orchestrator _(umgesetzt, PR #12, Merge `b1e6b0fa417b1ea879fe373795e320b1950970ba`)_
 - [x] **P05.3** GitHub-App-Token, Commit und Push _(umgesetzt, PR #12, Merge `b1e6b0fa417b1ea879fe373795e320b1950970ba`)_
 - [x] **P05.4** GitHub-Workflows: Dispatcher, Pipeline und Backfill _(umgesetzt, PR #12, Merge `b1e6b0fa417b1ea879fe373795e320b1950970ba`)_
-- [ ] **P06.1** Stabile Dokument-IDs, Pfade und Quellmanifest
-- [ ] **P06.2** Rechte- und Lizenzpolicy
-- [ ] **P06.3** PDF-Validierung und Konvertierung
-- [ ] **P06.4** Dokument-, Konvertierungs- und Storage-Manifeste
+- [x] **P06.1** Stabile Dokument-IDs, Pfade und Quellmanifest _(umgesetzt, PR #14, Merge `c477be9ea08b338d0d981bb052abd023b7f10a87`)_
+- [x] **P06.2** Rechte- und Lizenzpolicy _(umgesetzt, PR #15, Merge `0e4fe01624d45b750f8a8dd4abf3b5d160e7e46e`)_
+- [x] **P06.3** PDF-Validierung und Konvertierung _(umgesetzt, PR #16, Merge `54da0963f1b7b0458ae7bb4a0311a02a32e7649e`)_
+- [x] **P06.4** Dokument-, Konvertierungs- und Storage-Manifeste _(umgesetzt, PR #17, Merge `71f8a58b5c737ad5034da55aad908b7bd2b91080`)_
 - [ ] **P07.1** Deterministischer ZIP-Builder
 - [ ] **P07.2** Wochen-, Monats-, Jahresarchive und Nachzügler
 - [ ] **P07.3** Quartals-Reconciliation
