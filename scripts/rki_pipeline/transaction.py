@@ -106,13 +106,13 @@ def _failed_run(
             phase=phase,
             now=now,
             error={
-                "class": type(error).__name__,
+                "class": "unknown",
                 "code": "transaction_failed",
                 "message": str(error),
                 "retryable": True,
             },
             recovery={
-                "level": "automatic_retry",
+                "level": "retry_same_phase",
                 "action": "Dispatchplan mit unverändertem main erneut ausführen",
                 "resume_phase": phase,
                 "block_next_run": False,

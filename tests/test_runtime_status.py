@@ -45,6 +45,28 @@ def test_revision_conflict_and_invalid_transition_are_blocked() -> None:
         update_run(created, expected_revision=1, status="success", phase="complete", now=NOW)
 
 
+@pytest.mark.parametrize("trigger_source", ["schedule", "workflow_dispatch"])
+def test_new_run_preserves_dispatch_trigger_and_canonical_task_ids(trigger_source: str) -> None:
+    run = new_run(
+        workflow="rki-dispatcher", trigger_source=trigger_source, run_mode="apply",
+        storage_backend="lfs", run_id=f"dispatch-{trigger_source}", now=NOW,
+        tasks=[
+            "week:2026-W30",
+            "month:2026-07",
+            "year:2025",
+            "reconciliation:2026-07-31T12:00:00Z",
+        ],
+    )
+
+    assert run["context"]["trigger_source"] == trigger_source
+    assert run["tasks"] == [
+        "month:2026-07",
+        "reconciliation:2026-07-31T12:00:00Z",
+        "week:2026-W30",
+        "year:2025",
+    ]
+
+
 def test_failed_run_does_not_change_success_clocks_and_redacts_secret() -> None:
     current = initial_status()
     current["pipeline"]["last_successful_run_at"] = "2026-07-20T04:31:12Z"
