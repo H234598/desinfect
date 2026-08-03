@@ -548,3 +548,44 @@ def test_plan_rejects_graph_foreign_prepared_object(tmp_path: Path) -> None:
 
     with pytest.raises(AggregationError, match="PreparedObject"):
         plan_period_archives(**inputs)
+
+
+def test_plan_preserves_nonpersisted_failed_conversion_state(tmp_path: Path) -> None:
+    inputs = _plan_inputs(tmp_path, markdown=False)
+    graph = inputs["graph"]
+    assert isinstance(graph, ManifestGraph)
+    failed = {
+        **graph.conversions[0],
+        "state": "failed",
+        "output_sha256": None,
+        "storage_reference": None,
+    }
+    inputs["graph"] = ManifestGraph(
+        sources=graph.sources,
+        documents=graph.documents,
+        conversions=(failed,),
+        storage_references=graph.storage_references,
+    )
+
+    plan = plan_period_archives(**inputs)
+
+    assert plan.periods[0].documents[0].conversion_state == "failed"
+
+
+def test_plan_rejects_ambiguous_nonpersisted_conversions(tmp_path: Path) -> None:
+    inputs = _plan_inputs(tmp_path, markdown=False)
+    graph = inputs["graph"]
+    assert isinstance(graph, ManifestGraph)
+    conversions = (
+        graph.conversions[0],
+        {**graph.conversions[0], "conversion_id": "conv-" + "b" * 64},
+    )
+    inputs["graph"] = ManifestGraph(
+        sources=graph.sources,
+        documents=graph.documents,
+        conversions=conversions,
+        storage_references=graph.storage_references,
+    )
+
+    with pytest.raises(AggregationError, match="mehrdeutig"):
+        plan_period_archives(**inputs)

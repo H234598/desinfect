@@ -336,14 +336,23 @@ def _period_documents(
             raise AggregationError("Dokumentpfade sind ungültig")
         pdf_path = _string(paths, "pdf", label="Dokumentpfade")
         markdown_path = _nullable_string(paths, "markdown", label="Dokumentpfade")
-        candidates = [
+        all_candidates = by_owner.get((document_id, bitstream_id), [])
+        persisted_candidates = [
             candidate
-            for candidate in by_owner.get((document_id, bitstream_id), [])
+            for candidate in all_candidates
             if _mapping_value(candidate, "storage_reference", label="Conversion") is not None
         ]
-        if len(candidates) > 1:
+        if len(persisted_candidates) > 1 or (
+            not persisted_candidates and len(all_candidates) > 1
+        ):
             raise AggregationError(f"Conversion für Dokument ist mehrdeutig: {document_id}")
-        conversion = candidates[0] if candidates else None
+        conversion = (
+            persisted_candidates[0]
+            if persisted_candidates
+            else all_candidates[0]
+            if all_candidates
+            else None
+        )
         conversion_id = None
         state = "not_materialized"
         if conversion is not None:
