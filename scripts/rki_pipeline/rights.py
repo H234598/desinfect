@@ -439,12 +439,14 @@ def load_rights_register(path: Path = DEFAULT_REGISTER_PATH) -> RightsRegister:
     return RightsRegister(schema_version=1, entries=tuple(entries))
 
 
-def load_rights_authority(
-    path: Path = DEFAULT_REGISTER_PATH,
-) -> RightsAuthority:
-    """Validate a register source and mint an opaque reloadable capability."""
+def _canonical_authority_source() -> Path:
+    return Path(DEFAULT_REGISTER_PATH).absolute()
 
-    register_source = Path(path).absolute()
+
+def load_rights_authority() -> RightsAuthority:
+    """Mint authority only from the current canonical default register source."""
+
+    register_source = _canonical_authority_source()
     load_rights_register(register_source)
     return RightsAuthority(register_source, _token=_AUTHORITY_TOKEN)
 
@@ -507,9 +509,11 @@ def _validate_authority_instance(authority: RightsAuthority) -> None:
         type(authority) is not RightsAuthority
         or authority._token is not _AUTHORITY_TOKEN
         or not isinstance(authority._register_source, Path)
-        or not authority._register_source.is_absolute()
+        or authority._register_source != _canonical_authority_source()
     ):
-        raise RightsPolicyError("RightsAuthority ist keine geladene Authority-Capability")
+        raise RightsPolicyError(
+            "RightsAuthority ist nicht an die kanonische Register-Source gebunden"
+        )
 
 
 def publication_policy(

@@ -40,6 +40,16 @@ def write_register(tmp_path: Path, decisions: str = "") -> Path:
     return path
 
 
+def load_test_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    register_path: Path,
+) -> rights.RightsAuthority:
+    """Bind one test-scoped default source before minting authority."""
+
+    monkeypatch.setattr(rights, "DEFAULT_REGISTER_PATH", register_path)
+    return rights.load_rights_authority()
+
+
 def decision_yaml(
     state: str,
     *,
@@ -230,14 +240,22 @@ def test_rights_authority_constructor_is_private(tmp_path: Path) -> None:
         rights.RightsAuthority(register_path)
 
 
+def test_rights_authority_loader_rejects_public_path_argument(tmp_path: Path) -> None:
+    """Production callers cannot redirect authority to an arbitrary register."""
+
+    with pytest.raises(TypeError):
+        rights.load_rights_authority(write_register(tmp_path))
+
+
 def test_loaded_authority_reloads_register_for_every_publication(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A reviewed decision removed on disk must stop authorizing immediately."""
 
     policy = rights.load_rights_policy(write_policy(tmp_path))
     register_path = write_register(tmp_path, decision_yaml("approved"))
-    authority = rights.load_rights_authority(register_path)
+    authority = load_test_authority(monkeypatch, register_path)
 
     allowed = rights.publication_policy(
         SOURCE_ID,
@@ -257,6 +275,32 @@ def test_loaded_authority_reloads_register_for_every_publication(
         policy=policy,
     )
     assert denied.payload_allowed is False
+
+
+def test_loaded_authority_rejects_default_register_source_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A capability minted for another source cannot survive default-path drift."""
+
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_root.mkdir()
+    second_root.mkdir()
+    first_path = write_register(first_root, decision_yaml("approved"))
+    second_path = write_register(second_root)
+    policy = rights.load_rights_policy(write_policy(tmp_path))
+    authority = load_test_authority(monkeypatch, first_path)
+    monkeypatch.setattr(rights, "DEFAULT_REGISTER_PATH", second_path)
+
+    with pytest.raises(rights.RightsPolicyError, match="Source"):
+        rights.publication_policy(
+            SOURCE_ID,
+            SOURCE_SHA256,
+            authority=authority,
+            visibility="public",
+            policy=policy,
+        )
 
 
 def test_lookup_requires_exact_source_id_and_sha256(tmp_path: Path) -> None:
@@ -377,6 +421,7 @@ def test_sensitive_states_require_complete_review_provenance(
 )
 def test_publication_policy_uses_fixed_visibility_matrix(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     state: str,
     visibility: str,
     payload_allowed: bool,
@@ -386,15 +431,17 @@ def test_publication_policy_uses_fixed_visibility_matrix(
     policy = rights.load_rights_policy(write_policy(tmp_path))
     reviewer = None if state == "metadata_only" else "Legal Reviewer"
     reviewed_at = None if state == "metadata_only" else "2026-08-03T08:00:00Z"
-    authority = rights.load_rights_authority(
-        write_register(
-            tmp_path,
-            decision_yaml(
-                state,
-                reviewed_by=reviewer,
-                reviewed_at=reviewed_at,
-            ),
-        )
+    register_path = write_register(
+        tmp_path,
+        decision_yaml(
+            state,
+            reviewed_by=reviewer,
+            reviewed_at=reviewed_at,
+        ),
+    )
+    authority = load_test_authority(
+        monkeypatch,
+        register_path,
     )
     result = rights.publication_policy(
         SOURCE_ID,
@@ -412,12 +459,14 @@ def test_publication_policy_uses_fixed_visibility_matrix(
 
 def test_takedown_filters_mirror_references_but_keeps_origin_metadata(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Catch stale mirrored download references after a takedown decision."""
 
     policy = rights.load_rights_policy(write_policy(tmp_path))
-    authority = rights.load_rights_authority(
-        write_register(tmp_path, decision_yaml("takedown"))
+    authority = load_test_authority(
+        monkeypatch,
+        write_register(tmp_path, decision_yaml("takedown")),
     )
     result = rights.publication_policy(
         SOURCE_ID,
@@ -450,6 +499,7 @@ def test_publication_policy_rejects_forged_visibility_matrix(tmp_path: Path) -> 
 
 def test_forged_constructed_register_cannot_authorize_payload(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Fully canonical raw register data still lacks publication authority."""
 
@@ -485,7 +535,7 @@ def test_forged_constructed_register_cannot_authorize_payload(
             policy=policy,
         )
 
-    authority = rights.load_rights_authority(write_register(tmp_path))
+    authority = load_test_authority(monkeypatch, write_register(tmp_path))
     result = rights.publication_policy(
         SOURCE_ID,
         SOURCE_SHA256,
