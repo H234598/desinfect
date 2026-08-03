@@ -259,7 +259,7 @@ def test_remote_apply_rehashes_prepared_path_before_upload(
     )
     prepared.path.write_bytes(b"tampered after preparation")
 
-    with pytest.raises(StorageError, match="Größe|SHA-256|vorbereitet"):
+    with pytest.raises(StorageError, match=r"Größe|SHA-256|vorbereitet"):
         adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
 
     assert not any(call[0] == "put" for call in client.calls)
@@ -310,7 +310,7 @@ def test_remote_verify_reads_actual_payload_instead_of_trusting_metadata(
         public_reference=None,
     )
 
-    with pytest.raises(StorageError, match="[Ii]ntegrität|SHA-256|Größe"):
+    with pytest.raises(StorageError, match=r"[Ii]ntegrität|SHA-256|Größe"):
         adapter.verify(reference)
 
     assert ("get", key) in client.calls
@@ -332,7 +332,7 @@ def test_remote_authorization_precedes_temp_get_put_and_verify_reads(
     ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root)
 
     storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))
-    with pytest.raises(StorageError, match="Rechte|autorisiert"):
+    with pytest.raises(StorageError, match=r"Rechte|autorisiert"):
         adapter.materialize(source_intent, temp_root=temp_root, ledger=ledger)
 
     assert tuple(temp_root.rglob("*")) == ()
@@ -348,7 +348,7 @@ def test_remote_authorization_precedes_temp_get_put_and_verify_reads(
     apply_ledger = EffectLedger(RunMode.APPLY)
 
     storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))
-    with pytest.raises(StorageError, match="Rechte|autorisiert"):
+    with pytest.raises(StorageError, match=r"Rechte|autorisiert"):
         adapter.apply(prepared, ledger=apply_ledger)
 
     assert not client.objects
@@ -362,15 +362,15 @@ def test_remote_authorization_precedes_temp_get_put_and_verify_reads(
     export_root.mkdir()
 
     storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))
-    with pytest.raises(StorageError, match="Rechte|autorisiert"):
+    with pytest.raises(StorageError, match=r"Rechte|autorisiert"):
         adapter.export(
             reference,
             temp_root=export_root,
             ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=export_root),
         )
-    with pytest.raises(StorageError, match="Rechte|autorisiert"):
+    with pytest.raises(StorageError, match=r"Rechte|autorisiert"):
         adapter.verify(reference)
-    with pytest.raises(StorageError, match="Rechte|autorisiert"):
+    with pytest.raises(StorageError, match=r"Rechte|autorisiert"):
         adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
 
     assert client.calls == []
@@ -435,7 +435,7 @@ def test_remote_verify_rejects_metadata_provenance_drift_before_get(
     client.calls.clear()
     client.objects[reference.relative_path]["decision_sha256"] = "e" * 64
 
-    with pytest.raises(StorageError, match="Metadaten|drift|Integrität"):
+    with pytest.raises(StorageError, match=r"Metadaten|drift|Integrität"):
         adapter.verify(reference)
 
     assert not any(call[0] == "get" for call in client.calls)
@@ -480,7 +480,7 @@ def test_remote_head_provenance_drift_never_uses_intent_fallback(
     }
     metadata[field] = value
 
-    with pytest.raises(StorageError, match="Metadaten|Konflikt"):
+    with pytest.raises(StorageError, match=r"Metadaten|Konflikt"):
         object_adapter(
             MemoryClient(objects={key: metadata}),
             storage_rights,
@@ -577,7 +577,7 @@ def test_remote_exists_authorizes_before_head(tmp_path: Path, storage_rights) ->
     source_intent = intent(tmp_path)
     storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))
 
-    with pytest.raises(StorageError, match="Rechte|autorisiert"):
+    with pytest.raises(StorageError, match=r"Rechte|autorisiert"):
         adapter.exists(source_intent)
 
     assert client.calls == []
@@ -604,7 +604,7 @@ def test_remote_materialize_validates_one_source_snapshot_before_temp_write(
     before = tree_snapshot(temp_root)
     ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root)
 
-    with pytest.raises(StorageError, match="Größe|SHA-256|reguläre Datei"):
+    with pytest.raises(StorageError, match=r"Größe|SHA-256|reguläre Datei"):
         adapter.materialize(source_intent, temp_root=temp_root, ledger=ledger)
 
     assert tree_snapshot(temp_root) == before
@@ -762,7 +762,7 @@ def test_remote_intra_call_revocation_blocks_next_payload_effect(
         def action():
             return adapter.apply(prepared, ledger=ledger)
 
-    with pytest.raises(StorageError, match="Rechte|autorisiert"):
+    with pytest.raises(StorageError, match=r"Rechte|autorisiert"):
         action()
 
     assert client.objects == objects_before
@@ -789,7 +789,7 @@ def test_remote_apply_rolls_back_its_upload_when_rights_are_revoked_during_put(
 
     client.put_hook = revoke_during_put
 
-    with pytest.raises(StorageError, match="Rechte|autorisiert"):
+    with pytest.raises(StorageError, match=r"Rechte|autorisiert"):
         adapter.apply(prepared, ledger=ledger)
 
     assert client.objects == {}
@@ -870,7 +870,7 @@ def test_remote_apply_never_removes_a_concurrent_replacement_during_rollback(
 
     client.put_hook = replace_and_revoke
 
-    with pytest.raises(StorageError, match="Rechte|autorisiert"):
+    with pytest.raises(StorageError, match=r"Rechte|autorisiert"):
         adapter.apply(prepared, ledger=ledger)
 
     assert client.objects[key] is replacement
@@ -909,7 +909,7 @@ def test_remote_apply_reauthorizes_before_prepared_snapshot(
 
     client.head_hook = revoke_before_snapshot
 
-    with pytest.raises(StorageError, match="Rechte|autorisiert"):
+    with pytest.raises(StorageError, match=r"Rechte|autorisiert"):
         adapter.apply(prepared, ledger=ledger)
 
     assert tree_snapshot(prepared_root) == before
@@ -960,7 +960,7 @@ def test_remote_list_normalizes_strictly_confined_keys(
     client.calls.clear()
 
     if expected_key is None:
-        with pytest.raises(StorageError, match="Pfad|Prefix|Schl.ssel|kanonisch"):
+        with pytest.raises(StorageError, match=r"Pfad|Prefix|Schl.ssel|kanonisch"):
             adapter.list_references()
     else:
         listed = adapter.list_references()

@@ -292,7 +292,7 @@ def test_legacy_storage_reference_rejects_partial_authorization_provenance(
     source_sha256: str | None,
     decision_sha256: str | None,
 ) -> None:
-    with pytest.raises(ValueError, match="Provenienz|gemeinsam|vollständig"):
+    with pytest.raises(ValueError, match=r"Provenienz|gemeinsam|vollständig"):
         StorageReference(
             artifact_id="artifact-1",
             relative_path="rki/Bulletins/Jahre/1994/a.pdf",
@@ -326,7 +326,7 @@ def test_storage_reference_rejects_document_outside_exact_source_version(
 ) -> None:
     """Document links must belong to the same RKI handle and exact source version."""
 
-    with pytest.raises(ValueError, match="source_id.*document_id"):
+    with pytest.raises(ValueError, match=r"source_id.*document_id"):
         StorageReference(
             artifact_id="artifact-1",
             relative_path="rki/Bulletins/Jahre/1994/a.pdf",
@@ -485,9 +485,9 @@ def test_rights_storage_authorizer_reloads_and_compares_exact_decision(
         replace(intent, decision_sha256="f" * 64),
         replace(intent, rights_state="metadata_only"),
     ):
-        with pytest.raises(StorageError, match="Rechte|autorisiert|Entscheidung"):
+        with pytest.raises(StorageError, match=r"Rechte|autorisiert|Entscheidung"):
             authorizer.authorize(drifted, operation="materialize")
 
     write_decision("takedown")
-    with pytest.raises(StorageError, match="Rechte|autorisiert|Entscheidung"):
+    with pytest.raises(StorageError, match=r"Rechte|autorisiert|Entscheidung"):
         authorizer.authorize(intent, operation="apply")

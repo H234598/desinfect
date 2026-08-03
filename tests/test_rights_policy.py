@@ -633,20 +633,24 @@ def test_rights_register_read_is_bound_to_one_open_file_description(
         "schema_version: 1\ndecisions:\n" + decision_yaml("approved"),
         encoding="utf-8",
     )
-    original_lstat = Path.lstat
+    original_open = os.open
     replaced = False
 
-    def replace_after_lstat(candidate: Path):
+    def replace_after_open(candidate, flags, mode=0o777, *, dir_fd=None):
         nonlocal replaced
-        metadata = original_lstat(candidate)
-        if candidate == path and not replaced:
+        if dir_fd is None:
+            descriptor = original_open(candidate, flags, mode)
+        else:
+            descriptor = original_open(candidate, flags, mode, dir_fd=dir_fd)
+        if Path(candidate) == path and not replaced:
             replaced = True
             replacement.replace(path)
-        return metadata
+        return descriptor
 
-    monkeypatch.setattr(Path, "lstat", replace_after_lstat)
+    monkeypatch.setattr(os, "open", replace_after_open)
 
     assert rights.load_rights_register(path).entries == ()
+    assert replaced is True
 
 
 def test_rights_register_read_is_bounded_to_maximum_plus_one_byte(
