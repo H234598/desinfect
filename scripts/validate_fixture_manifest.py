@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.rki_pipeline.io_utils import (
+from scripts.rki_pipeline.io_utils import (  # noqa: E402
     detect_path_collisions,
     normalize_posix_path,
     sha256_file,

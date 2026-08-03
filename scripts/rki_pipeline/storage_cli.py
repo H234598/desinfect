@@ -7,8 +7,6 @@ import hashlib
 import json
 from pathlib import Path
 import sys
-from typing import Any
-
 from scripts.rki_pipeline.io_utils import (
     atomic_write_text,
     relative_path_beneath,
