@@ -1,6 +1,6 @@
 ---
 title: Implementierungsplan V3 – Steuerung
-status: P06 abgeschlossen; P07 als nächste Phase
+status: P07.1 abgeschlossen; P07.2 als nächste Phase
 source_plan_sha256: aa50863cde1313a7039691b4ca596c1ab498d0fab0008da324de5cb69f12ffc4
 repository: H234598/desinfect
 branch: main
