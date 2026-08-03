@@ -7,7 +7,7 @@
 
 | Gesamt | Offen | In Arbeit | Im Review | Umgesetzt | Blockiert |
 |---:|---:|---:|---:|---:|---:|
-| 60 | 40 | 0 | 0 | 20 | 0 |
+| 60 | 36 | 0 | 0 | 24 | 0 |
 
 ## Abgeschlossene Phasen
 
@@ -19,39 +19,35 @@
 | P03 | #7 | `e180b20788072bba840e655d493bac73c7f1a3ee` | Actions `30584133252`, CodeRabbit, qlty, 10 Reviewthreads |
 | P04 | #10 | `b7148bb362425bc6f5a0d30b27a78539ec3acc75` | Actions `30665523318`, CodeRabbit, qlty, 19 Reviewthreads |
 | P05 | #12 | `b1e6b0fa417b1ea879fe373795e320b1950970ba` | Actions `30784217751`, CodeRabbit, qlty, 10 Reviewthreads |
+| P06 | #14–#17 | `c477be9`, `0e4fe01`, `54da096`, `71f8a58` | Actions `30798406250`, `30814619838`, `30831150430`, `30838403022`; CodeRabbit, qlty, 23 Reviewthreads |
 
-## Abgeschlossene Phase P05
+## Abgeschlossene Phase P06
 
-**PR:** #12 — `feat(p05): Dispatcher, Transaktion und GitHub-App-Writer`
-
-**Merge:** `b1e6b0fa417b1ea879fe373795e320b1950970ba`
-
-**Geprüfter Head:** `d9e1c5b39cc7fb714ba61d089119bfa5b81c080b`
+**PRs:** #14 bis #17
 
 | ID | Titel | Status | Evidenz |
 |---|---|---|---|
-| P05.1 | Fälligkeitsberechnung und Catch-up | umgesetzt | PR #12, Merge `b1e6b0fa417b`, Actions `30784217751` |
-| P05.2 | Transaktionaler Pipeline-Orchestrator | umgesetzt | PR #12, Merge `b1e6b0fa417b`, Actions `30784217751` |
-| P05.3 | GitHub-App-Token, Commit und Push | umgesetzt | PR #12, Merge `b1e6b0fa417b`, Actions `30784217751` |
-| P05.4 | GitHub-Workflows: Dispatcher, Pipeline und Backfill | umgesetzt | PR #12, Merge `b1e6b0fa417b`, Actions `30784217751` |
+| P06.1 | Stabile Dokument-IDs, Pfade und Quellmanifest | umgesetzt | PR #14, Merge `c477be9ea08b`, Head `9c38fb5`, Actions `30798406250` |
+| P06.2 | Rechte- und Lizenzpolicy | umgesetzt | PR #15, Merge `0e4fe01624d4`, Head `3b1d4bc`, Actions `30814619838` |
+| P06.3 | PDF-Validierung und Konvertierung | umgesetzt | PR #16, Merge `54da0963f1b7`, Head `5a04bee`, Actions `30831150430` |
+| P06.4 | Dokument-, Konvertierungs- und Storage-Manifeste | umgesetzt | PR #17, Merge `71f8a58b5c73`, Head `ce27bf1`, Actions `30838403022` |
 
-## Abnahme P05
+## Abnahme P06
 
-- GitHub Actions: erfolgreich
-- CodeRabbit: erfolgreich
-- qlty: erfolgreich
+- GitHub Actions: vier PR-Läufe und Nach-Merge-Lauf `30838723565` erfolgreich
+- CodeRabbit und qlty: auf allen vier PRs erfolgreich
 - ungelöste Reviewthreads: 0
-- behobene Reviewthreads: 10
-- Pytest: 249 Tests erfolgreich
+- aufgelöste Reviewthreads: 23
+- Pytest: 782 Tests erfolgreich
 - Unittest: 9 Tests erfolgreich
 - Node: 2 Tests erfolgreich
-- Abgenommen am: `2026-08-03T04:29:27Z`
+- Security-Diff-Scan auf finalem P06.4-Head: 0 Findings, 31/31 Dateien abgedeckt
+- Abgenommen am: `2026-08-03T17:54:15Z`
 - Abgenommen durch: `H234598`
-- PR #8 wurde nach Replacement-Kommentar `5162329352` am `2026-08-03T04:32:36Z` geschlossen und nicht gemergt.
 
 ## Nächster Schritt
 
-P06.1 bis P06.4 bleiben `offen`, bis ihr eigener Implementierungsbranch und PR vorliegen. Die Phase führt stabile Dokument-IDs, Pfade und Quellmanifeste, Rechte- und Lizenzpolicy, PDF-Validierung und Konvertierung sowie Dokument-, Konvertierungs- und Storage-Manifeste ein.
+P07.1 bis P07.3 bleiben `offen`, bis Implementierungsbranch und PR vorliegen. Die Phase führt deterministische ZIP-Produkte, Nachzüglerbehandlung und quartalsweise Reconciliation ein.
 
 ## Gesperrte Architekturentscheidungen
 

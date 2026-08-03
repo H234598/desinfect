@@ -57,4 +57,10 @@ Das vorhandene `.part`-/`os.replace`-Muster aus `H234598/desinfect@fbcc6e850fec1
 - Die Variante-B-Konzepte für mutationssichere CI-Schreibschritte stammen aus dem von `H234598` erstellten Draft-PR #8 „CI: Variante-B-Vertrag für spätere Schreibpfade“, Branch `agent/ci-variant-b-20260730`, Head `8abf3b0071046ecd3ce3bc4547c63b69a5286fac`. Diese Quelle und Urheberschaft bleiben für die in P05/PR #12 angepasst integrierten Teile maßgeblich; der Draft wurde nicht unverändert gemergt.
 - P05 übertrug den Vertrag auf die aktuellen Workflows `rki-dispatcher.yml`, `rki-pipeline.yml` und `rki-backfill.yml` und ergänzte strukturiert ausgewertete YAML-Workflowtests. Die Integration behandelt einen leeren staged Diff als No-op, protokolliert `git status --short` und den staged `--name-status`-Diff und lässt Audit- sowie Mutation-Safety-Gates blockierend.
 
+## P06 – Identität, Rechte, Konvertierung und Manifeste
+
+- Dokument-/Bitstream-Identitäten, Pfadregeln, Rechtepolicy, PDF-Härtung, Conversion-Fingerprints und Manifestgraph wurden repositoryspezifisch nach dem freigegebenen Implementierungsplan neu implementiert.
+- Poppler-Programme werden ausschließlich als extern installierte, versionsgebundene Laufzeitwerkzeuge aufgerufen; Quellcode wurde nicht übernommen. OCR bleibt bis zur expliziten Laufzeitfreigabe fail-closed.
+- Katalogformat, strikter Loader, Rechte-/Storage-Autorisierung und atomare Publikation verwenden Eigenimplementierungen auf Python-Standardbibliothek und bestehenden Repositoryprimitiven.
+
 Die gesperrten Entscheidungen bleiben unabhängig von diesen Arbeiten unverändert: **ADR-003=A** und **ADR-014=B**.

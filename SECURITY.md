@@ -47,4 +47,11 @@
 - Alle Writer teilen die nicht abbrechende Concurrency-Gruppe `desinfect-repository-writer`. Ein geänderter `main`-Stand blockiert den Push; Force-Push und Teilcommits bleiben verboten.
 - Eine Transaktion umfasst alle fälligen Aufgaben, genau eine globale Validierung und höchstens einen Commit. No-op-Läufe erzeugen keinen Commit.
 
+## P06-Rechte-, Konvertierungs- und Manifestgrenzen
+
+- RKI-Handles und Bitstream-URLs werden kanonisch gebunden; Pfade, IDs, Versionen und Supersession dürfen nicht frei aus externen Metadaten übernommen werden.
+- PDF-Validierung begrenzt Bytes und Seiten, prüft Magic/EOF/Parser und bindet Quellhash, Konverter, Optionen und Frontmatter an die Conversion-ID.
+- Öffentliche, interne und reine Metadatenpersistenz benötigen eine aktuelle Rechteentscheidung. Unklare, veraltete oder widersprüchliche Entscheidungen blockieren fail-closed.
+- Manifestkataloge werden streng und symlinkfrei gelesen, vollständig im Staging revalidiert und unter Writer-Lock atomar ersetzt. Korrupte Snapshots können nur durch einen neuen gültigen Snapshot ersetzt werden.
+
 Sicherheitsrelevante Funde sollen nicht in öffentlichen Issues mit Secrets oder ungekürzten sensitiven Daten veröffentlicht werden. Der konkrete private Meldeweg wird in P11.3 zusammen mit der vollständigen Supply-Chain-Policy festgelegt.
