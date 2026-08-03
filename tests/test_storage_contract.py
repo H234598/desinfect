@@ -17,6 +17,10 @@ from scripts.rki_pipeline.storage.base import (
 from scripts.rki_pipeline.storage.config import load_storage_config
 from scripts.rki_pipeline.storage.factory import build_storage_adapter
 
+SOURCE_ID = "rki:176904/12345.2"
+SOURCE_SHA256 = "b" * 64
+DECISION_SHA256 = "c" * 64
+
 
 def write_config(tmp_path: Path, text: str) -> Path:
     path = tmp_path / "storage.toml"
@@ -58,6 +62,9 @@ def test_storage_intent_hashes_without_writing(tmp_path: Path) -> None:
         source,
         artifact_id="artifact-1",
         logical_key="Jahre/1994/a.pdf",
+        source_id=SOURCE_ID,
+        source_sha256=SOURCE_SHA256,
+        decision_sha256=DECISION_SHA256,
         visibility="repository_authorized",
         rights_state="approved",
     )
@@ -74,6 +81,9 @@ def test_storage_intent_rejects_traversal_and_wrong_types(tmp_path: Path) -> Non
             source,
             artifact_id="artifact-1",
             logical_key="../escape.pdf",
+            source_id=SOURCE_ID,
+            source_sha256=SOURCE_SHA256,
+            decision_sha256=DECISION_SHA256,
             visibility="repository_authorized",
             rights_state="approved",
         )
@@ -84,8 +94,43 @@ def test_storage_intent_rejects_traversal_and_wrong_types(tmp_path: Path) -> Non
             source_path=source,
             sha256="0" * 64,
             size=True,
+            source_id=SOURCE_ID,
+            source_sha256=SOURCE_SHA256,
+            decision_sha256=DECISION_SHA256,
             visibility="repository_authorized",
             rights_state="approved",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("source_id", None),
+        ("source_id", "rki:176904/12345.1"),
+        ("source_sha256", "BAD"),
+        ("decision_sha256", None),
+    ],
+)
+def test_storage_intent_rejects_missing_or_invalid_authorization_provenance(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"payload")
+    kwargs: dict[str, object] = {
+        "source_id": SOURCE_ID,
+        "source_sha256": SOURCE_SHA256,
+        "decision_sha256": DECISION_SHA256,
+    }
+    kwargs[field] = value
+
+    with pytest.raises(ValueError, match=field):
+        StorageIntent.from_path(
+            source,
+            artifact_id="artifact-1",
+            logical_key="Jahre/1994/a.pdf",
+            visibility="repository_authorized",
+            rights_state="approved",
+            **kwargs,
         )
 
 
@@ -101,6 +146,9 @@ def test_prepared_object_must_be_beneath_temp_root(tmp_path: Path) -> None:
         temp_root=temp_root,
         sha256=hashlib.sha256(b"x").hexdigest(),
         size=1,
+        source_id=SOURCE_ID,
+        source_sha256=SOURCE_SHA256,
+        decision_sha256=DECISION_SHA256,
         visibility="repository_authorized",
         rights_state="approved",
     )
@@ -113,6 +161,9 @@ def test_prepared_object_must_be_beneath_temp_root(tmp_path: Path) -> None:
             temp_root=temp_root,
             sha256="0" * 64,
             size=0,
+            source_id=SOURCE_ID,
+            source_sha256=SOURCE_SHA256,
+            decision_sha256=DECISION_SHA256,
             visibility="repository_authorized",
             rights_state="approved",
         )
@@ -126,14 +177,44 @@ def test_storage_reference_is_schema_valid_and_backend_neutral() -> None:
         storage_object_id="sha256:" + "a" * 64,
         sha256="a" * 64,
         size=12,
+        source_id=SOURCE_ID,
+        source_sha256=SOURCE_SHA256,
+        document_id="rki-176904-12345-v2",
+        conversion_id="conv-" + "d" * 64,
+        decision_sha256=DECISION_SHA256,
+        provenance_state="current",
         visibility="repository_authorized",
         rights_state="approved",
         public_reference=None,
     )
     payload = reference.to_dict()
     validate_document("storage-reference", payload)
+    assert payload["schema_version"] == "1.1.0"
+    assert payload["source_id"] == SOURCE_ID
+    assert payload["decision_sha256"] == DECISION_SHA256
     assert payload["storage_backend"] == "lfs"
     assert "repository_root" not in payload
+
+
+def test_storage_reference_cannot_mark_missing_authorization_as_current() -> None:
+    with pytest.raises(ValueError, match="current"):
+        StorageReference(
+            artifact_id="artifact-1",
+            relative_path="rki/Bulletins/Jahre/1994/a.pdf",
+            storage_backend=StorageBackend.LFS,
+            storage_object_id="sha256:" + "a" * 64,
+            sha256="a" * 64,
+            size=12,
+            source_id=None,
+            source_sha256=None,
+            document_id=None,
+            conversion_id=None,
+            decision_sha256=None,
+            provenance_state="current",
+            visibility="repository_authorized",
+            rights_state="approved",
+            public_reference=None,
+        )
 
 
 def test_storage_config_rejects_unknown_keys_and_wrong_types(tmp_path: Path) -> None:

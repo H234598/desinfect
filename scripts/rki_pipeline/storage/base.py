@@ -7,6 +7,7 @@ from enum import StrEnum
 import hashlib
 import os
 from pathlib import Path
+import re
 from typing import Protocol, runtime_checkable
 
 from scripts.rki_pipeline.io_utils import normalize_posix_path
@@ -15,6 +16,10 @@ from scripts.rki_pipeline.run_modes import EffectLedger
 _SHA256 = frozenset("0123456789abcdef")
 _VISIBILITY = frozenset({"public", "repository_authorized", "internal", "restricted"})
 _RIGHTS = frozenset({"approved", "metadata_only", "internal_only", "unknown", "takedown"})
+_PROVENANCE_STATES = frozenset({"current", "legacy_needs_review"})
+_SOURCE_ID = re.compile(r"^rki:176904/[0-9]+(?:\.(?:[2-9]|[1-9][0-9]+))?$")
+_DOCUMENT_ID = re.compile(r"^rki-176904-[0-9]+-v[1-9][0-9]*$")
+_CONVERSION_ID = re.compile(r"^conv-[0-9a-f]{64}$")
 
 
 class StorageError(RuntimeError):
@@ -54,6 +59,35 @@ def _validate_common(
         raise ValueError("Unbekannter Rechtezustand")
 
 
+def _validate_authorization_provenance(
+    *,
+    source_id: str | None,
+    source_sha256: str | None,
+    decision_sha256: str | None,
+    required: bool,
+) -> None:
+    if source_id is None:
+        if required:
+            raise ValueError("source_id fehlt für current-Provenienz")
+    elif type(source_id) is not str or _SOURCE_ID.fullmatch(source_id) is None:
+        raise ValueError("source_id ist keine kanonische RKI-Quell-ID")
+    if source_sha256 is None:
+        if required:
+            raise ValueError("source_sha256 fehlt für current-Provenienz")
+    elif not _valid_sha256(source_sha256):
+        raise ValueError("source_sha256 muss ein kleingeschriebener SHA-256 sein")
+    if decision_sha256 is None:
+        if required:
+            raise ValueError("decision_sha256 fehlt für current-Provenienz")
+    elif not _valid_sha256(decision_sha256):
+        raise ValueError("decision_sha256 muss ein kleingeschriebener SHA-256 sein")
+
+
+def _validate_nullable_id(value: str | None, *, name: str, pattern: re.Pattern[str]) -> None:
+    if value is not None and (type(value) is not str or pattern.fullmatch(value) is None):
+        raise ValueError(f"{name} ist nicht kanonisch")
+
+
 def hash_file(path: Path) -> tuple[int, str]:
     """Stream one regular file and return size plus SHA-256."""
 
@@ -78,6 +112,9 @@ class StorageIntent:
     source_path: Path
     sha256: str
     size: int
+    source_id: str
+    source_sha256: str
+    decision_sha256: str
     visibility: str
     rights_state: str
 
@@ -90,12 +127,19 @@ class StorageIntent:
             visibility=self.visibility,
             rights_state=self.rights_state,
         )
+        _validate_authorization_provenance(
+            source_id=self.source_id,
+            source_sha256=self.source_sha256,
+            decision_sha256=self.decision_sha256,
+            required=True,
+        )
         if not isinstance(self.source_path, Path):
             raise ValueError("source_path muss ein pathlib.Path sein")
 
     @classmethod
     def from_path(
         cls, source_path: Path, *, artifact_id: str, logical_key: str,
+        source_id: str, source_sha256: str, decision_sha256: str,
         visibility: str, rights_state: str,
     ) -> StorageIntent:
         size, sha256 = hash_file(source_path)
@@ -105,6 +149,9 @@ class StorageIntent:
             source_path=Path(source_path),
             sha256=sha256,
             size=size,
+            source_id=source_id,
+            source_sha256=source_sha256,
+            decision_sha256=decision_sha256,
             visibility=visibility,
             rights_state=rights_state,
         )
@@ -120,6 +167,9 @@ class PreparedObject:
     temp_root: Path
     sha256: str
     size: int
+    source_id: str
+    source_sha256: str
+    decision_sha256: str
     visibility: str
     rights_state: str
 
@@ -131,6 +181,12 @@ class PreparedObject:
             size=self.size,
             visibility=self.visibility,
             rights_state=self.rights_state,
+        )
+        _validate_authorization_provenance(
+            source_id=self.source_id,
+            source_sha256=self.source_sha256,
+            decision_sha256=self.decision_sha256,
+            required=True,
         )
         root = Path(os.path.abspath(self.temp_root))
         path = Path(os.path.abspath(self.path))
@@ -154,6 +210,12 @@ class StorageReference:
     storage_object_id: str
     sha256: str
     size: int
+    source_id: str | None
+    source_sha256: str | None
+    document_id: str | None
+    conversion_id: str | None
+    decision_sha256: str | None
+    provenance_state: str
     visibility: str
     rights_state: str
     public_reference: str | None
@@ -167,6 +229,16 @@ class StorageReference:
             visibility=self.visibility,
             rights_state=self.rights_state,
         )
+        if self.provenance_state not in _PROVENANCE_STATES:
+            raise ValueError("Unbekannter provenance_state")
+        _validate_authorization_provenance(
+            source_id=self.source_id,
+            source_sha256=self.source_sha256,
+            decision_sha256=self.decision_sha256,
+            required=self.provenance_state == "current",
+        )
+        _validate_nullable_id(self.document_id, name="document_id", pattern=_DOCUMENT_ID)
+        _validate_nullable_id(self.conversion_id, name="conversion_id", pattern=_CONVERSION_ID)
         if not isinstance(self.storage_backend, StorageBackend):
             raise ValueError("storage_backend muss ein StorageBackend sein")
         if type(self.storage_object_id) is not str or not self.storage_object_id:
@@ -176,13 +248,19 @@ class StorageReference:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schema_version": "1.0.0",
+            "schema_version": "1.1.0",
             "artifact_id": self.artifact_id,
             "relative_path": self.relative_path,
             "storage_backend": self.storage_backend.value,
             "storage_object_id": self.storage_object_id,
             "sha256": self.sha256,
             "bytes": self.size,
+            "source_id": self.source_id,
+            "source_sha256": self.source_sha256,
+            "document_id": self.document_id,
+            "conversion_id": self.conversion_id,
+            "decision_sha256": self.decision_sha256,
+            "provenance_state": self.provenance_state,
             "visibility": self.visibility,
             "rights_state": self.rights_state,
             "public_reference": self.public_reference,

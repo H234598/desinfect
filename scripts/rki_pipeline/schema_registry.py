@@ -195,10 +195,34 @@ def migrate_document_manifest_v1_0_to_v1_1(payload: dict[str, Any]) -> dict[str,
     return result
 
 
+def migrate_storage_reference_v1_0_to_v1_1(payload: dict[str, Any]) -> dict[str, Any]:
+    """Migrate storage-reference 1.0.0 without inventing authorization."""
+
+    if payload.get("schema_version") != "1.0.0":
+        raise SchemaContractError(
+            f"Nicht unterstützte Storage-Reference-Migration: {payload.get('schema_version')!r}"
+        )
+    result = deepcopy(payload)
+    result.update(
+        {
+            "schema_version": "1.1.0",
+            "source_id": None,
+            "source_sha256": None,
+            "document_id": None,
+            "conversion_id": None,
+            "decision_sha256": None,
+            "provenance_state": "legacy_needs_review",
+        }
+    )
+    validate_document("storage-reference", result)
+    return result
+
+
 MIGRATIONS: dict[tuple[str, str, str], Callable[[dict[str, Any]], dict[str, Any]]] = {
     ("status", "2.0.0", "3.0.0"): migrate_status_v2_to_v3,
     ("source-manifest", "1.0.0", "1.1.0"): migrate_source_manifest_v1_0_to_v1_1,
     ("document-manifest", "1.0.0", "1.1.0"): migrate_document_manifest_v1_0_to_v1_1,
+    ("storage-reference", "1.0.0", "1.1.0"): migrate_storage_reference_v1_0_to_v1_1,
 }
 
 

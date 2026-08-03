@@ -119,6 +119,16 @@
       "purpose": "deterministic source-manifest migration from 1.0.0 to 1.1.0",
       "sha256": "7f3701800642bb4352d7ce1bea1462c0d49d862b10a80e94beb3c6026a665a10",
       "synthetic": true
+    },
+    {
+      "bytes": 450,
+      "license_status": "synthetic",
+      "media_type": "application/json",
+      "path": "schemas/storage-reference-v1.0.json",
+      "provenance": "H234598/desinfect P06 synthetic migration fixture",
+      "purpose": "deterministic storage-reference migration from 1.0.0 to 1.1.0",
+      "sha256": "7f0fc6e9b44d4e7b70220d9d48764e7d8ca0b44b4210552b043f4a14b30ced30",
+      "synthetic": true
     }
   ],
   "max_file_bytes": 65536,

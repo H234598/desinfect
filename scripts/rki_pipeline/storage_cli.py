@@ -15,6 +15,7 @@ from scripts.rki_pipeline.io_utils import (
     stable_json_dumps,
 )
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
+from scripts.rki_pipeline.schema_registry import migrate_document
 from scripts.rki_pipeline.storage.base import (
     PreparedObject,
     StorageBackend,
@@ -69,20 +70,31 @@ def _backend(payload: dict[str, object], name: str) -> StorageBackend:
         raise ValueError(f"{name} enthält ein unbekanntes Storage-Backend: {raw}") from exc
 
 
+def _nullable_string(payload: dict[str, object], name: str) -> str | None:
+    value = _required(payload, name)
+    if value is not None and type(value) is not str:
+        raise ValueError(f"{name} muss eine Zeichenkette oder null sein")
+    return value
+
+
 def _reference(payload: dict[str, object]) -> StorageReference:
-    public_reference = payload.get("public_reference")
-    if public_reference is not None and type(public_reference) is not str:
-        raise ValueError("public_reference muss eine Zeichenkette oder null sein")
+    current = migrate_document("storage-reference", payload)
     return StorageReference(
-        artifact_id=_string(payload, "artifact_id"),
-        relative_path=_string(payload, "relative_path"),
-        storage_backend=_backend(payload, "storage_backend"),
-        storage_object_id=_string(payload, "storage_object_id"),
-        sha256=_string(payload, "sha256"),
-        size=_integer(payload, "bytes"),
-        visibility=_string(payload, "visibility"),
-        rights_state=_string(payload, "rights_state"),
-        public_reference=public_reference,
+        artifact_id=_string(current, "artifact_id"),
+        relative_path=_string(current, "relative_path"),
+        storage_backend=_backend(current, "storage_backend"),
+        storage_object_id=_string(current, "storage_object_id"),
+        sha256=_string(current, "sha256"),
+        size=_integer(current, "bytes"),
+        source_id=_nullable_string(current, "source_id"),
+        source_sha256=_nullable_string(current, "source_sha256"),
+        document_id=_nullable_string(current, "document_id"),
+        conversion_id=_nullable_string(current, "conversion_id"),
+        decision_sha256=_nullable_string(current, "decision_sha256"),
+        provenance_state=_string(current, "provenance_state"),
+        visibility=_string(current, "visibility"),
+        rights_state=_string(current, "rights_state"),
+        public_reference=_nullable_string(current, "public_reference"),
     )
 
 
@@ -149,11 +161,30 @@ def _prepared_objects(payload: dict[str, object]) -> tuple[PreparedObject, ...]:
                 temp_root=Path(_string(item, "temp_root")),
                 sha256=_string(item, "sha256"),
                 size=_integer(item, "size"),
+                source_id=_string(item, "source_id"),
+                source_sha256=_string(item, "source_sha256"),
+                decision_sha256=_string(item, "decision_sha256"),
                 visibility=_string(item, "visibility"),
                 rights_state=_string(item, "rights_state"),
             )
         )
     return tuple(prepared)
+
+
+def _prepared_object_payload(item: PreparedObject) -> dict[str, object]:
+    return {
+        "artifact_id": item.artifact_id,
+        "logical_key": item.logical_key,
+        "path": item.path.absolute().as_posix(),
+        "temp_root": item.temp_root.absolute().as_posix(),
+        "sha256": item.sha256,
+        "size": item.size,
+        "source_id": item.source_id,
+        "source_sha256": item.source_sha256,
+        "decision_sha256": item.decision_sha256,
+        "visibility": item.visibility,
+        "rights_state": item.rights_state,
+    }
 
 
 def _load_json(path: Path) -> dict[str, object]:
@@ -228,19 +259,7 @@ def main(argv: list[str] | None = None) -> int:
             payload = {
                 "schema_version": "1.0.0",
                 "plan_sha256": migration.sha256,
-                "objects": [
-                    {
-                        "artifact_id": item.artifact_id,
-                        "logical_key": item.logical_key,
-                        "path": item.path.absolute().as_posix(),
-                        "temp_root": item.temp_root.absolute().as_posix(),
-                        "sha256": item.sha256,
-                        "size": item.size,
-                        "visibility": item.visibility,
-                        "rights_state": item.rights_state,
-                    }
-                    for item in prepared
-                ],
+                "objects": [_prepared_object_payload(item) for item in prepared],
             }
             rendered = stable_json_dumps(payload)
             atomic_write_text(args.output, rendered, allowed_root=args.temp_root)

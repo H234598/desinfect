@@ -1,16 +1,26 @@
 """Regression tests for storage CLI mode and manifest boundaries."""
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
-from scripts.rki_pipeline.storage_cli import _plan, _reference, build_parser, main
+from scripts.rki_pipeline.storage.base import PreparedObject
+from scripts.rki_pipeline import storage_cli
+from scripts.rki_pipeline.storage_cli import (
+    _plan,
+    _prepared_objects,
+    _reference,
+    build_parser,
+    main,
+)
 
 
 def reference_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
+        "schema_version": "1.0.0",
         "artifact_id": "artifact-1",
         "relative_path": "rki/Bulletins/a.pdf",
         "storage_backend": "lfs",
@@ -115,6 +125,48 @@ def test_reference_rejects_missing_required_field() -> None:
     del payload["artifact_id"]
     with pytest.raises(ValueError, match="artifact_id"):
         _reference(payload)
+
+
+def test_reference_reader_migrates_legacy_before_type_construction() -> None:
+    reference = _reference(reference_payload())
+
+    assert reference.provenance_state == "legacy_needs_review"
+    assert reference.source_id is None
+    assert reference.source_sha256 is None
+    assert reference.decision_sha256 is None
+    assert _reference(reference.to_dict()) == reference
+
+
+def test_reference_reader_rejects_unknown_schema_version() -> None:
+    with pytest.raises(ValueError, match="Version"):
+        _reference(reference_payload(schema_version="0.9.0"))
+
+
+def test_prepared_object_provenance_roundtrips_without_loss(tmp_path: Path) -> None:
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    path = temp_root / "payload.pdf"
+    path.write_bytes(b"payload")
+    prepared = PreparedObject(
+        artifact_id="artifact-1",
+        logical_key="Jahre/1994/payload.pdf",
+        path=path,
+        temp_root=temp_root,
+        sha256=hashlib.sha256(b"payload").hexdigest(),
+        size=7,
+        source_id="rki:176904/12345.2",
+        source_sha256="b" * 64,
+        decision_sha256="c" * 64,
+        visibility="repository_authorized",
+        rights_state="approved",
+    )
+
+    payload = storage_cli._prepared_object_payload(prepared)
+
+    assert payload["source_id"] == "rki:176904/12345.2"
+    assert payload["source_sha256"] == "b" * 64
+    assert payload["decision_sha256"] == "c" * 64
+    assert _prepared_objects({"objects": [payload]}) == (prepared,)
 
 
 def test_plan_rejects_duplicate_artifact_ids() -> None:
