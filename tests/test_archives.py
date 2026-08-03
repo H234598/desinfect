@@ -186,8 +186,11 @@ def test_archive_contract_rejects_wrong_dataclass_types(
     "path",
     (
         "MANIFEST.json",
+        "manifest.json",
         "README.md",
+        "ReadMe.Md",
         "SHA256SUMS.txt",
+        "sha256sums.Txt",
         "PDF/nested.zip",
         "PDF/NESTED.ZIP",
         "../escape.pdf",
@@ -200,6 +203,13 @@ def test_archive_spec_rejects_reserved_nested_or_unsafe_members(
     with pytest.raises(ValueError):
         candidate = ArchiveEntry(path=path, prepared=entry.prepared)
         _spec((candidate,))
+
+
+def test_archive_spec_allows_reserved_metadata_name_below_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry, _ = _prepared_entries(tmp_path, monkeypatch)
+    assert _spec((ArchiveEntry("PDF/manifest.json", entry.prepared),)).entries
 
 
 def test_archive_spec_rejects_duplicate_and_portable_colliding_members(

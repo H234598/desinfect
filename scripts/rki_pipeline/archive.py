@@ -17,6 +17,7 @@ from scripts.rki_pipeline.storage.base import PreparedObject
 
 ARCHIVE_FORMAT_VERSION = "1"
 RESERVED_MEMBERS = frozenset({"MANIFEST.json", "README.md", "SHA256SUMS.txt"})
+_RESERVED_MEMBER_KEYS = frozenset(member.casefold() for member in RESERVED_MEMBERS)
 ARCHIVE_KINDS = frozenset(
     {
         "week-pdf",
@@ -103,7 +104,7 @@ class ArchiveSpec:
         except ValueError as exc:
             raise ValueError("Portable Kollision im Archiv") from exc
         for entry in self.entries:
-            if entry.path in RESERVED_MEMBERS:
+            if "/" not in entry.path and entry.path.casefold() in _RESERVED_MEMBER_KEYS:
                 raise ValueError("Reservierter Metadatenname im Archiv")
             if entry.path.casefold().endswith(".zip"):
                 raise ValueError("ZIP-Mitglieder sind im Archiv unzulässig")
