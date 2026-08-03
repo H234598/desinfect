@@ -667,6 +667,8 @@ def render_month_index(period_plan: PeriodPlan, aggregation_plan: AggregationPla
         raise AggregationError("period_plan muss ein exakter PeriodPlan sein")
     if type(aggregation_plan) is not AggregationPlan:
         raise AggregationError("aggregation_plan muss ein exakter AggregationPlan sein")
+    if aggregation_plan.input_fingerprint != _plan_fingerprint(aggregation_plan.periods):
+        raise AggregationError("AggregationPlan-Fingerprint ist nicht kanonisch")
     if not any(plan is period_plan for plan in aggregation_plan.periods):
         raise AggregationError("period_plan gehört nicht zum AggregationPlan")
     if period_plan.period.kind is not TaskKind.MONTH or period_plan.index_path is None:

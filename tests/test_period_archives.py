@@ -8,6 +8,7 @@ from typing import Iterator, Mapping
 import pytest
 
 from scripts.rki_grabber.models import AffectedPeriods
+from scripts.rki_pipeline import aggregation as aggregation_module
 from scripts.rki_pipeline import rights
 from scripts.rki_pipeline.aggregation import (
     AggregationError,
@@ -681,9 +682,13 @@ def _month_from(aggregation):
 
 
 def _with_month(aggregation, month):
-    return replace(
+    replacement = replace(
         aggregation,
         periods=tuple(month if plan.period.kind is TaskKind.MONTH else plan for plan in aggregation.periods),
+    )
+    return replace(
+        replacement,
+        input_fingerprint=aggregation_module._plan_fingerprint(replacement.periods),
     )
 
 
@@ -770,6 +775,15 @@ def test_month_index_requires_its_complete_aggregation_plan(tmp_path: Path) -> N
 
     with pytest.raises(AggregationError, match="AggregationPlan"):
         render_month_index(replace(month), aggregation)
+
+
+def test_month_index_rejects_aggregation_plan_with_stale_fingerprint(tmp_path: Path) -> None:
+    aggregation = _month_aggregation(tmp_path, weeks=("2026-W28",))
+    month = _month_from(aggregation)
+    shortened = replace(aggregation, periods=(month,))
+
+    with pytest.raises(AggregationError, match="Fingerprint"):
+        render_month_index(month, shortened)
 
 
 def test_period_manifest_is_canonical_backend_neutral_and_order_independent(

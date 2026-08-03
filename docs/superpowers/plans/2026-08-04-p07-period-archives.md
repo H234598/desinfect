@@ -356,10 +356,11 @@ git commit -m "feat(p07): plan period archive products"
 
 ```python
 def test_month_index_is_canonical_complete_and_escaped(tmp_path: Path) -> None:
-    period = plan_with_title_and_doi(tmp_path, title="A | B <script>").periods[0]
+    aggregation_plan = plan_with_title_and_doi(tmp_path, title="A | B <script>")
+    period = aggregation_plan.periods[0]
     rendered = render_month_index(period, aggregation_plan)
     assert rendered.endswith(b"\n")
-    assert b"A \\| B &lt;script&gt;" in rendered
+    assert b"A &#124; B &lt;script&gt;" in rendered
     assert b"176904/900000001" in rendered
     assert b"10.1000/example" in rendered
     assert b"converted" in rendered
@@ -390,7 +391,8 @@ def test_period_manifest_rejects_archive_build_drift(tmp_path: Path) -> None:
 
 
 def test_month_index_links_cross_boundary_week_and_allows_missing_optional_values(tmp_path: Path) -> None:
-    period = plan_for_month_boundary(tmp_path, doi=None, markdown=None).periods[0]
+    aggregation_plan = plan_for_month_boundary(tmp_path, doi=None, markdown=None)
+    period = aggregation_plan.periods[0]
     payload = render_month_index(period, aggregation_plan)
     assert b"2026-07-27_bis_2026-08-02-PDF" in payload
     assert b"| \xe2\x80\x94 |" in payload
