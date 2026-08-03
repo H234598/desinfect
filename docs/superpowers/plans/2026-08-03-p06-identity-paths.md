@@ -511,9 +511,9 @@ git commit -m "feat(p06): build validated source manifests"
 
 ## Final package gate
 
-- [ ] Run complete Python suite: `.venv/bin/pytest -q`.
-- [ ] Run `python -m compileall -q scripts tests` with `.venv/bin/python`.
-- [ ] Run schema, P03, P04, and baseline validators again.
-- [ ] Check `git status --short`, `git diff --check`, commit list, and diff against `origin/main`.
-- [ ] Obtain final whole-branch review. Fix all Critical/Important findings through reviewed fix loop.
-- [ ] Only then open PR for P06.1; keep P06 overall status open until P06.2–P06.4 finish.
+- [x] Run complete Python suite: `.venv/bin/pytest -q`.
+- [x] Run `python -m compileall -q scripts tests` with `.venv/bin/python`.
+- [x] Run schema, P03, P04, and baseline validators again.
+- [x] Check `git status --short`, `git diff --check`, commit list, and diff against `origin/main`.
+- [x] Obtain final whole-branch review. Fix all Critical/Important findings through reviewed fix loop.
+- [x] Only then open PR for P06.1; keep P06 overall status open until P06.2–P06.4 finish.
