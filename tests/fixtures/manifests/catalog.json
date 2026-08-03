@@ -1,0 +1,33 @@
+{
+  "collections": [
+    {
+      "bytes": 956,
+      "count": 1,
+      "kind": "source-manifest",
+      "path": "Quellen/manifest.jsonl",
+      "sha256": "d6f6c02de72ba68c51de58f8e778354353a1986172cfc17c46ca6d5ece98b3f9"
+    },
+    {
+      "bytes": 793,
+      "count": 1,
+      "kind": "document-manifest",
+      "path": "Dokumente/manifest.jsonl",
+      "sha256": "25608fcf154c3db5e9946f60393ea2dfa9329bbb7183557b6b85e61c565fd837"
+    },
+    {
+      "bytes": 1491,
+      "count": 1,
+      "kind": "conversion-manifest",
+      "path": "Konvertierungen/manifest.jsonl",
+      "sha256": "096929d72f5549e64be57072600ffabd5dd3613933e250b2fb906d2cbcf083e7"
+    },
+    {
+      "bytes": 1844,
+      "count": 2,
+      "kind": "storage-reference",
+      "path": "Storage/manifest.jsonl",
+      "sha256": "91aa172c79f83c4fff311c16da237e86b6d80fbc0e65d4c3cfed36544c1b2453"
+    }
+  ],
+  "schema_version": "1.0.0"
+}

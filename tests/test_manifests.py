@@ -1,7 +1,11 @@
 """Reference-integrity contracts for P06 manifest collections."""
+
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
+import json
+from pathlib import Path
 
 import pytest
 
@@ -14,7 +18,9 @@ from scripts.rki_pipeline.conversion.base import (
     conversion_id,
 )
 from scripts.rki_pipeline.documents import bitstream_identity
+from scripts.rki_pipeline.io_utils import stable_json_dumps
 from scripts.rki_pipeline.paths import DocumentType, repository_document_paths
+from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 
 SOURCE_ID = "rki:176904/12345"
 DOCUMENT_ID = "rki-176904-12345-v1"
@@ -347,3 +353,234 @@ def test_graph_rejects_public_reference_without_public_visibility() -> None:
 
     with pytest.raises(ValueError, match="public visibility"):
         _build(storage=(pdf_reference, markdown_reference))
+
+
+def _write_rendered(root: Path, files: tuple[tuple[str, bytes], ...]) -> None:
+    for relative, payload in files:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+
+def _rewrite_catalog_descriptor(root: Path, relative: str) -> None:
+    catalog_path = root / "catalog.json"
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    payload = (root / relative).read_bytes()
+    descriptor = next(item for item in catalog["collections"] if item["path"] == relative)
+    descriptor["bytes"] = len(payload)
+    descriptor["sha256"] = hashlib.sha256(payload).hexdigest()
+    descriptor["count"] = len(payload.splitlines())
+    catalog_path.write_text(stable_json_dumps(catalog), encoding="utf-8")
+
+
+def test_catalog_rendering_is_canonical_and_order_independent() -> None:
+    from scripts.rki_pipeline.manifests import render_manifest_catalog
+
+    second_source, second_document, second_storage = _second_bitstream()
+    first = render_manifest_catalog(
+        _build(
+            sources=(_source(), second_source),
+            documents=(_document(), second_document),
+            storage=(*_storage(), second_storage),
+        )
+    )
+    second = render_manifest_catalog(
+        _build(
+            sources=(second_source, _source()),
+            documents=(second_document, _document()),
+            storage=(second_storage, *_storage()),
+        )
+    )
+
+    assert first == second
+    assert tuple(path for path, _payload in first.files) == (
+        "Quellen/manifest.jsonl",
+        "Dokumente/manifest.jsonl",
+        "Konvertierungen/manifest.jsonl",
+        "Storage/manifest.jsonl",
+        "catalog.json",
+    )
+    for relative, payload in first.files[:-1]:
+        assert payload.endswith(b"\n")
+        assert b"\n\n" not in payload
+        for line in payload.splitlines():
+            value = json.loads(line)
+            assert line + b"\n" == stable_json_dumps(value, indent=None).encode()
+    assert first.catalog_sha256 == hashlib.sha256(first.files[-1][1]).hexdigest()
+
+
+def test_catalog_loader_rejects_blank_noncanonical_extra_symlink_and_drift(
+    tmp_path: Path,
+) -> None:
+    from scripts.rki_pipeline.manifests import (
+        ManifestCatalogError,
+        load_manifest_catalog,
+        render_manifest_catalog,
+    )
+
+    rendered = render_manifest_catalog(_build())
+
+    blank = tmp_path / "blank"
+    _write_rendered(blank, rendered.files)
+    source_path = blank / "Quellen/manifest.jsonl"
+    source_path.write_bytes(source_path.read_bytes() + b"\n")
+    with pytest.raises(ManifestCatalogError, match="Leerzeile"):
+        load_manifest_catalog(blank)
+
+    noncanonical = tmp_path / "noncanonical"
+    _write_rendered(noncanonical, rendered.files)
+    source_path = noncanonical / "Quellen/manifest.jsonl"
+    value = json.loads(source_path.read_text(encoding="utf-8"))
+    source_path.write_text(json.dumps(value) + "\n", encoding="utf-8")
+    _rewrite_catalog_descriptor(noncanonical, "Quellen/manifest.jsonl")
+    with pytest.raises(ManifestCatalogError, match="nicht kanonisch"):
+        load_manifest_catalog(noncanonical)
+
+    extra = tmp_path / "extra"
+    _write_rendered(extra, rendered.files)
+    (extra / "extra.json").write_text("{}\n", encoding="utf-8")
+    with pytest.raises(ManifestCatalogError, match="unregistriert"):
+        load_manifest_catalog(extra)
+
+    linked = tmp_path / "linked"
+    _write_rendered(linked, rendered.files)
+    (linked / "Quellen/manifest.jsonl").unlink()
+    (linked / "Quellen/manifest.jsonl").symlink_to(rendered.files[0][0])
+    with pytest.raises(ManifestCatalogError, match="Symlink"):
+        load_manifest_catalog(linked)
+
+    drift = tmp_path / "drift"
+    _write_rendered(drift, rendered.files)
+    catalog = json.loads((drift / "catalog.json").read_text(encoding="utf-8"))
+    catalog["collections"][0]["bytes"] += 1
+    (drift / "catalog.json").write_text(stable_json_dumps(catalog), encoding="utf-8")
+    with pytest.raises(ManifestCatalogError, match="Katalog.*driftet"):
+        load_manifest_catalog(drift)
+
+
+def test_catalog_loader_rejects_malformed_oversized_and_graph_drift(tmp_path: Path) -> None:
+    from scripts.rki_pipeline.manifests import (
+        MAX_MANIFEST_LINE_BYTES,
+        ManifestCatalogError,
+        load_manifest_catalog,
+        render_manifest_catalog,
+    )
+
+    rendered = render_manifest_catalog(_build())
+
+    malformed = tmp_path / "malformed"
+    _write_rendered(malformed, rendered.files)
+    (malformed / "Quellen/manifest.jsonl").write_bytes(b"{\n")
+    with pytest.raises(ManifestCatalogError, match="JSON"):
+        load_manifest_catalog(malformed)
+
+    oversized = tmp_path / "oversized"
+    _write_rendered(oversized, rendered.files)
+    (oversized / "Quellen/manifest.jsonl").write_bytes(
+        b"{" + b" " * MAX_MANIFEST_LINE_BYTES + b"}\n"
+    )
+    with pytest.raises(ManifestCatalogError, match="Zeilenlimit"):
+        load_manifest_catalog(oversized)
+
+    graph_drift = tmp_path / "graph-drift"
+    _write_rendered(graph_drift, rendered.files)
+    conversion_path = graph_drift / "Konvertierungen/manifest.jsonl"
+    conversion = json.loads(conversion_path.read_text(encoding="utf-8"))
+    conversion["source_sha256"] = "9" * 64
+    conversion_path.write_text(
+        stable_json_dumps(conversion, indent=None),
+        encoding="utf-8",
+    )
+    _rewrite_catalog_descriptor(graph_drift, "Konvertierungen/manifest.jsonl")
+    with pytest.raises(ValueError, match="Fingerprint|Source-SHA"):
+        load_manifest_catalog(graph_drift)
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    (
+        (b'\xef\xbb\xbf{"schema_version": "1.1.0"}\n', "BOM"),
+        (b'{"schema_version": "1.1.0", "schema_version": "1.1.0"}\n', "Doppelter"),
+        (b'{"value": NaN}\n', "Nichtendlicher"),
+        (b'{"schema_version": "1.1.0"}', "Newline"),
+    ),
+)
+def test_catalog_loader_rejects_ambiguous_json(
+    tmp_path: Path,
+    payload: bytes,
+    message: str,
+) -> None:
+    from scripts.rki_pipeline.manifests import (
+        ManifestCatalogError,
+        load_manifest_catalog,
+        render_manifest_catalog,
+    )
+
+    rendered = render_manifest_catalog(_build())
+    _write_rendered(tmp_path, rendered.files)
+    (tmp_path / "Quellen/manifest.jsonl").write_bytes(payload)
+
+    with pytest.raises(ManifestCatalogError, match=message):
+        load_manifest_catalog(tmp_path)
+
+
+def test_catalog_materialization_is_atomic_and_noop_preserves_mtimes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts.rki_pipeline import manifests
+
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+    first = manifests.materialize_manifest_catalog(_build(), temp_root=tmp_path, ledger=ledger)
+    before = {
+        path.relative_to(first.root).as_posix(): path.stat().st_mtime_ns
+        for path in first.root.rglob("*")
+        if path.is_file()
+    }
+    assert first.changed is True
+    assert len(ledger.events) == 5
+    assert {event.kind for event in ledger.events} == {EffectKind.TEMP_FILE}
+
+    noop_ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+    second = manifests.materialize_manifest_catalog(
+        _build(), temp_root=tmp_path, ledger=noop_ledger
+    )
+    after = {
+        path.relative_to(second.root).as_posix(): path.stat().st_mtime_ns
+        for path in second.root.rglob("*")
+        if path.is_file()
+    }
+    assert second.changed is False
+    assert noop_ledger.events == []
+    assert after == before
+
+    original = {path: (first.root / path).read_bytes() for path, _ in first.rendered.files}
+    pdf_reference, markdown_reference = _storage()
+    pdf_reference["bytes"] += 1
+    changed = _build(storage=(pdf_reference, markdown_reference))
+    real_write = manifests._write_stage_file
+    calls = 0
+
+    def fail_third_write(stage, relative, payload):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise OSError("synthetic stage failure")
+        return real_write(stage, relative, payload)
+
+    monkeypatch.setattr(manifests, "_write_stage_file", fail_third_write)
+    failed_ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+    with pytest.raises(OSError, match="synthetic stage failure"):
+        manifests.materialize_manifest_catalog(
+            changed,
+            temp_root=tmp_path,
+            ledger=failed_ledger,
+        )
+    assert failed_ledger.events == []
+    assert {path: (first.root / path).read_bytes() for path, _ in first.rendered.files} == original
+
+
+def test_offline_manifest_fixture_is_valid() -> None:
+    from scripts.validate_manifests import validate
+
+    validate(Path(__file__).parent / "fixtures" / "manifests")
