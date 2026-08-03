@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
 from importlib import import_module
+from pathlib import Path
 
 import pytest
 
@@ -189,3 +190,134 @@ def test_quality_rejects_non_positive_expected_page_count() -> None:
 
     with pytest.raises(ValueError, match="positiv"):
         quality.assess_quality(("text",), expected_page_count=0)
+
+
+class _PdftotextRunner:
+    def __init__(self, output: bytes, *, drift: bool = False) -> None:
+        self.output = output
+        self.drift = drift
+        self.calls: list[tuple[str | Path, tuple[str, ...], Path]] = []
+
+    def run(self, executable, arguments, *, cwd, limits):
+        validation = import_module("scripts.rki_pipeline.pdf_validation")
+        self.calls.append((executable, arguments, cwd))
+        if arguments == ("-v",):
+            return validation.ProcessResult(
+                argv=("/usr/bin/pdftotext", "-v"),
+                executable_sha256="d" * 64,
+                returncode=0,
+                stdout=b"",
+                stderr=b"pdftotext version 26.01.0\n",
+            )
+        return validation.ProcessResult(
+            argv=("/usr/bin/pdftotext", *arguments),
+            executable_sha256=("e" if self.drift else "d") * 64,
+            returncode=0,
+            stdout=self.output,
+            stderr=b"",
+        )
+
+
+def test_pdftotext_uses_fixed_argv_and_exact_page_markers(tmp_path: Path) -> None:
+    pdftotext = import_module("scripts.rki_pipeline.conversion.pdftotext")
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"unused by injected runner")
+    runner = _PdftotextRunner(b"First page\n\fSecond page\n\f")
+
+    result = pdftotext.extract_text(
+        source,
+        workdir=tmp_path,
+        expected_page_count=2,
+        runner=runner,
+    )
+
+    assert result.pages == ("First page\n", "Second page\n")
+    assert result.markdown == (
+        "<!-- rki-page: 1 -->\nFirst page\n\n"
+        "<!-- rki-page: 2 -->\nSecond page\n"
+    )
+    assert runner.calls == [
+        ("pdftotext", ("-v",), tmp_path),
+        (
+            "pdftotext",
+            (
+                "-layout",
+                "-enc",
+                "UTF-8",
+                "-eol",
+                "unix",
+                source.as_posix(),
+                "-",
+            ),
+            tmp_path,
+        ),
+    ]
+    assert result.tool.argv == (
+        "pdftotext",
+        "-layout",
+        "-enc",
+        "UTF-8",
+        "-eol",
+        "unix",
+        "$INPUT",
+        "-",
+    )
+    assert result.tool.version_output == "pdftotext version 26.01.0"
+
+
+@pytest.mark.parametrize(
+    "output",
+    (
+        b"one page only\f",
+        b"first\fsecond",
+        b"first\fsecond\fextra\f",
+        b"first\xff\fsecond\f",
+    ),
+)
+def test_pdftotext_rejects_page_or_encoding_drift(
+    tmp_path: Path,
+    output: bytes,
+) -> None:
+    pdftotext = import_module("scripts.rki_pipeline.conversion.pdftotext")
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"unused")
+
+    with pytest.raises(pdftotext.TextExtractionError):
+        pdftotext.extract_text(
+            source,
+            workdir=tmp_path,
+            expected_page_count=2,
+            runner=_PdftotextRunner(output),
+        )
+
+
+def test_pdftotext_preserves_empty_pages_for_quality_gate(tmp_path: Path) -> None:
+    pdftotext = import_module("scripts.rki_pipeline.conversion.pdftotext")
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"unused")
+
+    result = pdftotext.extract_text(
+        source,
+        workdir=tmp_path,
+        expected_page_count=2,
+        runner=_PdftotextRunner(b"\f\f"),
+    )
+
+    assert result.pages == ("", "")
+    assert result.markdown.count("<!-- rki-page:") == 2
+
+
+def test_pdftotext_rejects_executable_drift_between_version_and_run(
+    tmp_path: Path,
+) -> None:
+    pdftotext = import_module("scripts.rki_pipeline.conversion.pdftotext")
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"unused")
+
+    with pytest.raises(pdftotext.TextExtractionError, match="Executable"):
+        pdftotext.extract_text(
+            source,
+            workdir=tmp_path,
+            expected_page_count=1,
+            runner=_PdftotextRunner(b"text\f", drift=True),
+        )
