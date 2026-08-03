@@ -277,6 +277,42 @@ def test_storage_reference_cannot_mark_missing_authorization_as_current() -> Non
 
 
 @pytest.mark.parametrize(
+    ("source_id", "source_sha256", "decision_sha256"),
+    (
+        (SOURCE_ID, None, None),
+        (None, SOURCE_SHA256, None),
+        (None, None, DECISION_SHA256),
+        (SOURCE_ID, SOURCE_SHA256, None),
+        (SOURCE_ID, None, DECISION_SHA256),
+        (None, SOURCE_SHA256, DECISION_SHA256),
+    ),
+)
+def test_legacy_storage_reference_rejects_partial_authorization_provenance(
+    source_id: str | None,
+    source_sha256: str | None,
+    decision_sha256: str | None,
+) -> None:
+    with pytest.raises(ValueError, match="Provenienz|gemeinsam|vollständig"):
+        StorageReference(
+            artifact_id="artifact-1",
+            relative_path="rki/Bulletins/Jahre/1994/a.pdf",
+            storage_backend=StorageBackend.LFS,
+            storage_object_id="sha256:" + "a" * 64,
+            sha256="a" * 64,
+            size=12,
+            source_id=source_id,
+            source_sha256=source_sha256,
+            document_id=None,
+            conversion_id=None,
+            decision_sha256=decision_sha256,
+            provenance_state="legacy_needs_review",
+            visibility="repository_authorized",
+            rights_state="unknown",
+            public_reference=None,
+        )
+
+
+@pytest.mark.parametrize(
     ("source_id", "document_id"),
     (
         ("rki:176904/99999.2", DOCUMENT_ID),

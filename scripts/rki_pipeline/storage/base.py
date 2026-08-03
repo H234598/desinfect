@@ -81,6 +81,15 @@ def _validate_authorization_provenance(
     decision_sha256: str | None,
     required: bool,
 ) -> None:
+    if not required:
+        present = sum(
+            value is not None
+            for value in (source_id, source_sha256, decision_sha256)
+        )
+        if present not in {0, 3}:
+            raise ValueError(
+                "Legacy-Provenienz muss vollständig gesetzt oder vollständig leer sein"
+            )
     if source_id is None:
         if required:
             raise ValueError("source_id fehlt für current-Provenienz")
