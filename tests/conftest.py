@@ -7,9 +7,36 @@ import os
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scripts.rki_pipeline import rights
 from scripts.rki_pipeline.storage.base import RightsStorageAuthorizer
+
+
+def _write_rights_register(
+    path: Path,
+    *decisions: tuple[str, str, str],
+) -> None:
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "decisions": [
+                    {
+                        "source_id": source_id,
+                        "source_sha256": source_sha256,
+                        "state": state,
+                        "basis": "Reviewed RKI reuse terms",
+                        "reviewed_by": "Legal Reviewer",
+                        "reviewed_at": "2026-08-03T08:00:00Z",
+                    }
+                    for source_id, source_sha256, state in decisions
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
 
 
 @dataclass(frozen=True)
@@ -21,20 +48,7 @@ class StorageRightsHarness:
         self,
         *decisions: tuple[str, str, str],
     ) -> dict[tuple[str, str], str]:
-        entries = "".join(
-            f'''  - source_id: "{source_id}"
-    source_sha256: "{source_sha256}"
-    state: "{state}"
-    basis: "Reviewed RKI reuse terms"
-    reviewed_by: "Legal Reviewer"
-    reviewed_at: "2026-08-03T08:00:00Z"
-'''
-            for source_id, source_sha256, state in decisions
-        )
-        self.register_path.write_text(
-            "schema_version: 1\ndecisions:\n" + (entries or "  []\n"),
-            encoding="utf-8",
-        )
+        _write_rights_register(self.register_path, *decisions)
         register = rights.load_rights_register(self.register_path)
         return {
             (decision.source_id, decision.source_sha256): decision.decision_sha256
@@ -49,16 +63,9 @@ def storage_rights(
     monkeypatch: pytest.MonkeyPatch,
 ) -> StorageRightsHarness:
     register_path = tmp_path / "storage-rights-register.yml"
-    register_path.write_text(
-        "schema_version: 1\n"
-        "decisions:\n"
-        '  - source_id: "rki:176904/12345.2"\n'
-        f'    source_sha256: "{"b" * 64}"\n'
-        '    state: "approved"\n'
-        '    basis: "Reviewed RKI reuse terms"\n'
-        '    reviewed_by: "Legal Reviewer"\n'
-        '    reviewed_at: "2026-08-03T08:00:00Z"\n',
-        encoding="utf-8",
+    _write_rights_register(
+        register_path,
+        ("rki:176904/12345.2", "b" * 64, "approved"),
     )
     monkeypatch.setattr(rights, "DEFAULT_REGISTER_PATH", register_path)
     return StorageRightsHarness(

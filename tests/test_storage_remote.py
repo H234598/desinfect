@@ -547,18 +547,18 @@ def test_remote_constructors_reject_structural_authorizer(
     )
     for authorizer in invalid_authorizers:
         constructors = (
-            lambda: RemoteStorageAdapter(
+            lambda authorizer=authorizer: RemoteStorageAdapter(
                 client=client,
                 prefix="rki/Bulletins",
                 object_prefix="remote:test",
                 authorizer=authorizer,
             ),
-            lambda: ReleaseStorageAdapter(
+            lambda authorizer=authorizer: ReleaseStorageAdapter(
                 ReleaseConfig("desinfect-archive", "rki/Bulletins"),
                 client,
                 authorizer,
             ),
-            lambda: ObjectStorageAdapter(
+            lambda authorizer=authorizer: ObjectStorageAdapter(
                 ObjectConfig("desinfect", "rki/Bulletins"),
                 client,
                 authorizer,
@@ -708,11 +708,12 @@ def test_remote_intra_call_revocation_blocks_next_payload_effect(
             return payload
 
         monkeypatch.setattr(remote_storage, "read_verified_payload", read_then_revoke)
-        action = lambda: adapter.materialize(
-            source_intent,
-            temp_root=destination,
-            ledger=ledger,
-        )
+        def action():
+            return adapter.materialize(
+                source_intent,
+                temp_root=destination,
+                ledger=ledger,
+            )
     elif operation == "export-before-get":
         original = remote_storage.NamedTemporaryFile
 
@@ -726,24 +727,28 @@ def test_remote_intra_call_revocation_blocks_next_payload_effect(
             "NamedTemporaryFile",
             create_part_then_revoke,
         )
-        action = lambda: adapter.export(
-            reference,
-            temp_root=destination,
-            ledger=ledger,
-        )
+        def action():
+            return adapter.export(
+                reference,
+                temp_root=destination,
+                ledger=ledger,
+            )
     elif operation == "export-before-write":
         client.get_hook = revoke
-        action = lambda: adapter.export(
-            reference,
-            temp_root=destination,
-            ledger=ledger,
-        )
+        def action():
+            return adapter.export(
+                reference,
+                temp_root=destination,
+                ledger=ledger,
+            )
     elif operation == "apply":
         client.head_hook = revoke
-        action = lambda: adapter.apply(prepared, ledger=ledger)
+        def action():
+            return adapter.apply(prepared, ledger=ledger)
     elif operation == "verify":
         client.head_hook = revoke
-        action = lambda: adapter.verify(reference)
+        def action():
+            return adapter.verify(reference)
     else:
         head_calls = 0
 
@@ -754,7 +759,8 @@ def test_remote_intra_call_revocation_blocks_next_payload_effect(
                 revoke()
 
         client.head_hook = revoke_on_verify_head
-        action = lambda: adapter.apply(prepared, ledger=ledger)
+        def action():
+            return adapter.apply(prepared, ledger=ledger)
 
     with pytest.raises(StorageError, match="Rechte|autorisiert"):
         action()
@@ -778,9 +784,10 @@ def test_remote_apply_rolls_back_its_upload_when_rights_are_revoked_during_put(
         ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=prepared_root),
     )
     ledger = EffectLedger(RunMode.APPLY)
-    client.put_hook = lambda: storage_rights.set_decisions(
-        (SOURCE_ID, SOURCE_SHA256, "takedown")
-    )
+    def revoke_during_put() -> None:
+        storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))
+
+    client.put_hook = revoke_during_put
 
     with pytest.raises(StorageError, match="Rechte|autorisiert"):
         adapter.apply(prepared, ledger=ledger)
@@ -897,9 +904,10 @@ def test_remote_apply_reauthorizes_before_prepared_snapshot(
         "_snapshot_prepared",
         staticmethod(mark_snapshot_entry),
     )
-    client.head_hook = lambda: storage_rights.set_decisions(
-        (SOURCE_ID, SOURCE_SHA256, "takedown")
-    )
+    def revoke_before_snapshot() -> None:
+        storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))
+
+    client.head_hook = revoke_before_snapshot
 
     with pytest.raises(StorageError, match="Rechte|autorisiert"):
         adapter.apply(prepared, ledger=ledger)

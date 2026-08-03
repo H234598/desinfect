@@ -565,11 +565,12 @@ def test_lfs_intra_call_revocation_blocks_next_payload_effect(
             return payload
 
         monkeypatch.setattr(lfs_storage, "read_verified_payload", read_then_revoke)
-        action = lambda: adapter.materialize(
-            source_intent,
-            temp_root=destination,
-            ledger=ledger,
-        )
+        def action():
+            return adapter.materialize(
+                source_intent,
+                temp_root=destination,
+                ledger=ledger,
+            )
     elif operation == "export":
         original = lfs_storage.read_verified_payload
 
@@ -579,11 +580,12 @@ def test_lfs_intra_call_revocation_blocks_next_payload_effect(
             return result
 
         monkeypatch.setattr(lfs_storage, "read_verified_payload", read_then_revoke)
-        action = lambda: adapter.export(
-            reference,
-            temp_root=destination,
-            ledger=ledger,
-        )
+        def action():
+            return adapter.export(
+                reference,
+                temp_root=destination,
+                ledger=ledger,
+            )
     elif operation == "apply":
         original = LfsStorageAdapter._prepared_payload
 
@@ -597,7 +599,8 @@ def test_lfs_intra_call_revocation_blocks_next_payload_effect(
             "_prepared_payload",
             staticmethod(read_prepared_then_revoke),
         )
-        action = lambda: adapter.apply(prepared, ledger=ledger)
+        def action():
+            return adapter.apply(prepared, ledger=ledger)
     elif operation == "verify":
         original = LfsStorageAdapter._validated_source
 
@@ -607,7 +610,8 @@ def test_lfs_intra_call_revocation_blocks_next_payload_effect(
             return result
 
         monkeypatch.setattr(LfsStorageAdapter, "_validated_source", validate_then_revoke)
-        action = lambda: adapter.verify(reference)
+        def action():
+            return adapter.verify(reference)
     else:
         original = LfsStorageAdapter.reference_for_path
 
@@ -621,7 +625,8 @@ def test_lfs_intra_call_revocation_blocks_next_payload_effect(
             "reference_for_path",
             reference_then_revoke,
         )
-        action = lambda: adapter.apply(prepared, ledger=ledger)
+        def action():
+            return adapter.apply(prepared, ledger=ledger)
 
     with pytest.raises(StorageError, match="Rechte|autorisiert"):
         action()

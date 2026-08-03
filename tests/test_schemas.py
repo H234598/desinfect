@@ -145,7 +145,7 @@ def test_storage_reference_schema_rejects_document_outside_source_version(
         payload["decision_sha256"] = None
         payload["provenance_state"] = "legacy_needs_review"
 
-    with pytest.raises(SchemaContractError, match="source_id.*document_id"):
+    with pytest.raises(SchemaContractError, match=r"source_id.*document_id"):
         validate_document("storage-reference", payload)
 
 
