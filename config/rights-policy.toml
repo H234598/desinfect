@@ -1,0 +1,9 @@
+schema_version = 1
+default_state = "metadata_only"
+
+[fulltext_visibility]
+approved = ["public", "repository_authorized", "internal", "restricted"]
+internal_only = ["internal", "restricted"]
+metadata_only = []
+unknown = []
+takedown = []

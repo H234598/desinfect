@@ -18,6 +18,7 @@ def test_validator_scripts_run_by_path() -> None:
         "scripts/validate_p01_foundation.py",
         "scripts/validate_p02_contracts.py",
         "scripts/validate_p03_grabber.py",
+        "scripts/validate_rights_register.py",
     ):
         completed = subprocess.run(
             [sys.executable, relative],
