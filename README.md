@@ -20,7 +20,7 @@
 > [!important]
 > **ADR-003 = A** und **ADR-014 = B** sind verbindliche, automatisiert geprüfte Architekturentscheidungen.
 
-## Governance- und P01–P04-Baseline prüfen
+## Governance- und P01–P05-Baseline prüfen
 
 ```bash
 python3 scripts/validate_all_baseline.py
@@ -28,6 +28,7 @@ python3 scripts/validate_p01_foundation.py
 python3 scripts/validate_p02_contracts.py
 python3 scripts/validate_p03_grabber.py
 python3 scripts/validate_p04_storage.py
+python3 scripts/validate_p05_dispatcher.py
 python3 -m scripts.rki_pipeline.runtime_status_cli --help
 python3 -m scripts.rki_grabber.rki_epidbull_grabber --help
 python3 -m scripts.rki_pipeline.storage_cli --help
@@ -44,5 +45,7 @@ P02 ergänzt zwölf strikte Draft-2020-12-Datenverträge, eine deterministische 
 P03 bewahrt die fachliche Grabberbasis, trennt Parser, HTTP, Download und Orchestrierung, führt eine gemeinsame importierbare API/CLI sowie den strikten `grabber-result`-Vertrag ein und härtet die RKI-Trust-Boundary. P03 startet keinen echten RKI-Abruf.
 
 P04 trennt `plan|materialize|apply`, überwacht Repository-/Index-/Status- und TempRoot-Effekte, führt ein echtes `lfs|release|object` Storage Protocol, Git-LFS-Objekt-/Budgetgates und eine idempotente, nicht destruktive Backendmigration ein. Remoteadapter bleiben in P04 hinter injizierten Offline-Ports.
+
+P05 führt einen täglichen UTC-Dispatcher mit begrenztem Catch-up und einen manuellen Backfill ein. Alle fälligen Aufgaben durchlaufen eine gemeinsame Transaktion und Validierung; nur eine tatsächliche, geprüfte Änderung erzeugt höchstens einen Commit über die repository-begrenzte GitHub App `Wachhund`. Einrichtung und Betrieb beschreiben [Automatische Schreibpfade](docs/Wartung/Automatische-Schreibpfade.md) sowie [Status und Recovery](docs/Wartung/Status-und-Recovery.md).
 
 Ein Arbeitspaket wird erst nach Merge, grüner CI, aufgelösten Reviewthreads und vollständiger Evidenz als `umgesetzt` geführt.

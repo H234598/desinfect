@@ -39,4 +39,12 @@
 - Migrationen klassifizieren `copy|unchanged|conflict`, materialisieren ausschließlich unter `temp_root`, veröffentlichen nur in `apply`, verifizieren jedes Ziel und löschen niemals automatisch Quellobjekte.
 - Die Wahl des Backends ändert keinen Rechtezustand. **ADR-003=A** bleibt maßgeblich; **ADR-014=B** hält Analyse- und öffentliche Spiegelvollständigkeit getrennt.
 
+## P05-Dispatcher- und Writer-Grenzen
+
+- Dispatcher, Backfill und wiederverwendbare Pipeline starten mit `Contents: read`; Checkouts persistieren keine Credentials.
+- Schreibzugriff stammt ausschließlich von der GitHub App `Wachhund`. Sie benötigt `Contents: Read and write`, ist nur auf `H234598/desinfect` installiert und wird über `WACHHUND_APP_CLIENT_ID` sowie `WACHHUND_APP_PRIVATE_KEY` angesprochen.
+- Das repository-begrenzte Installationstoken entsteht erst nach Transaktion und globaler Validierung und nur bei einer tatsächlichen Änderung. Es gibt keinen write-fähigen `GITHUB_TOKEN`-Fallback.
+- Alle Writer teilen die nicht abbrechende Concurrency-Gruppe `desinfect-repository-writer`. Ein geänderter `main`-Stand blockiert den Push; Force-Push und Teilcommits bleiben verboten.
+- Eine Transaktion umfasst alle fälligen Aufgaben, genau eine globale Validierung und höchstens einen Commit. No-op-Läufe erzeugen keinen Commit.
+
 Sicherheitsrelevante Funde sollen nicht in öffentlichen Issues mit Secrets oder ungekürzten sensitiven Daten veröffentlicht werden. Der konkrete private Meldeweg wird in P11.3 zusammen mit der vollständigen Supply-Chain-Policy festgelegt.
