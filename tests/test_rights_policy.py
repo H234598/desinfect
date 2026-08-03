@@ -71,12 +71,14 @@ def test_rights_policy_exposes_stable_api() -> None:
 
     expected = {
         "PublicationPolicy",
+        "RightsAuthority",
         "RightsDecision",
         "RightsPolicy",
         "RightsPolicyError",
         "RightsRegister",
         "RightsState",
         "evaluate_rights",
+        "load_rights_authority",
         "load_rights_policy",
         "load_rights_register",
         "publication_policy",
@@ -219,6 +221,44 @@ def test_rights_register_constructor_rejects_duplicate_or_unsorted_entries(
         rights.RightsRegister(schema_version=1, entries=tuple(reversed(entries)))
 
 
+def test_rights_authority_constructor_is_private(tmp_path: Path) -> None:
+    """Only the loader may mint a publication authority capability."""
+
+    register_path = write_register(tmp_path)
+
+    with pytest.raises(rights.RightsPolicyError, match="Fabrik"):
+        rights.RightsAuthority(register_path)
+
+
+def test_loaded_authority_reloads_register_for_every_publication(
+    tmp_path: Path,
+) -> None:
+    """A reviewed decision removed on disk must stop authorizing immediately."""
+
+    policy = rights.load_rights_policy(write_policy(tmp_path))
+    register_path = write_register(tmp_path, decision_yaml("approved"))
+    authority = rights.load_rights_authority(register_path)
+
+    allowed = rights.publication_policy(
+        SOURCE_ID,
+        SOURCE_SHA256,
+        authority=authority,
+        visibility="public",
+        policy=policy,
+    )
+    assert allowed.payload_allowed is True
+
+    write_register(tmp_path)
+    denied = rights.publication_policy(
+        SOURCE_ID,
+        SOURCE_SHA256,
+        authority=authority,
+        visibility="public",
+        policy=policy,
+    )
+    assert denied.payload_allowed is False
+
+
 def test_lookup_requires_exact_source_id_and_sha256(tmp_path: Path) -> None:
     """Catch source-only or hash-only authorization wildcards."""
 
@@ -346,7 +386,7 @@ def test_publication_policy_uses_fixed_visibility_matrix(
     policy = rights.load_rights_policy(write_policy(tmp_path))
     reviewer = None if state == "metadata_only" else "Legal Reviewer"
     reviewed_at = None if state == "metadata_only" else "2026-08-03T08:00:00Z"
-    register = rights.load_rights_register(
+    authority = rights.load_rights_authority(
         write_register(
             tmp_path,
             decision_yaml(
@@ -359,7 +399,7 @@ def test_publication_policy_uses_fixed_visibility_matrix(
     result = rights.publication_policy(
         SOURCE_ID,
         SOURCE_SHA256,
-        register=register,
+        authority=authority,
         visibility=visibility,
         policy=policy,
     )
@@ -376,13 +416,13 @@ def test_takedown_filters_mirror_references_but_keeps_origin_metadata(
     """Catch stale mirrored download references after a takedown decision."""
 
     policy = rights.load_rights_policy(write_policy(tmp_path))
-    register = rights.load_rights_register(
+    authority = rights.load_rights_authority(
         write_register(tmp_path, decision_yaml("takedown"))
     )
     result = rights.publication_policy(
         SOURCE_ID,
         SOURCE_SHA256,
-        register=register,
+        authority=authority,
         visibility="public",
         policy=policy,
     )
@@ -411,33 +451,45 @@ def test_publication_policy_rejects_forged_visibility_matrix(tmp_path: Path) -> 
 def test_forged_constructed_register_cannot_authorize_payload(
     tmp_path: Path,
 ) -> None:
-    """A plausible but noncanonical decision hash must not create authority."""
+    """Fully canonical raw register data still lacks publication authority."""
 
     policy = rights.load_rights_policy(write_policy(tmp_path))
-    with pytest.raises(rights.RightsPolicyError, match="decision_sha256"):
-        forged = rights.RightsDecision(
-            source_id=SOURCE_ID,
-            source_sha256=SOURCE_SHA256,
-            state=rights.RightsState.APPROVED,
-            basis="caller assertion",
-            reviewed_by="Caller",
-            reviewed_at="2026-08-03T08:00:00Z",
-            decision_sha256="f" * 64,
-        )
-        forged_register = rights.RightsRegister(schema_version=1, entries=(forged,))
+    decision = rights.RightsDecision(
+        source_id=SOURCE_ID,
+        source_sha256=SOURCE_SHA256,
+        state=rights.RightsState.APPROVED,
+        basis="Reviewed RKI reuse terms",
+        reviewed_by="Legal Reviewer",
+        reviewed_at="2026-08-03T08:00:00Z",
+        decision_sha256=(
+            "fb219e48920e18781b8a7f8735fb8fb06bf915d4c1b276c2ea8f5e201c02d982"
+        ),
+    )
+    constructed_register = rights.RightsRegister(
+        schema_version=1,
+        entries=(decision,),
+    )
+    assert rights.evaluate_rights(
+        SOURCE_ID,
+        SOURCE_SHA256,
+        register=constructed_register,
+        policy=policy,
+    ).state is rights.RightsState.APPROVED
+
+    with pytest.raises(rights.RightsPolicyError, match="Authority"):
         rights.publication_policy(
             SOURCE_ID,
             SOURCE_SHA256,
-            register=forged_register,
+            authority=constructed_register,
             visibility="public",
             policy=policy,
         )
 
-    register = rights.load_rights_register(write_register(tmp_path))
+    authority = rights.load_rights_authority(write_register(tmp_path))
     result = rights.publication_policy(
         SOURCE_ID,
         SOURCE_SHA256,
-        register=register,
+        authority=authority,
         visibility="public",
         policy=policy,
     )

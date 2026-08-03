@@ -28,6 +28,7 @@ _INTERNAL_VISIBILITIES = ("internal", "restricted")
 _ENTRY_KEYS = frozenset(
     {"source_id", "source_sha256", "state", "basis", "reviewed_by", "reviewed_at"}
 )
+_AUTHORITY_TOKEN = object()
 
 
 class RightsPolicyError(ValueError):
@@ -93,6 +94,27 @@ class RightsRegister:
         """Reject mutable, duplicated, or noncanonical authority entries."""
 
         _validate_register_instance(self)
+
+
+@dataclass(frozen=True, slots=True, repr=False, init=False)
+class RightsAuthority:
+    """Opaque capability minted only from a validated register source."""
+
+    _register_source: Path
+    _token: object
+
+    def __init__(
+        self,
+        register_source: Path,
+        *,
+        _token: object | None = None,
+    ) -> None:
+        if _token is not _AUTHORITY_TOKEN:
+            raise RightsPolicyError(
+                "RightsAuthority kann nur durch die Loader-Fabrik erzeugt werden"
+            )
+        object.__setattr__(self, "_register_source", register_source)
+        object.__setattr__(self, "_token", _token)
 
 
 @dataclass(frozen=True, slots=True)
@@ -417,6 +439,16 @@ def load_rights_register(path: Path = DEFAULT_REGISTER_PATH) -> RightsRegister:
     return RightsRegister(schema_version=1, entries=tuple(entries))
 
 
+def load_rights_authority(
+    path: Path = DEFAULT_REGISTER_PATH,
+) -> RightsAuthority:
+    """Validate a register source and mint an opaque reloadable capability."""
+
+    register_source = Path(path).absolute()
+    load_rights_register(register_source)
+    return RightsAuthority(register_source, _token=_AUTHORITY_TOKEN)
+
+
 def evaluate_rights(
     source_id: str,
     source_sha256: str,
@@ -470,11 +502,21 @@ def _validate_policy_instance(policy: RightsPolicy) -> None:
         raise RightsPolicyError("Rechtepolicy-Version oder -Matrix ist nicht fail-closed")
 
 
+def _validate_authority_instance(authority: RightsAuthority) -> None:
+    if (
+        type(authority) is not RightsAuthority
+        or authority._token is not _AUTHORITY_TOKEN
+        or not isinstance(authority._register_source, Path)
+        or not authority._register_source.is_absolute()
+    ):
+        raise RightsPolicyError("RightsAuthority ist keine geladene Authority-Capability")
+
+
 def publication_policy(
     source_id: str,
     source_sha256: str,
     *,
-    register: RightsRegister,
+    authority: RightsAuthority,
     visibility: str,
     policy: RightsPolicy,
 ) -> PublicationPolicy:
@@ -483,10 +525,11 @@ def publication_policy(
     _validate_policy_instance(policy)
     if visibility not in _VISIBILITIES:
         raise RightsPolicyError(f"Unbekannte Sichtbarkeit: {visibility!r}")
+    _validate_authority_instance(authority)
     decision = evaluate_rights(
         source_id,
         source_sha256,
-        register=register,
+        register=load_rights_register(authority._register_source),
         policy=policy,
     )
     allowed = (
@@ -506,12 +549,14 @@ def publication_policy(
 
 __all__ = [
     "PublicationPolicy",
+    "RightsAuthority",
     "RightsDecision",
     "RightsPolicy",
     "RightsPolicyError",
     "RightsRegister",
     "RightsState",
     "evaluate_rights",
+    "load_rights_authority",
     "load_rights_policy",
     "load_rights_register",
     "publication_policy",
