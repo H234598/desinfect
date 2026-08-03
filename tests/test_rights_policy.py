@@ -84,6 +84,83 @@ def test_rights_policy_exposes_stable_api() -> None:
     assert expected <= set(rights.__dict__)
 
 
+@pytest.mark.parametrize(
+    "override",
+    (
+        {"schema_version": True},
+        {"default_state": "metadata_only"},
+        {
+            "approved_visibilities": [
+                "public",
+                "repository_authorized",
+                "internal",
+                "restricted",
+            ]
+        },
+        {"internal_only_visibilities": ("public", "internal", "restricted")},
+    ),
+)
+def test_rights_policy_constructor_rejects_noncanonical_fields(
+    override: dict[str, object],
+) -> None:
+    """Direct construction must not bypass exact policy types or matrix."""
+
+    values: dict[str, object] = {
+        "schema_version": 1,
+        "default_state": rights.RightsState.METADATA_ONLY,
+        "approved_visibilities": (
+            "public",
+            "repository_authorized",
+            "internal",
+            "restricted",
+        ),
+        "internal_only_visibilities": ("internal", "restricted"),
+    }
+    values.update(override)
+
+    with pytest.raises(rights.RightsPolicyError):
+        rights.RightsPolicy(**values)
+
+
+@pytest.mark.parametrize(
+    ("override", "error"),
+    (
+        ({"source_id": 123}, "source_id"),
+        ({"source_id": "rki:176904/12345.1"}, "source_id"),
+        ({"source_sha256": "A" * 64}, "source_sha256"),
+        ({"state": "approved"}, "state"),
+        ({"state": rights.RightsState.UNKNOWN}, "state"),
+        ({"basis": " "}, "basis"),
+        ({"reviewed_by": 123}, "reviewed_by"),
+        ({"reviewed_by": " Legal Reviewer "}, "reviewed_by"),
+        ({"reviewed_at": "2026-08-03T08:00:00+00:00"}, "reviewed_at"),
+        ({"decision_sha256": "bad"}, "decision_sha256"),
+        ({"decision_sha256": "f" * 64}, "decision_sha256"),
+    ),
+)
+def test_rights_decision_constructor_rejects_noncanonical_fields(
+    override: dict[str, object],
+    error: str,
+) -> None:
+    """Direct decisions require canonical identity, review, and recomputed hash."""
+
+    values: dict[str, object] = {
+        "source_id": SOURCE_ID,
+        "source_sha256": SOURCE_SHA256,
+        "state": rights.RightsState.APPROVED,
+        "basis": "Reviewed RKI reuse terms",
+        "reviewed_by": "Legal Reviewer",
+        "reviewed_at": "2026-08-03T08:00:00Z",
+        "decision_sha256": (
+            "fb219e48920e18781b8a7f8735fb8fb06bf915d4c1b276c2ea8f5e201c02d982"
+        ),
+    }
+    values.update(override)
+
+    with pytest.raises(rights.RightsPolicyError, match=error):
+        rights.RightsDecision(**values)
+
+
 def test_empty_register_defaults_exact_source_to_metadata_only(tmp_path: Path) -> None:
     """Catch any fallback that invents payload authorization from raw metadata."""
 
@@ -106,6 +183,40 @@ def test_empty_register_defaults_exact_source_to_metadata_only(tmp_path: Path) -
         reviewed_at=None,
         decision_sha256=None,
     )
+
+
+def test_rights_register_constructor_requires_exact_types(tmp_path: Path) -> None:
+    """Direct register construction rejects bool versions and mutable entries."""
+
+    entry = rights.load_rights_register(
+        write_register(tmp_path, decision_yaml("approved"))
+    ).entries[0]
+
+    with pytest.raises(rights.RightsPolicyError):
+        rights.RightsRegister(schema_version=True, entries=(entry,))
+    with pytest.raises(rights.RightsPolicyError):
+        rights.RightsRegister(schema_version=1, entries=[entry])
+    with pytest.raises(rights.RightsPolicyError):
+        rights.RightsRegister(schema_version=1, entries=("invalid",))
+
+
+def test_rights_register_constructor_rejects_duplicate_or_unsorted_entries(
+    tmp_path: Path,
+) -> None:
+    """Register lookup order is canonical and every source tuple is unique."""
+
+    entries = rights.load_rights_register(
+        write_register(
+            tmp_path,
+            decision_yaml("approved", source_id="rki:176904/12345")
+            + decision_yaml("approved", source_id="rki:176904/12346"),
+        )
+    ).entries
+
+    with pytest.raises(rights.RightsPolicyError, match="doppelt"):
+        rights.RightsRegister(schema_version=1, entries=(entries[0], entries[0]))
+    with pytest.raises(rights.RightsPolicyError, match="sortiert"):
+        rights.RightsRegister(schema_version=1, entries=tuple(reversed(entries)))
 
 
 def test_lookup_requires_exact_source_id_and_sha256(tmp_path: Path) -> None:
@@ -288,54 +399,44 @@ def test_publication_policy_rejects_forged_visibility_matrix(tmp_path: Path) -> 
     """Catch direct construction that broadens internal-only payload visibility."""
 
     policy = rights.load_rights_policy(write_policy(tmp_path))
-    forged = rights.RightsPolicy(
-        schema_version=policy.schema_version,
-        default_state=policy.default_state,
-        approved_visibilities=policy.approved_visibilities,
-        internal_only_visibilities=("public", "internal", "restricted"),
-    )
-    register = rights.load_rights_register(
-        write_register(tmp_path, decision_yaml("internal_only"))
-    )
-
     with pytest.raises(rights.RightsPolicyError, match="Matrix"):
-        rights.publication_policy(
-            SOURCE_ID,
-            SOURCE_SHA256,
-            register=register,
-            visibility="public",
-            policy=forged,
+        rights.RightsPolicy(
+            schema_version=policy.schema_version,
+            default_state=policy.default_state,
+            approved_visibilities=policy.approved_visibilities,
+            internal_only_visibilities=("public", "internal", "restricted"),
         )
 
 
-def test_publication_policy_cannot_accept_caller_forged_decision(
+def test_forged_constructed_register_cannot_authorize_payload(
     tmp_path: Path,
 ) -> None:
-    """Only register lookup for the exact source tuple may authorize payloads."""
+    """A plausible but noncanonical decision hash must not create authority."""
 
     policy = rights.load_rights_policy(write_policy(tmp_path))
-    register = rights.load_rights_register(write_register(tmp_path))
-    forged = rights.RightsDecision(
-        source_id=SOURCE_ID,
-        source_sha256=SOURCE_SHA256,
-        state=rights.RightsState.APPROVED,
-        basis="caller assertion",
-        reviewed_by="Caller",
-        reviewed_at="2026-08-03T08:00:00Z",
-        decision_sha256="f" * 64,
-    )
-
-    with pytest.raises(TypeError):
+    with pytest.raises(rights.RightsPolicyError, match="decision_sha256"):
+        forged = rights.RightsDecision(
+            source_id=SOURCE_ID,
+            source_sha256=SOURCE_SHA256,
+            state=rights.RightsState.APPROVED,
+            basis="caller assertion",
+            reviewed_by="Caller",
+            reviewed_at="2026-08-03T08:00:00Z",
+            decision_sha256="f" * 64,
+        )
+        forged_register = rights.RightsRegister(schema_version=1, entries=(forged,))
         rights.publication_policy(
-            forged,
-            register=register,
+            SOURCE_ID,
+            SOURCE_SHA256,
+            register=forged_register,
             visibility="public",
             policy=policy,
         )
 
+    register = rights.load_rights_register(write_register(tmp_path))
     result = rights.publication_policy(
-        forged.source_id,
-        forged.source_sha256,
+        SOURCE_ID,
+        SOURCE_SHA256,
         register=register,
         visibility="public",
         policy=policy,

@@ -152,11 +152,17 @@
     "rights": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["label", "uri", "copyright_notice"],
+      "required": ["label", "uri", "copyright_notice", "open_access"],
       "properties": {
         "label": {"$ref": "#/$defs/nullableString"},
         "uri": {"$ref": "#/$defs/nullableString"},
-        "copyright_notice": {"$ref": "#/$defs/nullableString"}
+        "copyright_notice": {"$ref": "#/$defs/nullableString"},
+        "open_access": {
+          "oneOf": [
+            {"type": "boolean"},
+            {"type": "null"}
+          ]
+        }
       }
     },
     "record": {

@@ -84,6 +84,28 @@ def _decision(
     )
 
 
+def _unchecked_decision(
+    decision: RightsDecision,
+    **overrides: object,
+) -> RightsDecision:
+    """Forge an invalid instance only to pressure-test downstream guards."""
+
+    values: dict[str, object] = {
+        "source_id": decision.source_id,
+        "source_sha256": decision.source_sha256,
+        "state": decision.state,
+        "basis": decision.basis,
+        "reviewed_by": decision.reviewed_by,
+        "reviewed_at": decision.reviewed_at,
+        "decision_sha256": decision.decision_sha256,
+    }
+    values.update(overrides)
+    forged = object.__new__(RightsDecision)
+    for name, value in values.items():
+        object.__setattr__(forged, name, value)
+    return forged
+
+
 def _source_manifest(record: ArtifactRecord, **kwargs: object) -> dict[str, object]:
     return build_source_manifest(record, rights_decision=_decision(record), **kwargs)
 
@@ -153,7 +175,9 @@ def test_source_manifest_maps_exact_reviewed_rights_decision() -> None:
         basis="Reviewed RKI reuse terms",
         reviewed_by="Legal Reviewer",
         reviewed_at="2026-08-03T08:00:00Z",
-        decision_sha256="f" * 64,
+        decision_sha256=(
+            "fb219e48920e18781b8a7f8735fb8fb06bf915d4c1b276c2ea8f5e201c02d982"
+        ),
     )
 
     source = build_source_manifest(record, rights_decision=decision)
@@ -164,14 +188,16 @@ def test_source_manifest_maps_exact_reviewed_rights_decision() -> None:
         "reviewed_at": "2026-08-03T08:00:00Z",
         "reviewed_by": "Legal Reviewer",
     }
-    assert source["decision_sha256"] == "f" * 64
+    assert source["decision_sha256"] == (
+        "fb219e48920e18781b8a7f8735fb8fb06bf915d4c1b276c2ea8f5e201c02d982"
+    )
 
 
 @pytest.mark.parametrize(
     "decision",
     (
-        replace(_decision(_record()), source_id="rki:176904/99999"),
-        replace(_decision(_record()), source_sha256="b" * 64),
+        _unchecked_decision(_decision(_record()), source_id="rki:176904/99999"),
+        _unchecked_decision(_decision(_record()), source_sha256="b" * 64),
     ),
 )
 def test_source_manifest_rejects_rights_decision_for_other_source_bytes(
@@ -187,8 +213,8 @@ def test_source_manifest_rejects_authorization_without_review_hash() -> None:
     """Caller-constructed approved state without provenance hash must not reach manifest."""
 
     record = _record()
-    decision = _decision(
-        record,
+    decision = _unchecked_decision(
+        _decision(record),
         state=RightsState.APPROVED,
         basis="Reviewed RKI reuse terms",
         reviewed_by="Legal Reviewer",
@@ -203,9 +229,11 @@ def test_source_manifest_rejects_authorization_without_review_hash() -> None:
 @pytest.mark.parametrize(
     "decision",
     (
-        replace(_decision(_record()), state=RightsState.UNKNOWN),
-        replace(_decision(_record()), basis=""),
-        replace(_decision(_record()), decision_sha256="not-a-sha256"),
+        _unchecked_decision(_decision(_record()), state=RightsState.UNKNOWN),
+        _unchecked_decision(_decision(_record()), basis=""),
+        _unchecked_decision(
+            _decision(_record()), decision_sha256="not-a-sha256"
+        ),
     ),
 )
 def test_source_manifest_rejects_noncanonical_decision_fields(
@@ -232,8 +260,8 @@ def test_source_manifest_requires_complete_review_for_restrictive_decisions(
     """Restrictive reviewed states still require full canonical provenance."""
 
     record = _record()
-    decision = _decision(
-        record,
+    decision = _unchecked_decision(
+        _decision(record),
         state=state,
         basis="Reviewed restriction",
         reviewed_by="Legal Reviewer",
@@ -244,7 +272,10 @@ def test_source_manifest_requires_complete_review_for_restrictive_decisions(
     with pytest.raises(ManifestBuildError, match="Rechteentscheidung"):
         build_source_manifest(
             record,
-            rights_decision=replace(decision, **{missing_field: None}),
+            rights_decision=_unchecked_decision(
+                decision,
+                **{missing_field: None},
+            ),
         )
 
 

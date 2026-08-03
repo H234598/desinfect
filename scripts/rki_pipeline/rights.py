@@ -21,6 +21,7 @@ MAX_POLICY_BYTES = 64 * 1024
 MAX_REGISTER_BYTES = 1024 * 1024
 _SOURCE_ID = re.compile(r"^rki:176904/[0-9]+(?:\.(?:[2-9]|[1-9][0-9]+))?$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_REVIEWED_AT = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 _VISIBILITIES = ("public", "repository_authorized", "internal", "restricted")
 _APPROVED_VISIBILITIES = _VISIBILITIES
 _INTERNAL_VISIBILITIES = ("internal", "restricted")
@@ -57,6 +58,11 @@ class RightsPolicy:
     approved_visibilities: tuple[str, ...]
     internal_only_visibilities: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        """Reject direct construction that bypasses the fixed policy contract."""
+
+        _validate_policy_instance(self)
+
 
 @dataclass(frozen=True, slots=True)
 class RightsDecision:
@@ -70,6 +76,11 @@ class RightsDecision:
     reviewed_at: str | None
     decision_sha256: str | None
 
+    def __post_init__(self) -> None:
+        """Validate exact identity, review provenance, and decision hash."""
+
+        _validate_decision_instance(self)
+
 
 @dataclass(frozen=True, slots=True)
 class RightsRegister:
@@ -77,6 +88,11 @@ class RightsRegister:
 
     schema_version: int
     entries: tuple[RightsDecision, ...]
+
+    def __post_init__(self) -> None:
+        """Reject mutable, duplicated, or noncanonical authority entries."""
+
+        _validate_register_instance(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,8 +238,8 @@ def _reviewed_at(value: object) -> str | None:
     reviewed_at = _optional_string(value, "reviewed_at", maximum=40)
     if reviewed_at is None:
         return None
-    if not reviewed_at.endswith("Z"):
-        raise RightsPolicyError("reviewed_at muss ein UTC-Zeitpunkt mit Z sein")
+    if _REVIEWED_AT.fullmatch(reviewed_at) is None:
+        raise RightsPolicyError("reviewed_at muss ein kanonischer UTC-Zeitpunkt sein")
     try:
         parsed = datetime.fromisoformat(reviewed_at[:-1] + "+00:00")
     except ValueError as exc:
@@ -253,6 +269,80 @@ def _decision_hash(
         "reviewed_at": reviewed_at,
     }
     return sha256_bytes(stable_json_dumps(payload).encode("utf-8"))
+
+
+def _validate_decision_instance(decision: RightsDecision) -> None:
+    if type(decision) is not RightsDecision:
+        raise RightsPolicyError("RightsDecision besitzt keinen exakten Typ")
+    if type(decision.source_id) is not str or _SOURCE_ID.fullmatch(decision.source_id) is None:
+        raise RightsPolicyError("source_id ist keine kanonische RKI-Quell-ID")
+    if (
+        type(decision.source_sha256) is not str
+        or _SHA256.fullmatch(decision.source_sha256) is None
+    ):
+        raise RightsPolicyError("source_sha256 muss ein kleingeschriebener SHA-256 sein")
+    if type(decision.state) is not RightsState or decision.state is RightsState.UNKNOWN:
+        raise RightsPolicyError("state ist keine kanonische effektive Rechteentscheidung")
+    basis = _required_string(decision.basis, "basis", maximum=1000)
+    if basis != basis.strip():
+        raise RightsPolicyError("basis muss kanonisch ohne Rand-Leerraum sein")
+    reviewed_by = _optional_string(decision.reviewed_by, "reviewed_by", maximum=200)
+    if reviewed_by is not None and reviewed_by != reviewed_by.strip():
+        raise RightsPolicyError("reviewed_by muss kanonisch ohne Rand-Leerraum sein")
+    reviewed_at = _reviewed_at(decision.reviewed_at)
+
+    synthetic_missing = (
+        decision.state is RightsState.METADATA_ONLY
+        and basis == "rights_register_no_match"
+        and reviewed_by is None
+        and reviewed_at is None
+        and decision.decision_sha256 is None
+    )
+    if synthetic_missing:
+        return
+    if basis == "rights_register_no_match":
+        raise RightsPolicyError("basis rights_register_no_match ist synthetisch reserviert")
+    if (reviewed_by is None) != (reviewed_at is None):
+        raise RightsPolicyError("reviewed_by und reviewed_at müssen gemeinsam gesetzt sein")
+    if decision.state in _SENSITIVE_STATES:
+        if reviewed_by is None:
+            raise RightsPolicyError(f"reviewed_by fehlt für Zustand {decision.state.value}")
+        if reviewed_at is None:
+            raise RightsPolicyError(f"reviewed_at fehlt für Zustand {decision.state.value}")
+    if (
+        type(decision.decision_sha256) is not str
+        or _SHA256.fullmatch(decision.decision_sha256) is None
+    ):
+        raise RightsPolicyError("decision_sha256 muss ein kleingeschriebener SHA-256 sein")
+    expected = _decision_hash(
+        policy_version=1,
+        source_id=decision.source_id,
+        source_sha256=decision.source_sha256,
+        state=decision.state,
+        basis=basis,
+        reviewed_by=reviewed_by,
+        reviewed_at=reviewed_at,
+    )
+    if decision.decision_sha256 != expected:
+        raise RightsPolicyError("decision_sha256 stimmt nicht mit der Entscheidung überein")
+
+
+def _validate_register_instance(register: RightsRegister) -> None:
+    if type(register) is not RightsRegister:
+        raise RightsPolicyError("RightsRegister besitzt keinen exakten Typ")
+    if type(register.schema_version) is not int or register.schema_version != 1:
+        raise RightsPolicyError("Unbekannte Rights-Register-Version")
+    if type(register.entries) is not tuple:
+        raise RightsPolicyError("entries muss ein unveränderliches Tupel sein")
+    if not all(type(entry) is RightsDecision for entry in register.entries):
+        raise RightsPolicyError("entries enthält keine exakten RightsDecision-Werte")
+    for entry in register.entries:
+        _validate_decision_instance(entry)
+    keys = tuple((entry.source_id, entry.source_sha256) for entry in register.entries)
+    if len(set(keys)) != len(keys):
+        raise RightsPolicyError("Autoritätstupel ist doppelt")
+    if keys != tuple(sorted(keys)):
+        raise RightsPolicyError("Registereinträge müssen kanonisch sortiert sein")
 
 
 def _register_decision(value: object) -> RightsDecision:
@@ -337,6 +427,7 @@ def evaluate_rights(
     """Resolve only the exact source tuple against authoritative entries."""
 
     _validate_policy_instance(policy)
+    _validate_register_instance(register)
     if type(source_id) is not str or _SOURCE_ID.fullmatch(source_id) is None:
         raise RightsPolicyError("source_id ist keine kanonische RKI-Quell-ID")
     if type(source_sha256) is not str or _SHA256.fullmatch(source_sha256) is None:
@@ -359,9 +450,20 @@ def evaluate_rights(
 
 
 def _validate_policy_instance(policy: RightsPolicy) -> None:
+    if type(policy) is not RightsPolicy:
+        raise RightsPolicyError("RightsPolicy besitzt keinen exakten Typ")
+    if type(policy.schema_version) is not int or policy.schema_version != 1:
+        raise RightsPolicyError("Rechtepolicy-Version ist nicht fail-closed")
     if (
-        policy.schema_version != 1
+        type(policy.default_state) is not RightsState
         or policy.default_state is not RightsState.METADATA_ONLY
+    ):
+        raise RightsPolicyError("default_state ist nicht fail-closed")
+    if (
+        type(policy.approved_visibilities) is not tuple
+        or type(policy.internal_only_visibilities) is not tuple
+        or not all(type(value) is str for value in policy.approved_visibilities)
+        or not all(type(value) is str for value in policy.internal_only_visibilities)
         or policy.approved_visibilities != _APPROVED_VISIBILITIES
         or policy.internal_only_visibilities != _INTERNAL_VISIBILITIES
     ):
