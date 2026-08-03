@@ -5,16 +5,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time
 import hashlib
+import json
+import posixpath
 import re
 from pathlib import PurePosixPath
 from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
 from scripts.rki_grabber.models import AffectedPeriods
-from scripts.rki_pipeline.archive import ArchiveEntry, ArchiveSpec
+from scripts.rki_pipeline.archive import ArchiveBuild, ArchiveEntry, ArchiveSpec, archive_input_fingerprint
 from scripts.rki_pipeline.due_tasks import DueTask, TaskKind
-from scripts.rki_pipeline.io_utils import stable_json_dumps
+from scripts.rki_pipeline.io_utils import normalize_posix_path, sha256_file, stable_json_dumps
 from scripts.rki_pipeline.manifests import ManifestGraph
+from scripts.rki_pipeline.schema_registry import SchemaContractError, validate_document
 from scripts.rki_pipeline.storage.base import PreparedObject
 
 _BERLIN = ZoneInfo("Europe/Berlin")
@@ -30,6 +33,10 @@ class AggregationError(ValueError):
 
 class PeriodSelectionError(AggregationError):
     """A due or affected period is malformed, future, or not closed."""
+
+
+class PeriodManifestError(AggregationError):
+    """Period-manifest bytes or archive references violate the contract."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -590,3 +597,310 @@ def plan_period_archives(
         )
     period_plans = tuple(plans)
     return AggregationPlan(periods=period_plans, input_fingerprint=_plan_fingerprint(period_plans))
+
+
+def _canonical_path(value: str, *, label: str) -> str:
+    if type(value) is not str:
+        raise AggregationError(f"{label} muss ein kanonischer relativer Pfad sein")
+    try:
+        normalized = normalize_posix_path(value)
+    except ValueError as exc:
+        raise AggregationError(f"{label} ist kein kanonischer relativer Pfad") from exc
+    if normalized != value:
+        raise AggregationError(f"{label} ist nicht kanonisch")
+    return value
+
+
+def _relative_link(source_path: str, target_path: str) -> str:
+    source = _canonical_path(source_path, label="Indexpfad")
+    target = _canonical_path(target_path, label="Linkziel")
+    return posixpath.relpath(target, PurePosixPath(source).parent.as_posix())
+
+
+def _table_cell(value: str) -> str:
+    """Escape untrusted metadata for one stable Markdown table cell."""
+
+    if type(value) is not str:
+        raise AggregationError("Tabellenwert muss eine Zeichenkette sein")
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("|", "\\|")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+
+
+def _week_archive_links(period: PeriodRef, index_path: str) -> str:
+    monday = date.fromordinal(period.start.toordinal() - period.start.weekday())
+    links: list[str] = []
+    while monday <= period.end:
+        iso = monday.isocalendar()
+        week = period_ref(TaskKind.WEEK, f"{iso.year:04d}-W{iso.week:02d}")
+        for format_name, label in (("pdf", "PDF"), ("markdown", "Markdown")):
+            target = f"{_bundle_path(week, format_name)}/archive.zip"
+            links.append(f"[{label}]({_relative_link(index_path, target)})")
+        monday = date.fromordinal(monday.toordinal() + 7)
+    return " ".join(links)
+
+
+def render_month_index(period_plan: PeriodPlan) -> bytes:
+    """Render one deterministic Markdown index for a monthly period."""
+
+    if type(period_plan) is not PeriodPlan:
+        raise AggregationError("period_plan muss ein exakter PeriodPlan sein")
+    if period_plan.period.kind is not TaskKind.MONTH or period_plan.index_path is None:
+        raise AggregationError("Monatsindex benötigt eine Monatsperiode mit Indexpfad")
+    index_path = _canonical_path(period_plan.index_path, label="Indexpfad")
+    documents = tuple(
+        sorted(
+            period_plan.documents,
+            key=lambda item: (item.publication_date, item.document_id, item.source_id),
+        )
+    )
+    lines = [
+        f"# RKI-Einzelartikel {period_plan.period.value}",
+        "",
+        f"Artikel: {len(documents)}",
+        "",
+        "| Datum | Titel | RKI-Handle | DOI | PDF | Markdown | Konvertierung | PDF SHA-256 | Markdown SHA-256 | Wochenarchive |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    weekly_links = _week_archive_links(period_plan.period, index_path)
+    for document in documents:
+        if type(document) is not PeriodDocument:
+            raise AggregationError("Monatsindex enthält kein exaktes PeriodDocument")
+        pdf_link = "—"
+        if document.pdf is not None:
+            pdf_link = f"[PDF]({_relative_link(index_path, document.pdf.logical_key)})"
+        markdown_link = "—"
+        if document.markdown is not None:
+            markdown_link = f"[Markdown]({_relative_link(index_path, document.markdown.logical_key)})"
+        lines.append(
+            "| "
+            + " | ".join(
+                (
+                    _table_cell(document.publication_date),
+                    _table_cell(document.title),
+                    _table_cell(document.handle),
+                    _table_cell(document.doi) if document.doi is not None else "—",
+                    pdf_link,
+                    markdown_link,
+                    _table_cell(document.conversion_state),
+                    document.pdf.sha256 if document.pdf is not None else "—",
+                    document.markdown.sha256 if document.markdown is not None else "—",
+                    weekly_links,
+                )
+            )
+            + " |"
+        )
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def _document_manifest(document: PeriodDocument) -> dict[str, object]:
+    if type(document) is not PeriodDocument:
+        raise PeriodManifestError("PeriodDocument ist ungültig")
+    return {
+        "document_id": document.document_id,
+        "version": document.version,
+        "source_id": document.source_id,
+        "publication_date": document.publication_date,
+        "pdf_artifact_id": None if document.pdf is None else document.pdf.artifact_id,
+        "pdf_sha256": None if document.pdf is None else document.pdf.sha256,
+        "markdown_artifact_id": None if document.markdown is None else document.markdown.artifact_id,
+        "markdown_sha256": None if document.markdown is None else document.markdown.sha256,
+    }
+
+
+def _archive_manifest(period: PeriodRef, archive: PlannedArchive, build: ArchiveBuild) -> dict[str, object]:
+    if type(archive) is not PlannedArchive or type(build) is not ArchiveBuild:
+        raise PeriodManifestError("Archiv-Build ist ungültig")
+    expected_entries = tuple(sorted(entry.path for entry in archive.spec.entries))
+    if build.entries != expected_entries:
+        raise PeriodManifestError("entries stimmen nicht mit Archiv-Spezifikation überein")
+    expected_fingerprint = archive_input_fingerprint(archive.spec)
+    if build.input_fingerprint != expected_fingerprint:
+        raise PeriodManifestError("input_fingerprint stimmt nicht mit Archiv-Spezifikation überein")
+    if build.path.is_symlink() or not build.path.is_file():
+        raise PeriodManifestError("Archiv-Build-Pfad ist keine reguläre Datei")
+    before = build.path.stat()
+    if before.st_size != build.size:
+        raise PeriodManifestError("size stimmt nicht mit Archivdatei überein")
+    if sha256_file(build.path) != build.output_sha256:
+        raise PeriodManifestError("output_sha256 stimmt nicht mit Archivdatei überein")
+    after = build.path.stat()
+    if (before.st_ino, before.st_size, before.st_mtime_ns) != (
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+    ):
+        raise PeriodManifestError("Archivdatei änderte sich während der Prüfung")
+    return {
+        "archive_id": archive.spec.archive_id,
+        "kind": archive.spec.kind,
+        "relative_bundle": archive.relative_bundle,
+        "input_fingerprint": build.input_fingerprint,
+        "output_sha256": build.output_sha256,
+        "bytes": build.size,
+        "storage_reference": None,
+    }
+
+
+def _month_manifest_paths(period: PeriodRef, documents: list[dict[str, object]]) -> list[str]:
+    if period.kind is not TaskKind.YEAR:
+        return []
+    months: set[str] = set()
+    for document in documents:
+        publication_date = document["publication_date"]
+        if type(publication_date) is not str:
+            raise PeriodManifestError("Dokumentdatum ist ungültig")
+        try:
+            published = date.fromisoformat(publication_date)
+        except ValueError as exc:
+            raise PeriodManifestError("Dokumentdatum ist ungültig") from exc
+        if published.isoformat() != publication_date or not period.start <= published <= period.end:
+            raise PeriodManifestError("Dokumentdatum liegt außerhalb der Jahresperiode")
+        months.add(publication_date[:7])
+    return [f"rki/Bulletins/Manifeste/Archive/month/{month}.json" for month in sorted(months)]
+
+
+def _manifest_fingerprint(value: dict[str, object]) -> str:
+    normalized: dict[str, object] = {}
+    for key, content in value.items():
+        if key == "input_fingerprint":
+            continue
+        if key == "archives" and type(content) is list:
+            normalized[key] = [
+                {**archive, "storage_reference": None} for archive in content
+            ]
+        else:
+            normalized[key] = content
+    return hashlib.sha256(stable_json_dumps(normalized).encode("utf-8")).hexdigest()
+
+
+def _period_from_manifest(value: dict[str, object]) -> PeriodRef:
+    kind_value = value["kind"]
+    period_value = value["period"]
+    if type(kind_value) is not str or type(period_value) is not str:
+        raise PeriodManifestError("Periode ist ungültig")
+    try:
+        kind = TaskKind(kind_value)
+        period = period_ref(kind, period_value)
+    except (ValueError, PeriodSelectionError) as exc:
+        raise PeriodManifestError("Periode ist ungültig") from exc
+    if (
+        value["timezone"] != "Europe/Berlin"
+        or value["start_date"] != period.start.isoformat()
+        or value["end_date"] != period.end.isoformat()
+        or value["source_date_epoch"] != period.source_date_epoch
+    ):
+        raise PeriodManifestError("Periodenmetadaten sind nicht kanonisch")
+    return period
+
+
+def _validate_manifest_order(value: dict[str, object], period: PeriodRef) -> None:
+    documents = value["documents"]
+    archives = value["archives"]
+    month_manifests = value["month_manifests"]
+    if type(documents) is not list or type(archives) is not list or type(month_manifests) is not list:
+        raise PeriodManifestError("Manifest-Listen sind ungültig")
+    if documents != sorted(
+        documents,
+        key=lambda item: (item["publication_date"], item["document_id"], item["source_id"]),
+    ):
+        raise PeriodManifestError("Dokumente sind nicht kanonisch sortiert")
+    if archives != sorted(archives, key=lambda item: item["archive_id"]):
+        raise PeriodManifestError("Archive sind nicht kanonisch sortiert")
+    archive_ids: set[str] = set()
+    for archive in archives:
+        archive_id = archive["archive_id"]
+        kind = archive["kind"]
+        if type(archive_id) is not str or type(kind) is not str:
+            raise PeriodManifestError("Archivreferenz ist ungültig")
+        prefix = f"{period.kind.value}-"
+        if not kind.startswith(prefix) or kind.removeprefix(prefix) not in {"pdf", "markdown"}:
+            raise PeriodManifestError("Archiv-Art passt nicht zur Periode")
+        format_name = kind.removeprefix(prefix)
+        if archive_id != f"rki-{period.kind.value}-{period.value.lower()}-{format_name}":
+            raise PeriodManifestError("Archiv-ID ist nicht kanonisch")
+        if archive["relative_bundle"] != _bundle_path(period, format_name):
+            raise PeriodManifestError("Archivpfad ist nicht kanonisch")
+        if archive_id in archive_ids:
+            raise PeriodManifestError("Archiv-ID ist mehrfach vorhanden")
+        archive_ids.add(archive_id)
+    expected_months = _month_manifest_paths(period, documents)
+    if month_manifests != expected_months:
+        raise PeriodManifestError("Monatsmanifeste sind nicht kanonisch")
+
+
+def _json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise PeriodManifestError("Manifest enthält doppelte Felder")
+        result[key] = value
+    return result
+
+
+def validate_period_manifest(payload: bytes) -> dict[str, object]:
+    """Validate canonical, backend-neutral period-manifest bytes."""
+
+    if type(payload) is not bytes:
+        raise PeriodManifestError("Manifest muss bytes sein")
+    try:
+        value = json.loads(payload.decode("utf-8"), object_pairs_hook=_json_object)
+    except (UnicodeDecodeError, json.JSONDecodeError, PeriodManifestError) as exc:
+        raise PeriodManifestError("Manifest ist kein gültiges JSON") from exc
+    if type(value) is not dict:
+        raise PeriodManifestError("Manifest muss ein Objekt sein")
+    try:
+        validate_document("period-archive-manifest", value)
+    except SchemaContractError as exc:
+        raise PeriodManifestError("Manifest verletzt Schema-Vertrag") from exc
+    period = _period_from_manifest(value)
+    _validate_manifest_order(value, period)
+    if value["input_fingerprint"] != _manifest_fingerprint(value):
+        raise PeriodManifestError("input_fingerprint ist nicht kanonisch")
+    canonical = stable_json_dumps(value).encode("utf-8")
+    if payload != canonical:
+        raise PeriodManifestError("Manifestbytes sind nicht kanonisch")
+    return value
+
+
+def render_period_manifest(period_plan: PeriodPlan, builds: Mapping[str, ArchiveBuild]) -> bytes:
+    """Render one canonical period manifest from exact P07.1 archive builds."""
+
+    if type(period_plan) is not PeriodPlan:
+        raise PeriodManifestError("period_plan muss ein exakter PeriodPlan sein")
+    if not isinstance(builds, Mapping):
+        raise PeriodManifestError("builds muss ein Mapping sein")
+    expected = {archive.spec.archive_id: archive for archive in period_plan.archives}
+    if len(expected) != len(period_plan.archives) or set(builds) != set(expected):
+        raise PeriodManifestError("Archiv-ID-Mapping stimmt nicht exakt überein")
+    archive_rows = [
+        _archive_manifest(period_plan.period, expected[archive_id], build)
+        for archive_id, build in builds.items()
+        if archive_id in expected
+    ]
+    documents = sorted(
+        (_document_manifest(document) for document in period_plan.documents),
+        key=lambda item: (item["publication_date"], item["document_id"], item["source_id"]),
+    )
+    value: dict[str, object] = {
+        "schema_version": "1.0.0",
+        "kind": period_plan.period.kind.value,
+        "period": period_plan.period.value,
+        "timezone": "Europe/Berlin",
+        "start_date": period_plan.period.start.isoformat(),
+        "end_date": period_plan.period.end.isoformat(),
+        "source_date_epoch": period_plan.period.source_date_epoch,
+        "input_fingerprint": "",
+        "documents": documents,
+        "archives": sorted(archive_rows, key=lambda item: item["archive_id"]),
+        "month_manifests": _month_manifest_paths(period_plan.period, documents),
+    }
+    value["input_fingerprint"] = _manifest_fingerprint(value)
+    payload = stable_json_dumps(value).encode("utf-8")
+    validate_period_manifest(payload)
+    return payload
