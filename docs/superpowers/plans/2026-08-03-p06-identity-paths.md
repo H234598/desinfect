@@ -32,6 +32,8 @@
 - Modify: `scripts/rki_grabber/models.py:13-17,152-226`
 - Modify: `scripts/rki_grabber/parser.py:250-291`
 - Modify: `tests/test_rki_parser.py:43-70`
+- Modify: `tests/test_grabber_api.py`
+- Modify: `scripts/validate_p03_grabber.py`
 
 **Interfaces:**
 - Produces: `DocumentIdentity(handle: str, source_id: str, document_id: str, version: int, supersedes: str | None)`.
@@ -157,7 +159,7 @@ Expected: existing parser returns one candidate for sequence 1/2 and fails the n
 
 - [ ] **Step 7: Delegate grabber properties and fix parser deduplication**
 
-Replace duplicated handle parsing in `ItemMetadata` with `document_identity(self.item_handle)`. Add `PdfCandidate` properties that call `bitstream_identity(self.url)`. In `_pdf_candidates`, construct candidate first and key `found` by `candidate.bitstream_id`; an exact duplicate with a different non-null MD5 raises `ValueError`. Return candidates sorted by `bitstream_id`.
+Replace duplicated handle parsing in `ItemMetadata` with `document_identity(self.item_handle)`. Add `PdfCandidate` properties that call `bitstream_identity(self.url)`. In `_pdf_candidates`, construct candidate first and key `found` by `candidate.bitstream_id`; an exact duplicate with a different non-null MD5 raises `ValueError`. Return candidates sorted by `(bitstream_version is None, bitstream_version or 0, bitstream_id)`: positive RKI sequences ascend first, sequence-less candidates follow, and the ID breaks ties.
 
 - [ ] **Step 8: Verify Task 1 and commit**
 
@@ -172,7 +174,7 @@ Expected: all selected tests pass.
 Commit:
 
 ```bash
-git add scripts/rki_pipeline/documents.py scripts/rki_grabber/models.py scripts/rki_grabber/parser.py tests/test_document_identity.py tests/test_rki_parser.py
+git add scripts/rki_pipeline/documents.py scripts/rki_grabber/models.py scripts/rki_grabber/parser.py scripts/validate_p03_grabber.py tests/test_document_identity.py tests/test_rki_parser.py tests/test_grabber_api.py
 git commit -m "feat(p06): add stable RKI identities"
 ```
 
