@@ -139,14 +139,22 @@ class RightsMetadata:
     label: str | None = None
     uri: str | None = None
     copyright_notice: str | None = None
+    open_access: bool | None = None
 
-    def to_dict(self) -> dict[str, str | None]:
+    def __post_init__(self) -> None:
+        """Keep schema-facing OA evidence strictly boolean or unknown."""
+
+        if self.open_access is not None and type(self.open_access) is not bool:
+            raise ValueError("open_access muss ein Boolean oder null sein")
+
+    def to_dict(self) -> dict[str, str | bool | None]:
         """Return stable JSON data without inventing a rights decision."""
 
         return {
             "label": self.label,
             "uri": self.uri,
             "copyright_notice": self.copyright_notice,
+            "open_access": self.open_access,
         }
 
 

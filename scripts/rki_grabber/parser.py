@@ -224,6 +224,36 @@ def _year(
     return fallback_year
 
 
+def _open_access(soup: BeautifulSoup) -> bool | None:
+    """Map explicit RKI access-rights metadata to boolean source evidence."""
+
+    raw = first_meta(
+        soup,
+        (
+            "dc.rights.accessrights",
+            "dcterms.accessrights",
+            "citation_open_access",
+            "eprints.accessrights",
+        ),
+    )
+    if raw is None:
+        return None
+    normalized = re.sub(r"[\s_-]+", "", raw).casefold()
+    if normalized in {"1", "true", "yes", "open", "openaccess"}:
+        return True
+    if normalized in {
+        "0",
+        "false",
+        "no",
+        "closed",
+        "closedaccess",
+        "restricted",
+        "restrictedaccess",
+    }:
+        return False
+    return None
+
+
 def _rights(soup: BeautifulSoup) -> RightsMetadata:
     """Preserve raw rights metadata without making a publication decision."""
 
@@ -240,6 +270,7 @@ def _rights(soup: BeautifulSoup) -> RightsMetadata:
             soup,
             ("dc.rights.holder", "dcterms.rightsholder", "copyright"),
         ),
+        open_access=_open_access(soup),
     )
 
 

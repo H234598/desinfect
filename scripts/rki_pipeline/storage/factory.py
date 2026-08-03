@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts.rki_pipeline.storage.base import (
+    RightsStorageAuthorizer,
     StorageAdapter,
     StorageBackend,
     StorageConfigurationError,
@@ -18,6 +19,7 @@ def build_storage_adapter(
     *,
     backend: StorageBackend | None = None,
     repository_root: Path,
+    authorizer: RightsStorageAuthorizer,
     release_client: Any | None = None,
     object_client: Any | None = None,
 ) -> StorageAdapter:
@@ -26,23 +28,28 @@ def build_storage_adapter(
     selected = config.backend if backend is None else backend
     if not isinstance(selected, StorageBackend):
         raise StorageConfigurationError("backend muss ein StorageBackend sein")
+    if type(authorizer) is not RightsStorageAuthorizer:
+        raise StorageConfigurationError(
+            "authorizer muss ein exakter RightsStorageAuthorizer sein"
+        )
     if selected is StorageBackend.LFS:
         from scripts.rki_pipeline.storage.lfs import LfsStorageAdapter
 
         return LfsStorageAdapter(
             repository_root=Path(repository_root),
             config=config.lfs,
+            authorizer=authorizer,
         )
     if selected is StorageBackend.RELEASE:
         if release_client is None:
             raise StorageConfigurationError("ReleaseClient muss injiziert werden")
         from scripts.rki_pipeline.storage.release import ReleaseStorageAdapter
 
-        return ReleaseStorageAdapter(config.release, release_client)
+        return ReleaseStorageAdapter(config.release, release_client, authorizer)
     if selected is StorageBackend.OBJECT:
         if object_client is None:
             raise StorageConfigurationError("ObjectClient muss injiziert werden")
         from scripts.rki_pipeline.storage.object import ObjectStorageAdapter
 
-        return ObjectStorageAdapter(config.object, object_client)
+        return ObjectStorageAdapter(config.object, object_client, authorizer)
     raise StorageConfigurationError(f"Unbekanntes Storage-Backend: {selected}")

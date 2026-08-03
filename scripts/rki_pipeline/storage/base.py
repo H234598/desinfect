@@ -7,14 +7,30 @@ from enum import StrEnum
 import hashlib
 import os
 from pathlib import Path
+import re
 from typing import Protocol, runtime_checkable
 
 from scripts.rki_pipeline.io_utils import normalize_posix_path
+from scripts.rki_pipeline.rights import (
+    RightsAuthority,
+    RightsPolicy,
+    RightsPolicyError,
+    RightsState,
+    resolve_rights,
+)
 from scripts.rki_pipeline.run_modes import EffectLedger
 
 _SHA256 = frozenset("0123456789abcdef")
 _VISIBILITY = frozenset({"public", "repository_authorized", "internal", "restricted"})
 _RIGHTS = frozenset({"approved", "metadata_only", "internal_only", "unknown", "takedown"})
+_PROVENANCE_STATES = frozenset({"current", "legacy_needs_review"})
+_SOURCE_ID = re.compile(
+    r"^rki:176904/(?P<number>[0-9]+)(?:\.(?P<version>[2-9]|[1-9][0-9]+))?$"
+)
+_DOCUMENT_ID = re.compile(
+    r"^rki-176904-(?P<number>[0-9]+)-v(?P<version>[1-9][0-9]*)$"
+)
+_CONVERSION_ID = re.compile(r"^conv-[0-9a-f]{64}$")
 
 
 class StorageError(RuntimeError):
@@ -23,6 +39,10 @@ class StorageError(RuntimeError):
 
 class StorageConfigurationError(StorageError):
     """Storage configuration is unknown, malformed, or incomplete."""
+
+
+class StorageAuthorizationError(StorageError):
+    """Current canonical rights do not authorize a payload operation."""
 
 
 class StorageBackend(StrEnum):
@@ -54,6 +74,64 @@ def _validate_common(
         raise ValueError("Unbekannter Rechtezustand")
 
 
+def _validate_authorization_provenance(
+    *,
+    source_id: str | None,
+    source_sha256: str | None,
+    decision_sha256: str | None,
+    required: bool,
+) -> None:
+    if not required:
+        present = sum(
+            value is not None
+            for value in (source_id, source_sha256, decision_sha256)
+        )
+        if present not in {0, 3}:
+            raise ValueError(
+                "Legacy-Provenienz muss vollständig gesetzt oder vollständig leer sein"
+            )
+    if source_id is None:
+        if required:
+            raise ValueError("source_id fehlt für current-Provenienz")
+    elif type(source_id) is not str or _SOURCE_ID.fullmatch(source_id) is None:
+        raise ValueError("source_id ist keine kanonische RKI-Quell-ID")
+    if source_sha256 is None:
+        if required:
+            raise ValueError("source_sha256 fehlt für current-Provenienz")
+    elif not _valid_sha256(source_sha256):
+        raise ValueError("source_sha256 muss ein kleingeschriebener SHA-256 sein")
+    if decision_sha256 is None:
+        if required:
+            raise ValueError("decision_sha256 fehlt für current-Provenienz")
+    elif not _valid_sha256(decision_sha256):
+        raise ValueError("decision_sha256 muss ein kleingeschriebener SHA-256 sein")
+
+
+def _validate_nullable_id(value: str | None, *, name: str, pattern: re.Pattern[str]) -> None:
+    if value is not None and (type(value) is not str or pattern.fullmatch(value) is None):
+        raise ValueError(f"{name} ist nicht kanonisch")
+
+
+def validate_storage_provenance_relationship(
+    source_id: str | None,
+    document_id: str | None,
+) -> None:
+    """Require an optional document link to match exact source handle and version."""
+
+    if document_id is None:
+        return
+    source = _SOURCE_ID.fullmatch(source_id) if isinstance(source_id, str) else None
+    document = _DOCUMENT_ID.fullmatch(document_id)
+    if source is None or document is None:
+        raise ValueError("source_id und document_id sind nicht kanonisch verknüpft")
+    source_version = int(source.group("version") or "1")
+    if (
+        source.group("number") != document.group("number")
+        or source_version != int(document.group("version"))
+    ):
+        raise ValueError("source_id und document_id müssen Handle und Version teilen")
+
+
 def hash_file(path: Path) -> tuple[int, str]:
     """Stream one regular file and return size plus SHA-256."""
 
@@ -69,6 +147,22 @@ def hash_file(path: Path) -> tuple[int, str]:
     return size, digest.hexdigest()
 
 
+def read_verified_payload(path: Path, *, sha256: str, size: int) -> bytes:
+    """Read one regular file once and validate its immutable byte identity."""
+
+    source = Path(path)
+    if source.is_symlink() or not source.is_file():
+        raise StorageError(f"Storagequelle ist keine reguläre Datei: {source}")
+    try:
+        payload = source.read_bytes()
+    except OSError as exc:
+        raise StorageError(f"Storagequelle ist nicht lesbar: {source}") from exc
+    measured = (len(payload), hashlib.sha256(payload).hexdigest())
+    if measured != (size, sha256):
+        raise StorageError("Storagequelle stimmt nicht mit Größe/SHA-256 überein")
+    return payload
+
+
 @dataclass(frozen=True, slots=True)
 class StorageIntent:
     """One immutable source object and its logical backend-neutral key."""
@@ -78,8 +172,13 @@ class StorageIntent:
     source_path: Path
     sha256: str
     size: int
+    source_id: str
+    source_sha256: str
+    decision_sha256: str
     visibility: str
     rights_state: str
+    document_id: str | None = None
+    conversion_id: str | None = None
 
     def __post_init__(self) -> None:
         _validate_common(
@@ -90,13 +189,24 @@ class StorageIntent:
             visibility=self.visibility,
             rights_state=self.rights_state,
         )
+        _validate_authorization_provenance(
+            source_id=self.source_id,
+            source_sha256=self.source_sha256,
+            decision_sha256=self.decision_sha256,
+            required=True,
+        )
+        _validate_nullable_id(self.document_id, name="document_id", pattern=_DOCUMENT_ID)
+        _validate_nullable_id(self.conversion_id, name="conversion_id", pattern=_CONVERSION_ID)
+        validate_storage_provenance_relationship(self.source_id, self.document_id)
         if not isinstance(self.source_path, Path):
             raise ValueError("source_path muss ein pathlib.Path sein")
 
     @classmethod
     def from_path(
         cls, source_path: Path, *, artifact_id: str, logical_key: str,
+        source_id: str, source_sha256: str, decision_sha256: str,
         visibility: str, rights_state: str,
+        document_id: str | None = None, conversion_id: str | None = None,
     ) -> StorageIntent:
         size, sha256 = hash_file(source_path)
         return cls(
@@ -105,8 +215,13 @@ class StorageIntent:
             source_path=Path(source_path),
             sha256=sha256,
             size=size,
+            source_id=source_id,
+            source_sha256=source_sha256,
+            decision_sha256=decision_sha256,
             visibility=visibility,
             rights_state=rights_state,
+            document_id=document_id,
+            conversion_id=conversion_id,
         )
 
 
@@ -120,8 +235,13 @@ class PreparedObject:
     temp_root: Path
     sha256: str
     size: int
+    source_id: str
+    source_sha256: str
+    decision_sha256: str
     visibility: str
     rights_state: str
+    document_id: str | None = None
+    conversion_id: str | None = None
 
     def __post_init__(self) -> None:
         _validate_common(
@@ -132,6 +252,15 @@ class PreparedObject:
             visibility=self.visibility,
             rights_state=self.rights_state,
         )
+        _validate_authorization_provenance(
+            source_id=self.source_id,
+            source_sha256=self.source_sha256,
+            decision_sha256=self.decision_sha256,
+            required=True,
+        )
+        _validate_nullable_id(self.document_id, name="document_id", pattern=_DOCUMENT_ID)
+        _validate_nullable_id(self.conversion_id, name="conversion_id", pattern=_CONVERSION_ID)
+        validate_storage_provenance_relationship(self.source_id, self.document_id)
         root = Path(os.path.abspath(self.temp_root))
         path = Path(os.path.abspath(self.path))
         try:
@@ -154,6 +283,12 @@ class StorageReference:
     storage_object_id: str
     sha256: str
     size: int
+    source_id: str | None
+    source_sha256: str | None
+    document_id: str | None
+    conversion_id: str | None
+    decision_sha256: str | None
+    provenance_state: str
     visibility: str
     rights_state: str
     public_reference: str | None
@@ -167,6 +302,17 @@ class StorageReference:
             visibility=self.visibility,
             rights_state=self.rights_state,
         )
+        if self.provenance_state not in _PROVENANCE_STATES:
+            raise ValueError("Unbekannter provenance_state")
+        _validate_authorization_provenance(
+            source_id=self.source_id,
+            source_sha256=self.source_sha256,
+            decision_sha256=self.decision_sha256,
+            required=self.provenance_state == "current",
+        )
+        _validate_nullable_id(self.document_id, name="document_id", pattern=_DOCUMENT_ID)
+        _validate_nullable_id(self.conversion_id, name="conversion_id", pattern=_CONVERSION_ID)
+        validate_storage_provenance_relationship(self.source_id, self.document_id)
         if not isinstance(self.storage_backend, StorageBackend):
             raise ValueError("storage_backend muss ein StorageBackend sein")
         if type(self.storage_object_id) is not str or not self.storage_object_id:
@@ -176,17 +322,99 @@ class StorageReference:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schema_version": "1.0.0",
+            "schema_version": "1.1.0",
             "artifact_id": self.artifact_id,
             "relative_path": self.relative_path,
             "storage_backend": self.storage_backend.value,
             "storage_object_id": self.storage_object_id,
             "sha256": self.sha256,
             "bytes": self.size,
+            "source_id": self.source_id,
+            "source_sha256": self.source_sha256,
+            "document_id": self.document_id,
+            "conversion_id": self.conversion_id,
+            "decision_sha256": self.decision_sha256,
+            "provenance_state": self.provenance_state,
             "visibility": self.visibility,
             "rights_state": self.rights_state,
             "public_reference": self.public_reference,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class RightsStorageAuthorizer:
+    """Authorize storage only from a freshly reloaded pinned rights authority."""
+
+    authority: RightsAuthority
+    policy: RightsPolicy
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.authority) is not RightsAuthority
+            or type(self.policy) is not RightsPolicy
+        ):
+            raise StorageAuthorizationError(
+                "RightsStorageAuthorizer benötigt versiegelte Authority und Policy"
+            )
+
+    def authorize(
+        self,
+        subject: StorageIntent | PreparedObject | StorageReference,
+        *,
+        operation: str,
+    ) -> None:
+        if getattr(subject, "provenance_state", "current") != "current":
+            raise StorageAuthorizationError(
+                f"Legacy-Provenienz blockiert Storage-{operation}"
+            )
+        try:
+            decision = resolve_rights(
+                subject.source_id,
+                subject.source_sha256,
+                authority=self.authority,
+                policy=self.policy,
+            )
+        except (AttributeError, RightsPolicyError) as exc:
+            raise StorageAuthorizationError(
+                f"Rechteentscheidung für Storage-{operation} ist ungültig"
+            ) from exc
+        if (
+            decision.decision_sha256 != subject.decision_sha256
+            or decision.state.value != subject.rights_state
+        ):
+            raise StorageAuthorizationError(
+                f"Rechteentscheidung für Storage-{operation} ist veraltet oder falsch"
+            )
+        allowed = (
+            decision.state is RightsState.APPROVED
+            and subject.visibility in self.policy.approved_visibilities
+        ) or (
+            decision.state is RightsState.INTERNAL_ONLY
+            and subject.visibility in self.policy.internal_only_visibilities
+        )
+        if not allowed:
+            raise StorageAuthorizationError(
+                f"Rechteentscheidung autorisiert Storage-{operation} nicht"
+            )
+
+
+def authorize_storage_operation(
+    authorizer: RightsStorageAuthorizer,
+    subject: StorageIntent | PreparedObject | StorageReference,
+    *,
+    operation: str,
+) -> None:
+    """Enforce non-bypassable provenance floor before injected policy."""
+
+    if type(authorizer) is not RightsStorageAuthorizer:
+        raise StorageAuthorizationError(
+            "authorizer muss ein exakter RightsStorageAuthorizer sein"
+        )
+    if getattr(subject, "provenance_state", "current") != "current":
+        raise StorageAuthorizationError(
+            f"Legacy-Provenienz blockiert Storage-{operation}"
+        )
+    authorizer.authorize(subject, operation=operation)
 
 
 @runtime_checkable
@@ -195,6 +423,7 @@ class StorageAdapter(Protocol):
 
     backend: StorageBackend
 
+    def authorize(self, subject: StorageIntent | PreparedObject | StorageReference, *, operation: str) -> None: ...
     def exists(self, intent: StorageIntent) -> StorageReference | None: ...
     def materialize(self, intent: StorageIntent, *, temp_root: Path, ledger: EffectLedger) -> PreparedObject: ...
     def export(self, reference: StorageReference, *, temp_root: Path, ledger: EffectLedger) -> PreparedObject: ...

@@ -12,6 +12,7 @@ license = "CC0-1.0"
 authors = [{name = "H234598"}]
 dependencies = [
   "beautifulsoup4==4.15.0",
+  "PyYAML==6.0.3",
   "requests==2.34.2",
 ]
 

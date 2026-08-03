@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import errno
 import hashlib
 from pathlib import Path
 import re
@@ -12,11 +13,14 @@ from scripts.rki_pipeline.io_utils import atomic_write_bytes, normalize_posix_pa
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 from scripts.rki_pipeline.storage.base import (
     PreparedObject,
+    RightsStorageAuthorizer,
     StorageBackend,
     StorageError,
     StorageIntent,
     StorageReference,
+    authorize_storage_operation,
     hash_file,
+    read_verified_payload,
 )
 from scripts.rki_pipeline.storage.config import LfsConfig
 
@@ -38,6 +42,56 @@ class LfsIntegrityError(StorageError):
 
 class LfsBudgetError(StorageError):
     """A configured per-run or total LFS budget would be exceeded."""
+
+
+def _missing_parent_directories(path: Path, *, root: Path) -> tuple[Path, ...]:
+    """Capture absent parents below root, deepest first, before one write."""
+
+    missing: list[Path] = []
+    parent = path.parent
+    while parent != root:
+        try:
+            parent.relative_to(root)
+        except ValueError as exc:
+            raise LfsIntegrityError(
+                "Rollback-Pfad liegt außerhalb des Repositoryroots"
+            ) from exc
+        if parent.exists() or parent.is_symlink():
+            break
+        missing.append(parent)
+        parent = parent.parent
+    return tuple(missing)
+
+
+def _rollback_owned_file(
+    path: Path,
+    *,
+    payload: bytes,
+    missing_parents: tuple[Path, ...],
+) -> None:
+    """Remove only the exact bytes and empty parents created by this call."""
+
+    if path.is_symlink():
+        raise LfsIntegrityError(f"Rollback-Ziel wurde durch Symlink ersetzt: {path}")
+    if path.exists():
+        if not path.is_file():
+            raise LfsIntegrityError(f"Rollback-Ziel ist keine reguläre Datei: {path}")
+        measured_size, measured_hash = hash_file(path)
+        expected_hash = hashlib.sha256(payload).hexdigest()
+        if (measured_size, measured_hash) != (len(payload), expected_hash):
+            raise LfsIntegrityError(f"Rollback-Ziel enthält fremde Bytes: {path}")
+        path.unlink()
+    for parent in missing_parents:
+        try:
+            parent.rmdir()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            if exc.errno in {errno.ENOTEMPTY, errno.EEXIST}:
+                break
+            raise LfsIntegrityError(
+                f"Neu angelegtes Rollback-Verzeichnis ist nicht entfernbar: {parent}"
+            ) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,7 +236,13 @@ class LfsStorageAdapter:
 
     backend = StorageBackend.LFS
 
-    def __init__(self, *, repository_root: Path, config: LfsConfig) -> None:
+    def __init__(
+        self,
+        *,
+        repository_root: Path,
+        config: LfsConfig,
+        authorizer: RightsStorageAuthorizer,
+    ) -> None:
         try:
             self.repository_root = Path(repository_root).resolve(strict=True)
         except OSError as exc:
@@ -191,6 +251,23 @@ class LfsStorageAdapter:
             raise LfsIntegrityError(f"Repositoryroot ist kein Verzeichnis: {repository_root}")
         self.config = config
         self.artifact_root = normalize_posix_path(config.artifact_root)
+        if type(authorizer) is not RightsStorageAuthorizer:
+            raise LfsIntegrityError(
+                "authorizer muss ein exakter RightsStorageAuthorizer sein"
+            )
+        self.authorizer = authorizer
+
+    def authorize(
+        self,
+        subject: StorageIntent | PreparedObject | StorageReference,
+        *,
+        operation: str,
+    ) -> None:
+        authorize_storage_operation(
+            self.authorizer,
+            subject,
+            operation=operation,
+        )
 
     def _relative_path(self, logical_key: str) -> str:
         normalized = normalize_posix_path(logical_key)
@@ -240,12 +317,19 @@ class LfsStorageAdapter:
         )
 
     def exists(self, intent: StorageIntent) -> StorageReference | None:
+        self.authorize(intent, operation="exists")
         target = self._target(intent.logical_key)
         if not target.exists() and not target.is_symlink():
             return None
         reference = self.reference_for_path(
             target,
             artifact_id=intent.artifact_id,
+            source_id=intent.source_id,
+            source_sha256=intent.source_sha256,
+            document_id=intent.document_id,
+            conversion_id=intent.conversion_id,
+            decision_sha256=intent.decision_sha256,
+            provenance_state="current",
             visibility=intent.visibility,
             rights_state=intent.rights_state,
         )
@@ -256,8 +340,15 @@ class LfsStorageAdapter:
     def materialize(self, intent: StorageIntent, *, temp_root: Path, ledger: EffectLedger) -> PreparedObject:
         if ledger.mode is not RunMode.MATERIALIZE:
             raise LfsIntegrityError("LFS-Materialisierung benötigt RunMode materialize")
+        self.authorize(intent, operation="materialize")
+        payload = read_verified_payload(
+            intent.source_path,
+            sha256=intent.sha256,
+            size=intent.size,
+        )
         target = Path(temp_root) / normalize_posix_path(intent.logical_key)
-        atomic_write_bytes(target, intent.source_path.read_bytes(), allowed_root=Path(temp_root))
+        self.authorize(intent, operation="materialize")
+        atomic_write_bytes(target, payload, allowed_root=Path(temp_root))
         ledger.record(EffectKind.TEMP_FILE, target.absolute().as_posix(), sha256=intent.sha256, size=intent.size)
         return PreparedObject(
             artifact_id=intent.artifact_id,
@@ -266,6 +357,11 @@ class LfsStorageAdapter:
             temp_root=Path(temp_root),
             sha256=intent.sha256,
             size=intent.size,
+            source_id=intent.source_id,
+            source_sha256=intent.source_sha256,
+            decision_sha256=intent.decision_sha256,
+            document_id=intent.document_id,
+            conversion_id=intent.conversion_id,
             visibility=intent.visibility,
             rights_state=intent.rights_state,
         )
@@ -275,6 +371,7 @@ class LfsStorageAdapter:
             raise LfsIntegrityError("LFS-Export benötigt RunMode materialize")
         if reference.storage_backend is not StorageBackend.LFS:
             raise LfsIntegrityError("Referenz gehört nicht zum LFS-Backend")
+        self.authorize(reference, operation="export")
         source, _relative = self._validated_source(
             self.repository_root / normalize_posix_path(reference.relative_path)
         )
@@ -284,19 +381,32 @@ class LfsStorageAdapter:
             if pointer is not None
             else source
         )
-        measured_size, measured_hash = hash_file(payload_source)
-        if (measured_size, measured_hash) != (reference.size, reference.sha256):
-            raise LfsIntegrityError("LFS-Exportquelle und Referenz driften")
+        payload = read_verified_payload(
+            payload_source,
+            sha256=reference.sha256,
+            size=reference.size,
+        )
         target = Path(temp_root) / normalize_posix_path(reference.relative_path)
-        atomic_write_bytes(target, payload_source.read_bytes(), allowed_root=Path(temp_root))
-        ledger.record(EffectKind.TEMP_FILE, target.absolute().as_posix(), sha256=measured_hash, size=measured_size)
+        self.authorize(reference, operation="export")
+        atomic_write_bytes(target, payload, allowed_root=Path(temp_root))
+        ledger.record(
+            EffectKind.TEMP_FILE,
+            target.absolute().as_posix(),
+            sha256=reference.sha256,
+            size=reference.size,
+        )
         return PreparedObject(
             artifact_id=reference.artifact_id,
             logical_key=reference.relative_path,
             path=target,
             temp_root=Path(temp_root),
-            sha256=measured_hash,
-            size=measured_size,
+            sha256=reference.sha256,
+            size=reference.size,
+            source_id=reference.source_id,
+            source_sha256=reference.source_sha256,
+            decision_sha256=reference.decision_sha256,
+            document_id=reference.document_id,
+            conversion_id=reference.conversion_id,
             visibility=reference.visibility,
             rights_state=reference.rights_state,
         )
@@ -304,6 +414,7 @@ class LfsStorageAdapter:
     def apply(self, prepared: PreparedObject, *, ledger: EffectLedger) -> StorageReference:
         if ledger.mode is not RunMode.APPLY:
             raise LfsIntegrityError("LFS-Publikation benötigt RunMode apply")
+        self.authorize(prepared, operation="apply")
         validate_lfs_tracking(self.repository_root / ".gitattributes")
         payload = self._prepared_payload(prepared)
         relative = self._relative_path(prepared.logical_key)
@@ -312,6 +423,12 @@ class LfsStorageAdapter:
             existing = self.reference_for_path(
                 target,
                 artifact_id=prepared.artifact_id,
+                source_id=prepared.source_id,
+                source_sha256=prepared.source_sha256,
+                document_id=prepared.document_id,
+                conversion_id=prepared.conversion_id,
+                decision_sha256=prepared.decision_sha256,
+                provenance_state="current",
                 visibility=prepared.visibility,
                 rights_state=prepared.rights_state,
             )
@@ -319,6 +436,7 @@ class LfsStorageAdapter:
                 raise LfsIntegrityError(
                     f"Vorhandenes LFS-Ziel besitzt anderen Inhalt: {relative}"
                 )
+            self.authorize(prepared, operation="apply")
             return existing
 
         total_before = inventory_lfs_objects(self.repository_root)
@@ -340,28 +458,71 @@ class LfsStorageAdapter:
             total=total_after,
         )
 
-        if not object_exists:
-            atomic_write_bytes(
-                object_path,
-                payload,
-                allowed_root=self.repository_root,
-            )
         pointer = LfsPointer(prepared.sha256, prepared.size).to_text().encode("utf-8")
-        atomic_write_bytes(target, pointer, allowed_root=self.repository_root)
+        object_missing_parents = _missing_parent_directories(
+            object_path,
+            root=self.repository_root,
+        )
+        target_missing_parents = _missing_parent_directories(
+            target,
+            root=self.repository_root,
+        )
+        self.authorize(prepared, operation="apply")
+        object_write_started = False
+        pointer_write_started = False
+        try:
+            if not object_exists:
+                # Repository apply is single-writer; fsync may fail after replace.
+                object_write_started = True
+                atomic_write_bytes(
+                    object_path,
+                    payload,
+                    allowed_root=self.repository_root,
+                )
+            self.authorize(prepared, operation="apply")
+            pointer_write_started = True
+            atomic_write_bytes(target, pointer, allowed_root=self.repository_root)
+            reference = StorageReference(
+                artifact_id=prepared.artifact_id,
+                relative_path=relative,
+                storage_backend=StorageBackend.LFS,
+                storage_object_id=f"sha256:{prepared.sha256}",
+                sha256=prepared.sha256,
+                size=prepared.size,
+                source_id=prepared.source_id,
+                source_sha256=prepared.source_sha256,
+                document_id=prepared.document_id,
+                conversion_id=prepared.conversion_id,
+                decision_sha256=prepared.decision_sha256,
+                provenance_state="current",
+                visibility=prepared.visibility,
+                rights_state=prepared.rights_state,
+                public_reference=None,
+            )
+            self.verify(reference)
+        except BaseException:
+            cleanup_failure: BaseException | None = None
+            for should_cleanup, owned_path, owned_payload, missing_parents in (
+                (pointer_write_started, target, pointer, target_missing_parents),
+                (object_write_started, object_path, payload, object_missing_parents),
+            ):
+                if not should_cleanup:
+                    continue
+                try:
+                    _rollback_owned_file(
+                        owned_path,
+                        payload=owned_payload,
+                        missing_parents=missing_parents,
+                    )
+                except BaseException as cleanup_exc:
+                    cleanup_failure = cleanup_failure or cleanup_exc
+            if cleanup_failure is not None:
+                raise LfsIntegrityError(
+                    "LFS-Zwischeneffekt konnte nicht sicher zurückgerollt werden"
+                ) from cleanup_failure
+            raise
         ledger.record(EffectKind.REPOSITORY_FILE, relative, sha256=prepared.sha256, size=prepared.size)
         ledger.record(EffectKind.LFS, relative, sha256=prepared.sha256, size=prepared.size)
-        reference = StorageReference(
-            artifact_id=prepared.artifact_id,
-            relative_path=relative,
-            storage_backend=StorageBackend.LFS,
-            storage_object_id=f"sha256:{prepared.sha256}",
-            sha256=prepared.sha256,
-            size=prepared.size,
-            visibility=prepared.visibility,
-            rights_state=prepared.rights_state,
-            public_reference=None,
-        )
-        self.verify(reference)
         return reference
 
     def reference_for_path(
@@ -369,6 +530,12 @@ class LfsStorageAdapter:
         path: Path,
         *,
         artifact_id: str,
+        source_id: str | None,
+        source_sha256: str | None,
+        document_id: str | None,
+        conversion_id: str | None,
+        decision_sha256: str | None,
+        provenance_state: str,
         visibility: str,
         rights_state: str,
     ) -> StorageReference:
@@ -386,6 +553,12 @@ class LfsStorageAdapter:
             storage_object_id=f"sha256:{sha256}",
             sha256=sha256,
             size=size,
+            source_id=source_id,
+            source_sha256=source_sha256,
+            document_id=document_id,
+            conversion_id=conversion_id,
+            decision_sha256=decision_sha256,
+            provenance_state=provenance_state,
             visibility=visibility,
             rights_state=rights_state,
             public_reference=None,
@@ -394,9 +567,11 @@ class LfsStorageAdapter:
     def verify(self, reference: StorageReference) -> None:
         if reference.storage_backend is not StorageBackend.LFS:
             raise LfsIntegrityError("Referenz gehört nicht zum LFS-Backend")
+        self.authorize(reference, operation="verify")
         target, _relative = self._validated_source(
             self.repository_root / normalize_posix_path(reference.relative_path)
         )
+        self.authorize(reference, operation="verify")
         pointer = _pointer_from_path(target)
         if pointer is not None:
             if (pointer.oid, pointer.size) != (reference.sha256, reference.size):
@@ -430,6 +605,12 @@ class LfsStorageAdapter:
                 self.reference_for_path(
                     path,
                     artifact_id=f"lfs-{digest}",
+                    source_id=None,
+                    source_sha256=None,
+                    document_id=None,
+                    conversion_id=None,
+                    decision_sha256=None,
+                    provenance_state="legacy_needs_review",
                     visibility="repository_authorized",
                     rights_state="unknown",
                 )

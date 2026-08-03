@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0.0",
+  "artifact_id": "artifact-legacy",
+  "relative_path": "rki/Bulletins/Jahre/1996/PDF/legacy.pdf",
+  "storage_backend": "lfs",
+  "storage_object_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "bytes": 12,
+  "visibility": "repository_authorized",
+  "rights_state": "approved",
+  "public_reference": null
+}

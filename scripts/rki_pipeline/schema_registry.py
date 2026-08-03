@@ -11,6 +11,8 @@ from typing import Any, Callable
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import SchemaError
 
+from scripts.rki_pipeline.storage.base import validate_storage_provenance_relationship
+
 ROOT = Path(__file__).resolve().parents[2]
 REGISTRY_PATH = ROOT / "config" / "schema-registry.json"
 
@@ -69,6 +71,14 @@ def validate_document(name: str, payload: dict[str, Any]) -> None:
         raise SchemaContractError(f"{name}: {rendered}")
     if name == "source-manifest" and payload["same_content_as"] != sorted(payload["same_content_as"]):
         raise SchemaContractError("source-manifest: same_content_as muss lexikalisch sortiert sein")
+    if name == "storage-reference":
+        try:
+            validate_storage_provenance_relationship(
+                payload.get("source_id"),
+                payload.get("document_id"),
+            )
+        except ValueError as exc:
+            raise SchemaContractError(f"storage-reference: {exc}") from exc
 
 
 def _nullable_year(value: Any) -> int | None:
@@ -195,10 +205,34 @@ def migrate_document_manifest_v1_0_to_v1_1(payload: dict[str, Any]) -> dict[str,
     return result
 
 
+def migrate_storage_reference_v1_0_to_v1_1(payload: dict[str, Any]) -> dict[str, Any]:
+    """Migrate storage-reference 1.0.0 without inventing authorization."""
+
+    if payload.get("schema_version") != "1.0.0":
+        raise SchemaContractError(
+            f"Nicht unterstützte Storage-Reference-Migration: {payload.get('schema_version')!r}"
+        )
+    result = deepcopy(payload)
+    result.update(
+        {
+            "schema_version": "1.1.0",
+            "source_id": None,
+            "source_sha256": None,
+            "document_id": None,
+            "conversion_id": None,
+            "decision_sha256": None,
+            "provenance_state": "legacy_needs_review",
+        }
+    )
+    validate_document("storage-reference", result)
+    return result
+
+
 MIGRATIONS: dict[tuple[str, str, str], Callable[[dict[str, Any]], dict[str, Any]]] = {
     ("status", "2.0.0", "3.0.0"): migrate_status_v2_to_v3,
     ("source-manifest", "1.0.0", "1.1.0"): migrate_source_manifest_v1_0_to_v1_1,
     ("document-manifest", "1.0.0", "1.1.0"): migrate_document_manifest_v1_0_to_v1_1,
+    ("storage-reference", "1.0.0", "1.1.0"): migrate_storage_reference_v1_0_to_v1_1,
 }
 
 

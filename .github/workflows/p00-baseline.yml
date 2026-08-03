@@ -8,6 +8,8 @@ on:
       - ".gitattributes"
       - "config/**"
       - "docs/**"
+      - "research/**"
+      - "runbooks/**"
       - "schemas/**"
       - "scripts/**"
       - "tests/**"
@@ -30,6 +32,8 @@ on:
       - ".gitattributes"
       - "config/**"
       - "docs/**"
+      - "research/**"
+      - "runbooks/**"
       - "schemas/**"
       - "scripts/**"
       - "tests/**"
@@ -164,6 +168,12 @@ jobs:
         run: |
           set -Eeuo pipefail
           python3 scripts/validate_p05_dispatcher.py
+
+      - name: Validate rights register
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/validate_rights_register.py
 
       - name: Validate CI mutation safety
         shell: bash

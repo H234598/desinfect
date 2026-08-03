@@ -4,19 +4,21 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 import re
-from typing import Iterable
+from typing import Iterable, Mapping
 from urllib.parse import urlsplit
 
 from scripts.rki_grabber.models import ArtifactRecord, RecordState, Scope
 from scripts.rki_pipeline.documents import DocumentIdentityError, bitstream_identity, document_identity
 from scripts.rki_pipeline.io_utils import atomic_write_text, stable_json_dumps
 from scripts.rki_pipeline.paths import DocumentPathError, DocumentType, repository_document_paths
+from scripts.rki_pipeline.rights import RightsDecision, RightsState
 from scripts.rki_pipeline.schema_registry import SchemaContractError, validate_document
 
 
 _COMPLETE_STATES = frozenset({RecordState.EXISTING, RecordState.DOWNLOADED, RecordState.RESUMED})
 _BITSTREAM_ID = re.compile(r"^rki-bitstream-[0-9a-f]{64}$")
 _DOCUMENT_ID = re.compile(r"^(rki-[a-z0-9-]+)-v([1-9][0-9]*)$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ManifestBuildError(ValueError):
@@ -86,11 +88,37 @@ def _aliases(bitstream_id: str, same_content_as: tuple[str, ...]) -> list[str]:
 
 
 def build_source_manifest(
-    record: ArtifactRecord, *, same_content_as: tuple[str, ...] = ()
+    record: ArtifactRecord,
+    *,
+    rights_decision: RightsDecision,
+    same_content_as: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Build one validated, rights-fail-closed source manifest."""
 
     document, bitstream = _record_identities(record)
+    if (
+        rights_decision.source_id != record.source_id
+        or rights_decision.source_sha256 != record.sha256
+    ):
+        raise ManifestBuildError("Rechteentscheidung gehört zu anderer Quelle oder anderen Bytes")
+    if (
+        rights_decision.state is RightsState.UNKNOWN
+        or not rights_decision.basis
+        or (
+            rights_decision.state
+            in {RightsState.APPROVED, RightsState.INTERNAL_ONLY, RightsState.TAKEDOWN}
+            and (
+                not rights_decision.reviewed_by
+                or not rights_decision.reviewed_at
+                or rights_decision.decision_sha256 is None
+            )
+        )
+        or (
+            rights_decision.decision_sha256 is not None
+            and _SHA256.fullmatch(rights_decision.decision_sha256) is None
+        )
+    ):
+        raise ManifestBuildError("Rechteentscheidung ist nicht kanonisch")
     payload: dict[str, object] = {
         "schema_version": "1.1.0",
         "source_id": document.source_id,
@@ -103,10 +131,10 @@ def build_source_manifest(
         "last_modified": record.last_modified,
         "sha256": record.sha256,
         "rights": {
-            "state": "unknown",
-            "basis": "rights_policy_pending",
-            "reviewed_at": None,
-            "reviewed_by": None,
+            "state": rights_decision.state.value,
+            "basis": rights_decision.basis,
+            "reviewed_at": rights_decision.reviewed_at,
+            "reviewed_by": rights_decision.reviewed_by,
         },
         "provenance_state": "current",
         "bitstream_id": bitstream.bitstream_id,
@@ -116,9 +144,9 @@ def build_source_manifest(
             "label": record.rights.label,
             "license_url": record.rights.uri,
             "copyright_notice": record.rights.copyright_notice,
-            "open_access": None,
+            "open_access": record.rights.open_access,
         },
-        "decision_sha256": None,
+        "decision_sha256": rights_decision.decision_sha256,
         "same_content_as": _aliases(bitstream.bitstream_id, same_content_as),
     }
     return _validated("source-manifest", payload)
@@ -179,14 +207,21 @@ def build_document_manifest(
     return _validated("document-manifest", payload)
 
 
-def build_source_manifests(records: Iterable[ArtifactRecord]) -> tuple[dict[str, object], ...]:
+def build_source_manifests(
+    records: Iterable[ArtifactRecord],
+    *,
+    rights_decisions: Mapping[tuple[str, str], RightsDecision],
+) -> tuple[dict[str, object], ...]:
     """Build sorted source manifests with explicit same-content aliases."""
 
     by_id: dict[str, tuple[ArtifactRecord, dict[str, object]]] = {}
     hashes: dict[str, list[str]] = {}
     for record in records:
         _, bitstream = _record_identities(record)
-        payload = build_source_manifest(record)
+        decision = rights_decisions.get((record.source_id, record.sha256))
+        if decision is None:
+            raise ManifestBuildError("Rechteentscheidung für Source-ID und SHA-256 fehlt")
+        payload = build_source_manifest(record, rights_decision=decision)
         previous = by_id.get(bitstream.bitstream_id)
         if previous is not None and previous[1] != payload:
             raise ManifestBuildError("Gleiche Bitstream-Identität hat widersprüchliche Record-Daten")
@@ -201,7 +236,13 @@ def build_source_manifests(records: Iterable[ArtifactRecord]) -> tuple[dict[str,
             for bitstream_id in unique_ids[1:]:
                 aliases[bitstream_id] = (canonical,)
     return tuple(
-        build_source_manifest(by_id[bitstream_id][0], same_content_as=aliases[bitstream_id])
+        build_source_manifest(
+            by_id[bitstream_id][0],
+            rights_decision=rights_decisions[
+                (by_id[bitstream_id][0].source_id, by_id[bitstream_id][0].sha256)
+            ],
+            same_content_as=aliases[bitstream_id],
+        )
         for bitstream_id in sorted(by_id)
     )
 

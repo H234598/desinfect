@@ -35,6 +35,7 @@ def test_deny_first_and_unlisted_paths_fail_closed() -> None:
         policy,
     ) == "allowed"
     assert classify_path("scripts/evil.py", policy) == "denied"
+    assert classify_path("research/rights-register.yml", policy) == "denied"
     assert classify_path("README.md", policy) == "unlisted"
     with pytest.raises(WritePolicyError, match="denied"):
         validate_operations([WriteOperation("scripts/evil.py")], policy)

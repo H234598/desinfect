@@ -41,6 +41,19 @@ Die stabilen Datentypen sind:
 
 Unbekannte Backends und unbekannte TOML-Schlüssel brechen fail-closed ab. `config/storage.toml` legt Git LFS als initiales Backend fest.
 
+## Rechte-Gate
+
+Jede Payload-Operation benötigt eine aktuelle Entscheidung für das exakte Paar
+aus `source_id` und `source_sha256`. Adapter laden die gepinnte Authority vor
+dem nächsten Byteeffekt erneut; Legacy-Provenienz, fehlende Entscheidungen und
+Revocations blockieren fail-closed. RKI-Rohmetadaten bleiben Evidenz und werden
+nicht als Freigabe verwendet.
+
+Policy, Zustandsmatrix und Reviewverfahren beschreibt
+[Rechte und Lizenzen](../Rechte-und-Lizenzen.md). Bei einer Rücknahme gilt das
+[Rights-Takedown-Runbook](../../runbooks/RIGHTS-TAKEDOWN.md), einschließlich
+Pages-Rebuild und getrennter rechtlicher Behandlung der LFS-Historie.
+
 ## Git LFS
 
 `.gitattributes` verfolgt nur:
@@ -107,6 +120,7 @@ Die P04-CLI führt bewusst nur lokale LFS-Migrationsdrills aus. Produktive Relea
 
 ```bash
 python3 scripts/validate_p04_storage.py
+python3 scripts/validate_rights_register.py
 python3 -m pytest -q \
   tests/test_run_modes.py \
   tests/test_storage_contract.py \

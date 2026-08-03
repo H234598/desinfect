@@ -78,7 +78,28 @@ def test_document_manifest_v1_to_v1_1_is_deterministic_and_derives_periods() -> 
     validate_document("document-manifest", first)
 
 
-@pytest.mark.parametrize("name", ["source-manifest", "document-manifest"])
+def test_storage_reference_v1_to_v1_1_is_deterministic_without_authorization_invention() -> None:
+    source = _fixture("storage-reference-v1.0.json")
+    original = deepcopy(source)
+    first = migrate_document("storage-reference", source)
+    second = migrate_document("storage-reference", deepcopy(source))
+
+    assert source == original
+    assert first == second
+    assert migrate_document("storage-reference", first) == first
+    assert first["schema_version"] == "1.1.0"
+    assert first["provenance_state"] == "legacy_needs_review"
+    assert first["source_id"] is None
+    assert first["source_sha256"] is None
+    assert first["document_id"] is None
+    assert first["conversion_id"] is None
+    assert first["decision_sha256"] is None
+    validate_document("storage-reference", first)
+
+
+@pytest.mark.parametrize(
+    "name", ["source-manifest", "document-manifest", "storage-reference"]
+)
 def test_manifest_migrations_reject_versions_other_than_exact_v1(name: str) -> None:
     with pytest.raises(SchemaContractError, match="weder aktuell noch"):
         migrate_document(name, {"schema_version": "0.9.0"})

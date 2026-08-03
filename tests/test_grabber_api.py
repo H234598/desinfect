@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from copy import deepcopy
 import json
 from pathlib import Path
 
+import pytest
 from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema.exceptions import ValidationError
 
 from scripts.rki_grabber.api import grab
 from scripts.rki_grabber.models import GrabberRequest, Outcome, RecordState, Scope, SourceConfig
@@ -111,12 +114,51 @@ def test_dry_run_is_importable_structured_and_does_not_create_output(tmp_path: P
     assert not output.exists()
     payload = result.to_dict()
     validate_result(payload)
+    assert {record["rights"]["open_access"] for record in payload["records"]} == {
+        True
+    }
     assert payload["affected_periods"] == {
         "weeks": ["1996-W12"],
         "months": ["1996-03"],
         "years": [1996],
     }
     assert "contact" not in payload["request"]
+
+
+def test_grabber_result_schema_requires_nullable_boolean_open_access(
+    tmp_path: Path,
+) -> None:
+    """OA evidence is always present and accepts only bool or null."""
+
+    payload = grab(
+        GrabberRequest(
+            scope=Scope.ISSUES,
+            from_year=1996,
+            to_year=1996,
+            dry_run=True,
+            max_items=1,
+            output_root=tmp_path,
+            delay_seconds=0,
+        ),
+        config=SourceConfig(delay_seconds=0, timeout_seconds=1),
+        transport=FakeTransport(responses(include_pdf=False)),
+        now=clock(),
+    ).to_dict()
+    validate_result(payload)
+
+    nullable = deepcopy(payload)
+    nullable["records"][0]["rights"]["open_access"] = None
+    validate_result(nullable)
+
+    missing = deepcopy(payload)
+    del missing["records"][0]["rights"]["open_access"]
+    with pytest.raises(ValidationError, match="required property"):
+        validate_result(missing)
+
+    malformed = deepcopy(payload)
+    malformed["records"][0]["rights"]["open_access"] = "true"
+    with pytest.raises(ValidationError):
+        validate_result(malformed)
 
 
 def test_materializing_api_downloads_to_relative_path_and_validates_schema(tmp_path: Path) -> None:

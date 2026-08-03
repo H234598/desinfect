@@ -118,6 +118,7 @@ jobs:
           python3 scripts/validate_p03_grabber.py
           python3 scripts/validate_p04_storage.py
           python3 scripts/validate_p05_dispatcher.py
+          python3 scripts/validate_rights_register.py
           python3 scripts/validate_ci_mutation_safety.py
           python3 -m compileall -q scripts tests
           python3 -m unittest discover -s tests -p "test_*.py"

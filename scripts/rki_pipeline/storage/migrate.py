@@ -81,9 +81,25 @@ def plan_migration(source: StorageAdapter, target: StorageAdapter) -> MigrationP
         elif (
             target_reference.sha256,
             target_reference.size,
+            target_reference.source_id,
+            target_reference.source_sha256,
+            target_reference.document_id,
+            target_reference.conversion_id,
+            target_reference.decision_sha256,
+            target_reference.provenance_state,
+            target_reference.visibility,
+            target_reference.rights_state,
         ) == (
             source_reference.sha256,
             source_reference.size,
+            source_reference.source_id,
+            source_reference.source_sha256,
+            source_reference.document_id,
+            source_reference.conversion_id,
+            source_reference.decision_sha256,
+            source_reference.provenance_state,
+            source_reference.visibility,
+            source_reference.rights_state,
         ):
             state = MigrationState.UNCHANGED
         else:
@@ -119,10 +135,14 @@ def materialize_migration(
     if source.backend is not plan.source_backend:
         raise StorageError("Quelladapter stimmt nicht mit dem Migrationsplan überein")
     _reject_conflicts(plan)
+    copy_entries = tuple(
+        entry for entry in plan.entries if entry.state is MigrationState.COPY
+    )
+    for entry in copy_entries:
+        source.authorize(entry.source, operation="export")
     prepared = [
         source.export(entry.source, temp_root=temp_root, ledger=ledger)
-        for entry in plan.entries
-        if entry.state is MigrationState.COPY
+        for entry in copy_entries
     ]
     return tuple(sorted(prepared, key=lambda item: item.artifact_id))
 
@@ -142,6 +162,12 @@ def _validate_prepared_objects(
             prepared.logical_key,
             prepared.sha256,
             prepared.size,
+            prepared.source_id,
+            prepared.source_sha256,
+            prepared.document_id,
+            prepared.conversion_id,
+            prepared.decision_sha256,
+            "current",
             prepared.visibility,
             prepared.rights_state,
         )
@@ -149,6 +175,12 @@ def _validate_prepared_objects(
             expected.relative_path,
             expected.sha256,
             expected.size,
+            expected.source_id,
+            expected.source_sha256,
+            expected.document_id,
+            expected.conversion_id,
+            expected.decision_sha256,
+            expected.provenance_state,
             expected.visibility,
             expected.rights_state,
         )
@@ -184,6 +216,14 @@ def apply_migration(
     if set(prepared_map) != expected_copy:
         raise StorageError("Vorbereitete Objekte stimmen nicht mit Copy-Einträgen überein")
     _validate_prepared_objects(plan, prepared_map)
+
+    for entry in plan.entries:
+        if entry.state is MigrationState.UNCHANGED:
+            if entry.target is None:
+                raise StorageError("Unchanged-Eintrag besitzt keine Zielreferenz")
+            target.authorize(entry.target, operation="verify")
+        elif entry.state is MigrationState.COPY:
+            target.authorize(prepared_map[entry.artifact_id], operation="apply")
 
     references: list[StorageReference] = []
     for entry in plan.entries:
