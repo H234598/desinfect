@@ -11,6 +11,8 @@ from typing import Any, Callable
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import SchemaError
 
+from scripts.rki_pipeline.storage.base import validate_storage_provenance_relationship
+
 ROOT = Path(__file__).resolve().parents[2]
 REGISTRY_PATH = ROOT / "config" / "schema-registry.json"
 
@@ -69,6 +71,14 @@ def validate_document(name: str, payload: dict[str, Any]) -> None:
         raise SchemaContractError(f"{name}: {rendered}")
     if name == "source-manifest" and payload["same_content_as"] != sorted(payload["same_content_as"]):
         raise SchemaContractError("source-manifest: same_content_as muss lexikalisch sortiert sein")
+    if name == "storage-reference":
+        try:
+            validate_storage_provenance_relationship(
+                payload.get("source_id"),
+                payload.get("document_id"),
+            )
+        except ValueError as exc:
+            raise SchemaContractError(f"storage-reference: {exc}") from exc
 
 
 def _nullable_year(value: Any) -> int | None:

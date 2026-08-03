@@ -227,6 +227,40 @@ def test_storage_reference_cannot_mark_missing_authorization_as_current() -> Non
         )
 
 
+@pytest.mark.parametrize(
+    ("source_id", "document_id"),
+    (
+        ("rki:176904/99999.2", DOCUMENT_ID),
+        (SOURCE_ID, "rki-176904-12345-v3"),
+        (None, DOCUMENT_ID),
+    ),
+)
+def test_storage_reference_rejects_document_outside_exact_source_version(
+    source_id: str | None,
+    document_id: str,
+) -> None:
+    """Document links must belong to the same RKI handle and exact source version."""
+
+    with pytest.raises(ValueError, match="source_id.*document_id"):
+        StorageReference(
+            artifact_id="artifact-1",
+            relative_path="rki/Bulletins/Jahre/1994/a.pdf",
+            storage_backend=StorageBackend.LFS,
+            storage_object_id="sha256:" + "a" * 64,
+            sha256="a" * 64,
+            size=12,
+            source_id=source_id,
+            source_sha256=SOURCE_SHA256 if source_id is not None else None,
+            document_id=document_id,
+            conversion_id=None,
+            decision_sha256=DECISION_SHA256 if source_id is not None else None,
+            provenance_state="current" if source_id is not None else "legacy_needs_review",
+            visibility="repository_authorized",
+            rights_state="approved",
+            public_reference=None,
+        )
+
+
 def test_storage_config_rejects_unknown_keys_and_wrong_types(tmp_path: Path) -> None:
     path = write_config(tmp_path, valid_config() + "\nunknown = true\n")
     with pytest.raises(StorageConfigurationError, match="Unbekannte"):

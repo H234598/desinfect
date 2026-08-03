@@ -123,6 +123,32 @@ def test_current_storage_reference_accepts_nullable_document_and_conversion_link
     validate_document("storage-reference", payload)
 
 
+@pytest.mark.parametrize(
+    ("source_id", "document_id"),
+    (
+        ("rki:176904/99999.2", "rki-176904-12345-v2"),
+        ("rki:176904/12345.2", "rki-176904-12345-v3"),
+        (None, "rki-176904-12345-v2"),
+    ),
+)
+def test_storage_reference_schema_rejects_document_outside_source_version(
+    source_id: str | None,
+    document_id: str,
+) -> None:
+    """Schema validation must enforce the semantic source/document relationship."""
+
+    payload = _storage_reference_payload()
+    payload["source_id"] = source_id
+    payload["document_id"] = document_id
+    if source_id is None:
+        payload["source_sha256"] = None
+        payload["decision_sha256"] = None
+        payload["provenance_state"] = "legacy_needs_review"
+
+    with pytest.raises(SchemaContractError, match="source_id.*document_id"):
+        validate_document("storage-reference", payload)
+
+
 def test_schema_validator_checks_storage_reference_predecessor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

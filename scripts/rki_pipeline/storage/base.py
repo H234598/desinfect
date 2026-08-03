@@ -17,8 +17,12 @@ _SHA256 = frozenset("0123456789abcdef")
 _VISIBILITY = frozenset({"public", "repository_authorized", "internal", "restricted"})
 _RIGHTS = frozenset({"approved", "metadata_only", "internal_only", "unknown", "takedown"})
 _PROVENANCE_STATES = frozenset({"current", "legacy_needs_review"})
-_SOURCE_ID = re.compile(r"^rki:176904/[0-9]+(?:\.(?:[2-9]|[1-9][0-9]+))?$")
-_DOCUMENT_ID = re.compile(r"^rki-176904-[0-9]+-v[1-9][0-9]*$")
+_SOURCE_ID = re.compile(
+    r"^rki:176904/(?P<number>[0-9]+)(?:\.(?P<version>[2-9]|[1-9][0-9]+))?$"
+)
+_DOCUMENT_ID = re.compile(
+    r"^rki-176904-(?P<number>[0-9]+)-v(?P<version>[1-9][0-9]*)$"
+)
 _CONVERSION_ID = re.compile(r"^conv-[0-9a-f]{64}$")
 
 
@@ -86,6 +90,26 @@ def _validate_authorization_provenance(
 def _validate_nullable_id(value: str | None, *, name: str, pattern: re.Pattern[str]) -> None:
     if value is not None and (type(value) is not str or pattern.fullmatch(value) is None):
         raise ValueError(f"{name} ist nicht kanonisch")
+
+
+def validate_storage_provenance_relationship(
+    source_id: str | None,
+    document_id: str | None,
+) -> None:
+    """Require an optional document link to match exact source handle and version."""
+
+    if document_id is None:
+        return
+    source = _SOURCE_ID.fullmatch(source_id) if isinstance(source_id, str) else None
+    document = _DOCUMENT_ID.fullmatch(document_id)
+    if source is None or document is None:
+        raise ValueError("source_id und document_id sind nicht kanonisch verknüpft")
+    source_version = int(source.group("version") or "1")
+    if (
+        source.group("number") != document.group("number")
+        or source_version != int(document.group("version"))
+    ):
+        raise ValueError("source_id und document_id müssen Handle und Version teilen")
 
 
 def hash_file(path: Path) -> tuple[int, str]:
@@ -250,6 +274,7 @@ class StorageReference:
         )
         _validate_nullable_id(self.document_id, name="document_id", pattern=_DOCUMENT_ID)
         _validate_nullable_id(self.conversion_id, name="conversion_id", pattern=_CONVERSION_ID)
+        validate_storage_provenance_relationship(self.source_id, self.document_id)
         if not isinstance(self.storage_backend, StorageBackend):
             raise ValueError("storage_backend muss ein StorageBackend sein")
         if type(self.storage_object_id) is not str or not self.storage_object_id:

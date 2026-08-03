@@ -93,6 +93,44 @@ def test_materialize_manifest_must_stay_below_temp_root(tmp_path: Path) -> None:
     assert not outside.exists()
 
 
+def test_materialize_emits_prepared_manifest_version_1_1(tmp_path: Path) -> None:
+    """Emitting the old shape could silently drop nullable provenance links."""
+
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps(empty_plan_payload()) + "\n", encoding="utf-8")
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / ".git").mkdir()
+    (source / ".gitattributes").write_text(
+        "rki/Bulletins/**/*.pdf filter=lfs diff=lfs merge=lfs -text\n"
+        "rki/Bulletins/**/Markdown/**/*.md filter=lfs diff=lfs merge=lfs -text\n"
+        "rki/Bulletins/**/*.zip filter=lfs diff=lfs merge=lfs -text\n",
+        encoding="utf-8",
+    )
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    output = temp_root / "prepared.json"
+
+    result = main(
+        [
+            "--config",
+            str(Path("config/storage.toml")),
+            "materialize",
+            "--plan",
+            str(plan),
+            "--source-repo",
+            str(source),
+            "--temp-root",
+            str(temp_root),
+            "--output",
+            str(output),
+        ]
+    )
+
+    assert result == 0
+    assert json.loads(output.read_text(encoding="utf-8"))["schema_version"] == "1.1.0"
+
+
 def test_json_integer_fields_reject_boolean_coercion() -> None:
     """Machine inputs must not silently coerce booleans into byte counts."""
 
@@ -170,7 +208,23 @@ def test_prepared_object_provenance_roundtrips_without_loss(tmp_path: Path) -> N
     assert payload["decision_sha256"] == "c" * 64
     assert payload["document_id"] == "rki-176904-12345-v2"
     assert payload["conversion_id"] == "conv-" + "d" * 64
-    assert _prepared_objects({"objects": [payload]}) == (prepared,)
+    assert _prepared_objects({"schema_version": "1.1.0", "objects": [payload]}) == (
+        prepared,
+    )
+
+
+@pytest.mark.parametrize("version", (None, "1.0.0", "2.0.0"))
+def test_prepared_reader_rejects_missing_legacy_or_unknown_version(
+    version: str | None,
+) -> None:
+    """Prepared payloads without the complete 1.1 provenance shape must not construct."""
+
+    payload: dict[str, object] = {"objects": []}
+    if version is not None:
+        payload["schema_version"] = version
+
+    with pytest.raises(ValueError, match="Prepared-Manifest-Version"):
+        _prepared_objects(payload)
 
 
 def test_plan_rejects_duplicate_artifact_ids() -> None:

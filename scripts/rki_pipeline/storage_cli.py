@@ -141,6 +141,10 @@ def _plan(payload: dict[str, object]) -> MigrationPlan:
 
 
 def _prepared_objects(payload: dict[str, object]) -> tuple[PreparedObject, ...]:
+    if payload.get("schema_version") != "1.1.0":
+        raise ValueError(
+            f"Unbekannte Prepared-Manifest-Version: {payload.get('schema_version')!r}"
+        )
     raw_objects = _required(payload, "objects")
     if not isinstance(raw_objects, list):
         raise ValueError("Prepared-Manifest besitzt keine Objektliste")
@@ -261,7 +265,7 @@ def main(argv: list[str] | None = None) -> int:
                 ledger=ledger,
             )
             payload = {
-                "schema_version": "1.0.0",
+                "schema_version": "1.1.0",
                 "plan_sha256": migration.sha256,
                 "objects": [_prepared_object_payload(item) for item in prepared],
             }
