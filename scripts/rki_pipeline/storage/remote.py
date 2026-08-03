@@ -257,12 +257,14 @@ class RemoteStorageAdapter:
         if reference.storage_backend is not self.backend:
             raise StorageError("Referenz gehört zu einem anderen Backend")
         self.authorize(reference, operation="export")
-        target = Path(temp_root) / normalize_posix_path(reference.relative_path)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        root = Path(temp_root)
+        if root.is_symlink() or not root.is_dir():
+            raise StorageError("Remote-Export benötigt ein bestehendes Temp-Verzeichnis")
+        target = root / normalize_posix_path(reference.relative_path)
         with NamedTemporaryFile(
-            prefix=f".{target.name}.export-",
+            prefix=".desinfect-export-",
             suffix=".part",
-            dir=target.parent,
+            dir=root,
             delete=False,
         ) as handle:
             part = Path(handle.name)
@@ -275,7 +277,7 @@ class RemoteStorageAdapter:
                 size=reference.size,
             )
             self.authorize(reference, operation="export")
-            atomic_write_bytes(target, payload, allowed_root=Path(temp_root))
+            atomic_write_bytes(target, payload, allowed_root=root)
         finally:
             part.unlink(missing_ok=True)
         ledger.record(
@@ -334,6 +336,7 @@ class RemoteStorageAdapter:
             self.authorize(prepared, operation="apply")
             return reference
 
+        self.authorize(prepared, operation="apply")
         with TemporaryDirectory(prefix="desinfect-remote-upload-") as temporary:
             snapshot, measured_size, measured_hash = self._snapshot_prepared(
                 prepared,
@@ -396,9 +399,12 @@ class RemoteStorageAdapter:
             if not isinstance(metadata, dict) or type(metadata.get("key")) is not str:
                 raise StorageError("Remote-Liste enthält ungültige Metadaten")
             try:
-                key = normalize_posix_path(metadata["key"])
+                raw_key = metadata["key"]
+                key = normalize_posix_path(raw_key)
             except ValueError as exc:
                 raise StorageError("Remote-Liste enthält ungültigen Pfad") from exc
+            if raw_key != key:
+                raise StorageError("Remote-Listenschlüssel ist nicht kanonisch")
             if not key.startswith(f"{self.prefix}/"):
                 raise StorageError("Remote-Listenschlüssel liegt außerhalb des Prefix")
             references.append(

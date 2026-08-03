@@ -629,3 +629,41 @@ def test_lfs_intra_call_revocation_blocks_next_payload_effect(
     assert tree_snapshot(repository) == repository_before
     assert tree_snapshot(destination) == destination_before
     assert ledger.events == []
+
+
+@pytest.mark.parametrize("failure", ("revocation", "pointer-write"))
+def test_lfs_apply_rolls_back_its_new_object_before_pointer_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    storage_rights,
+    failure: str,
+) -> None:
+    repository = repository_with_tracking(tmp_path)
+    adapter = LfsStorageAdapter(
+        repository_root=repository,
+        config=config(),
+        authorizer=storage_rights.authorizer,
+    )
+    _source_intent, prepared = materialized_pdf(tmp_path, adapter)
+    ledger = EffectLedger(RunMode.APPLY)
+    before = tree_snapshot(repository)
+    original = lfs_storage.atomic_write_bytes
+    writes = 0
+
+    def fail_after_object_write(*args, **kwargs):
+        nonlocal writes
+        writes += 1
+        if writes == 2 and failure == "pointer-write":
+            raise RuntimeError("injected pointer write failure")
+        original(*args, **kwargs)
+        if writes == 1 and failure == "revocation":
+            storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))
+
+    monkeypatch.setattr(lfs_storage, "atomic_write_bytes", fail_after_object_write)
+
+    expected = StorageError if failure == "revocation" else RuntimeError
+    with pytest.raises(expected):
+        adapter.apply(prepared, ledger=ledger)
+
+    assert tree_snapshot(repository) == before
+    assert ledger.events == []

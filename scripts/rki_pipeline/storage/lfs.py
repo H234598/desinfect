@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import errno
 import hashlib
 from pathlib import Path
 import re
@@ -41,6 +42,56 @@ class LfsIntegrityError(StorageError):
 
 class LfsBudgetError(StorageError):
     """A configured per-run or total LFS budget would be exceeded."""
+
+
+def _missing_parent_directories(path: Path, *, root: Path) -> tuple[Path, ...]:
+    """Capture absent parents below root, deepest first, before one write."""
+
+    missing: list[Path] = []
+    parent = path.parent
+    while parent != root:
+        try:
+            parent.relative_to(root)
+        except ValueError as exc:
+            raise LfsIntegrityError(
+                "Rollback-Pfad liegt außerhalb des Repositoryroots"
+            ) from exc
+        if parent.exists() or parent.is_symlink():
+            break
+        missing.append(parent)
+        parent = parent.parent
+    return tuple(missing)
+
+
+def _rollback_owned_file(
+    path: Path,
+    *,
+    payload: bytes,
+    missing_parents: tuple[Path, ...],
+) -> None:
+    """Remove only the exact bytes and empty parents created by this call."""
+
+    if path.is_symlink():
+        raise LfsIntegrityError(f"Rollback-Ziel wurde durch Symlink ersetzt: {path}")
+    if path.exists():
+        if not path.is_file():
+            raise LfsIntegrityError(f"Rollback-Ziel ist keine reguläre Datei: {path}")
+        measured_size, measured_hash = hash_file(path)
+        expected_hash = hashlib.sha256(payload).hexdigest()
+        if (measured_size, measured_hash) != (len(payload), expected_hash):
+            raise LfsIntegrityError(f"Rollback-Ziel enthält fremde Bytes: {path}")
+        path.unlink()
+    for parent in missing_parents:
+        try:
+            parent.rmdir()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            if exc.errno in {errno.ENOTEMPTY, errno.EEXIST}:
+                break
+            raise LfsIntegrityError(
+                f"Neu angelegtes Rollback-Verzeichnis ist nicht entfernbar: {parent}"
+            ) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -408,14 +459,49 @@ class LfsStorageAdapter:
         )
 
         pointer = LfsPointer(prepared.sha256, prepared.size).to_text().encode("utf-8")
+        object_missing_parents = _missing_parent_directories(
+            object_path,
+            root=self.repository_root,
+        )
+        target_missing_parents = _missing_parent_directories(
+            target,
+            root=self.repository_root,
+        )
         self.authorize(prepared, operation="apply")
-        if not object_exists:
-            atomic_write_bytes(
-                object_path,
-                payload,
-                allowed_root=self.repository_root,
-            )
-        atomic_write_bytes(target, pointer, allowed_root=self.repository_root)
+        object_created = False
+        pointer_write_started = False
+        try:
+            if not object_exists:
+                atomic_write_bytes(
+                    object_path,
+                    payload,
+                    allowed_root=self.repository_root,
+                )
+                object_created = True
+            self.authorize(prepared, operation="apply")
+            pointer_write_started = True
+            atomic_write_bytes(target, pointer, allowed_root=self.repository_root)
+        except Exception:
+            cleanup_failure: Exception | None = None
+            for should_cleanup, owned_path, owned_payload, missing_parents in (
+                (pointer_write_started, target, pointer, target_missing_parents),
+                (object_created, object_path, payload, object_missing_parents),
+            ):
+                if not should_cleanup:
+                    continue
+                try:
+                    _rollback_owned_file(
+                        owned_path,
+                        payload=owned_payload,
+                        missing_parents=missing_parents,
+                    )
+                except Exception as cleanup_exc:
+                    cleanup_failure = cleanup_failure or cleanup_exc
+            if cleanup_failure is not None:
+                raise LfsIntegrityError(
+                    "LFS-Zwischeneffekt konnte nicht sicher zurückgerollt werden"
+                ) from cleanup_failure
+            raise
         ledger.record(EffectKind.REPOSITORY_FILE, relative, sha256=prepared.sha256, size=prepared.size)
         ledger.record(EffectKind.LFS, relative, sha256=prepared.sha256, size=prepared.size)
         reference = StorageReference(

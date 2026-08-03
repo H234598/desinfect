@@ -6,7 +6,6 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 import hashlib
 from pathlib import Path
-import unicodedata
 
 import pytest
 
@@ -731,13 +730,46 @@ def test_remote_intra_call_revocation_blocks_next_payload_effect(
         action()
 
     assert client.objects == objects_before
-    if operation.startswith("export"):
-        target = destination / reference.relative_path
-        assert not target.exists()
-        assert not tuple(destination.rglob("*.part"))
-        assert (destination / "sentinel").read_bytes() == b"keep"
-    else:
-        assert tree_snapshot(destination) == destination_before
+    assert tree_snapshot(destination) == destination_before
+    assert ledger.events == []
+
+
+def test_remote_apply_reauthorizes_before_prepared_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    storage_rights,
+) -> None:
+    client = MemoryClient()
+    adapter = object_adapter(client, storage_rights)
+    prepared_root = tmp_path / "prepared-snapshot"
+    prepared_root.mkdir()
+    prepared = adapter.materialize(
+        intent(tmp_path),
+        temp_root=prepared_root,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=prepared_root),
+    )
+    ledger = EffectLedger(RunMode.APPLY)
+    before = tree_snapshot(prepared_root)
+    original = RemoteStorageAdapter._snapshot_prepared
+
+    def mark_snapshot_entry(subject, directory):
+        (prepared_root / "snapshot-entered").write_bytes(b"unexpected read")
+        return original(subject, directory)
+
+    monkeypatch.setattr(
+        RemoteStorageAdapter,
+        "_snapshot_prepared",
+        staticmethod(mark_snapshot_entry),
+    )
+    client.head_hook = lambda: storage_rights.set_decisions(
+        (SOURCE_ID, SOURCE_SHA256, "takedown")
+    )
+
+    with pytest.raises(StorageError, match="Rechte|autorisiert"):
+        adapter.apply(prepared, ledger=ledger)
+
+    assert tree_snapshot(prepared_root) == before
+    assert client.objects == {}
     assert ledger.events == []
 
 
@@ -750,6 +782,10 @@ def test_remote_intra_call_revocation_blocks_next_payload_effect(
         ("rki/Bulletins/../archive.zip", None),
         (
             "rki/Bulletins/Jahre/1994/Cafe\u0301.zip",
+            None,
+        ),
+        (
+            "rki/Bulletins/Jahre/1994/Caf\u00e9.zip",
             "rki/Bulletins/Jahre/1994/Caf\u00e9.zip",
         ),
     ),
@@ -780,11 +816,11 @@ def test_remote_list_normalizes_strictly_confined_keys(
     client.calls.clear()
 
     if expected_key is None:
-        with pytest.raises(StorageError, match="Pfad|Prefix|Schl.ssel"):
+        with pytest.raises(StorageError, match="Pfad|Prefix|Schl.ssel|kanonisch"):
             adapter.list_references()
     else:
         listed = adapter.list_references()
-        assert listed[0].relative_path == unicodedata.normalize("NFC", expected_key)
+        assert listed[0].relative_path == expected_key
         assert listed[0].storage_object_id.endswith(f":{expected_key}")
 
     assert client.calls == [("list", "rki/Bulletins")]
