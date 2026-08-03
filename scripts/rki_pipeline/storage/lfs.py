@@ -482,6 +482,24 @@ class LfsStorageAdapter:
             self.authorize(prepared, operation="apply")
             pointer_write_started = True
             atomic_write_bytes(target, pointer, allowed_root=self.repository_root)
+            reference = StorageReference(
+                artifact_id=prepared.artifact_id,
+                relative_path=relative,
+                storage_backend=StorageBackend.LFS,
+                storage_object_id=f"sha256:{prepared.sha256}",
+                sha256=prepared.sha256,
+                size=prepared.size,
+                source_id=prepared.source_id,
+                source_sha256=prepared.source_sha256,
+                document_id=prepared.document_id,
+                conversion_id=prepared.conversion_id,
+                decision_sha256=prepared.decision_sha256,
+                provenance_state="current",
+                visibility=prepared.visibility,
+                rights_state=prepared.rights_state,
+                public_reference=None,
+            )
+            self.verify(reference)
         except BaseException:
             cleanup_failure: BaseException | None = None
             for should_cleanup, owned_path, owned_payload, missing_parents in (
@@ -505,24 +523,6 @@ class LfsStorageAdapter:
             raise
         ledger.record(EffectKind.REPOSITORY_FILE, relative, sha256=prepared.sha256, size=prepared.size)
         ledger.record(EffectKind.LFS, relative, sha256=prepared.sha256, size=prepared.size)
-        reference = StorageReference(
-            artifact_id=prepared.artifact_id,
-            relative_path=relative,
-            storage_backend=StorageBackend.LFS,
-            storage_object_id=f"sha256:{prepared.sha256}",
-            sha256=prepared.sha256,
-            size=prepared.size,
-            source_id=prepared.source_id,
-            source_sha256=prepared.source_sha256,
-            document_id=prepared.document_id,
-            conversion_id=prepared.conversion_id,
-            decision_sha256=prepared.decision_sha256,
-            provenance_state="current",
-            visibility=prepared.visibility,
-            rights_state=prepared.rights_state,
-            public_reference=None,
-        )
-        self.verify(reference)
         return reference
 
     def reference_for_path(

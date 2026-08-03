@@ -685,3 +685,60 @@ def test_lfs_apply_rolls_back_its_new_object_before_pointer_failure(
 
     assert tree_snapshot(repository) == before
     assert ledger.events == []
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    (
+        ("before-pointer-write", StorageError),
+        ("after-pointer-write", StorageError),
+        ("verify-interrupt", KeyboardInterrupt),
+    ),
+)
+@pytest.mark.parametrize("object_preexists", (False, True))
+def test_lfs_apply_rolls_back_pointer_and_owned_object_when_post_write_verify_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    storage_rights,
+    failure: str,
+    expected: type[BaseException],
+    object_preexists: bool,
+) -> None:
+    repository = repository_with_tracking(tmp_path)
+    adapter = LfsStorageAdapter(
+        repository_root=repository,
+        config=config(),
+        authorizer=storage_rights.authorizer,
+    )
+    _source_intent, prepared = materialized_pdf(tmp_path, adapter)
+    object_path = lfs_object_path(repository, prepared.sha256)
+    if object_preexists:
+        object_path.parent.mkdir(parents=True)
+        object_path.write_bytes(prepared.path.read_bytes())
+    target = repository / "rki/Bulletins/Jahre/1994/source.pdf"
+    ledger = EffectLedger(RunMode.APPLY)
+    before = tree_snapshot(repository)
+    original_write = lfs_storage.atomic_write_bytes
+
+    def write_with_revocation(path, payload, **kwargs):
+        is_pointer = Path(path) == target
+        if is_pointer and failure == "before-pointer-write":
+            storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))
+        original_write(path, payload, **kwargs)
+        if is_pointer and failure == "after-pointer-write":
+            storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))
+
+    monkeypatch.setattr(lfs_storage, "atomic_write_bytes", write_with_revocation)
+    if failure == "verify-interrupt":
+        def interrupt_verify(self, reference):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(LfsStorageAdapter, "verify", interrupt_verify)
+
+    with pytest.raises(expected):
+        adapter.apply(prepared, ledger=ledger)
+
+    assert tree_snapshot(repository) == before
+    assert ledger.events == []
+    if object_preexists:
+        assert object_path.read_bytes() == prepared.path.read_bytes()
