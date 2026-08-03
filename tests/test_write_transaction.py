@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import scripts.rki_pipeline.transaction as transaction_module
 from scripts.rki_pipeline.dispatch_plan import DispatchPlan
 from scripts.rki_pipeline.due_tasks import DueTask, TaskKind
 from scripts.rki_pipeline.run_modes import EffectKind, RunMode
@@ -191,6 +192,60 @@ def test_second_plan_failure_prevents_all_materialize_and_apply(tmp_path: Path) 
     assert not any(call.startswith("materialize:") for call in handler.calls)
     assert not any(call.startswith("apply:") for call in handler.calls)
     assert caught.value.run_manifest["status"] == "failed"
+
+
+@pytest.mark.parametrize("interrupt_type", (KeyboardInterrupt, SystemExit))
+def test_process_interrupts_pass_through(
+    tmp_path: Path,
+    interrupt_type: type[BaseException],
+) -> None:
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    head = init_repo(repository)
+
+    class InterruptingHandler(Handler):
+        def plan(self, due: DueTask, context: TransactionContext) -> TaskPlan:
+            raise interrupt_type("cancelled")
+
+    with pytest.raises(interrupt_type, match="cancelled"):
+        execute_transaction(
+            plan(head, (task("2025"),)),
+            current_head=head,
+            repository_root=repository,
+            temp_root=tmp_path / "temp",
+            handlers={TaskKind.YEAR: InterruptingHandler(repository)},
+            validator=lambda _values: None,
+            now="2026-07-31T12:00:00Z",
+        )
+
+
+@pytest.mark.parametrize("interrupt_type", (KeyboardInterrupt, SystemExit))
+def test_failure_recording_interrupts_pass_through(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interrupt_type: type[BaseException],
+) -> None:
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    head = init_repo(repository)
+    original_update_run = transaction_module.update_run
+
+    def interrupt_failed_update(*args, **kwargs):
+        if kwargs.get("status") == "failed":
+            raise interrupt_type("cancelled")
+        return original_update_run(*args, **kwargs)
+
+    monkeypatch.setattr(transaction_module, "update_run", interrupt_failed_update)
+    with pytest.raises(interrupt_type, match="cancelled"):
+        execute_transaction(
+            plan(head, (task("2025"),)),
+            current_head=head,
+            repository_root=repository,
+            temp_root=tmp_path / "temp",
+            handlers={TaskKind.YEAR: Handler(repository, fail_plan_for="year:2025")},
+            validator=lambda _values: None,
+            now="2026-07-31T12:00:00Z",
+        )
 
 
 def test_validation_failure_prevents_apply(tmp_path: Path) -> None:

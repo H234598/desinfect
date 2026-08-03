@@ -104,14 +104,38 @@ def _staged_paths(runner: GitRunner) -> tuple[str, ...]:
     )
 
 
+def _literal_pathspec(path: str) -> str:
+    return f":(literal){path}"
+
+
 def _staged_entry(runner: GitRunner, path: str) -> TreeEntry:
-    stage = runner.run("ls-files", "--stage", "--", path).decode("utf-8").strip()
-    if not stage:
-        raise GitWriterError(f"Staged Pfad fehlt im Index: {path}")
-    fields = stage.split(maxsplit=3)
-    if len(fields) != 4:
+    records = tuple(
+        record
+        for record in runner.run(
+            "ls-files",
+            "--stage",
+            "-z",
+            "--error-unmatch",
+            "--",
+            _literal_pathspec(path),
+        ).split(b"\0")
+        if record
+    )
+    if len(records) != 1:
+        raise GitWriterError(
+            f"Staged Pfad besitzt nicht genau einen Indexeintrag: {path}"
+        )
+    header, separator, record_path = records[0].partition(b"\t")
+    fields = header.split()
+    if separator != b"\t" or len(fields) != 3:
         raise GitWriterError(f"Ungültiger Indexeintrag: {path}")
-    mode = fields[0]
+    if fields[2] != b"0":
+        raise GitWriterError(
+            f"Staged Pfad besitzt nicht genau einen Indexeintrag: {path}"
+        )
+    if record_path.decode("utf-8", errors="strict") != path:
+        raise GitWriterError(f"Indexeintrag besitzt unerwarteten Pfad: {path}")
+    mode = fields[0].decode("ascii", errors="strict")
     if mode not in {"100644", "100755"}:
         raise GitWriterError(f"Unzulässiger Indexmodus {mode}: {path}")
     payload = runner.run("show", f":{path}")
@@ -130,14 +154,20 @@ def working_tree_entries(root: Path, paths: Sequence[str]) -> tuple[TreeEntry, .
     for raw in sorted(set(paths)):
         path = normalize_posix_path(raw)
         candidate = repository / path
-        if candidate.is_symlink() or not candidate.is_file():
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError as exc:
+            raise GitWriterError(f"Commitquelle ist keine reguläre Datei: {path}") from exc
+        if not resolved.is_relative_to(repository) or resolved != candidate.absolute():
+            raise GitWriterError(f"Commitquelle verlässt das Repository: {path}")
+        if not resolved.is_file():
             raise GitWriterError(f"Commitquelle ist keine reguläre Datei: {path}")
-        mode = "100755" if stat.S_IMODE(candidate.stat().st_mode) & 0o111 else "100644"
+        mode = "100755" if stat.S_IMODE(resolved.stat().st_mode) & 0o111 else "100644"
         entries.append(
             TreeEntry(
                 path=path,
                 mode=mode,
-                sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(),
+                sha256=hashlib.sha256(resolved.read_bytes()).hexdigest(),
             )
         )
     return tuple(entries)
@@ -172,7 +202,11 @@ def apply_commit_plan(
             "CommitPlan-Pfade besitzen keine Arbeitsbaumänderung: " + ", ".join(missing_dirty)
         )
 
-    runner.run("add", "--", *plan.changed_paths)
+    runner.run(
+        "add",
+        "--",
+        *(_literal_pathspec(path) for path in plan.changed_paths),
+    )
     validate_index(Path(repository_root))
     staged = _staged_paths(runner)
     if staged != plan.changed_paths:

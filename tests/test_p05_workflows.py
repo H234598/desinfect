@@ -36,7 +36,9 @@ def test_dispatcher_is_read_only_and_calls_reusable_pipeline() -> None:
     assert data["permissions"] == {"contents": "read"}
     pipeline = data["jobs"]["pipeline"]
     assert pipeline["uses"] == "./.github/workflows/rki-pipeline.yml"
-    assert pipeline["secrets"] == "inherit"
+    assert pipeline["secrets"] == {
+        "WACHHUND_APP_PRIVATE_KEY": "${{ secrets.WACHHUND_APP_PRIVATE_KEY }}",
+    }
     text = path.read_text(encoding="utf-8")
     assert "git commit" not in text
     assert "git push" not in text
@@ -46,6 +48,9 @@ def test_pipeline_owns_the_only_writer_concurrency_and_never_cancels() -> None:
     path, data = load("rki-pipeline.yml")
     assert set(triggers(data)) == {"workflow_call", "workflow_dispatch"}
     assert data["permissions"] == {"contents": "read"}
+    assert triggers(data)["workflow_call"]["secrets"] == {
+        "WACHHUND_APP_PRIVATE_KEY": {"required": True},
+    }
     assert data["concurrency"] == {
         "group": "desinfect-repository-writer",
         "cancel-in-progress": False,
@@ -71,6 +76,20 @@ def test_app_token_is_repository_scoped_and_created_after_validation() -> None:
     assert "GITHUB_TOKEN" not in str(steps[writer])
 
 
+def test_writer_email_is_passed_via_environment() -> None:
+    _path, data = load("rki-pipeline.yml")
+    writer = next(
+        step for step in data["jobs"]["pipeline"]["steps"]
+        if step["name"] == "Commit and push safely"
+    )
+    assert writer["env"]["BOT_EMAIL"] == (
+        "${{ vars.WACHHUND_BOT_EMAIL || "
+        "'41898282+github-actions[bot]@users.noreply.github.com' }}"
+    )
+    assert "vars.WACHHUND_BOT_EMAIL" not in writer["run"]
+    assert 'git config user.email "$BOT_EMAIL"' in writer["run"]
+
+
 def test_backfill_is_manual_bounded_and_requires_literal_apply_confirmation() -> None:
     path, data = load("rki-backfill.yml")
     assert set(triggers(data)) == {"workflow_dispatch"}
@@ -79,7 +98,11 @@ def test_backfill_is_manual_bounded_and_requires_literal_apply_confirmation() ->
     text = path.read_text(encoding="utf-8")
     assert '[[ "$CONFIRM_APPLY" != "APPLY" ]]' in text
     assert "schedule:" not in text
-    assert data["jobs"]["pipeline"]["uses"] == "./.github/workflows/rki-pipeline.yml"
+    pipeline = data["jobs"]["pipeline"]
+    assert pipeline["uses"] == "./.github/workflows/rki-pipeline.yml"
+    assert pipeline["secrets"] == {
+        "WACHHUND_APP_PRIVATE_KEY": "${{ secrets.WACHHUND_APP_PRIVATE_KEY }}",
+    }
 
 
 def test_variant_b_validator_accepts_repository_workflows() -> None:

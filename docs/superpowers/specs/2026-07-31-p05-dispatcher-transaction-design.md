@@ -118,6 +118,7 @@ class DispatchLimits:
     max_months: int
     max_years: int
     max_reconciliations: int
+    reconciliation_interval_days: int
 
 @dataclass(frozen=True, slots=True)
 class DueTask:
@@ -181,7 +182,12 @@ Koordiniert eine vollständige Transaktion über vorhandene P04-Primitiven. Fach
 class TaskHandler(Protocol):
     def plan(self, task: DueTask, context: TransactionContext) -> TaskPlan: ...
     def materialize(self, plan: TaskPlan, context: TransactionContext) -> TaskResult: ...
-    def apply(self, result: TaskResult, context: TransactionContext) -> tuple[WriteOperation, ...]: ...
+    def apply(
+        self,
+        task: DueTask,
+        result: TaskResult,
+        context: TransactionContext,
+    ) -> tuple[WriteOperation, ...]: ...
 
 @dataclass(frozen=True, slots=True)
 class TransactionResult:
@@ -214,7 +220,9 @@ Erzeugt einen unveränderlichen Commitvertrag:
 @dataclass(frozen=True, slots=True)
 class CommitPlan:
     expected_base_sha: str
-    changed_paths: tuple[str, ...]
+    entries: tuple[TreeEntry, ...]
+    task_ids: tuple[str, ...]
+    dispatch_plan_sha256: str
     subject: str
     body: str
     tree_sha256: str

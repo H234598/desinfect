@@ -101,4 +101,5 @@ jobs:
     with:
       dispatch_plan_b64: ${{ needs.plan.outputs.dispatch_plan_b64 }}
       confirm_apply: APPLY
-    secrets: inherit
+    secrets:
+      WACHHUND_APP_PRIVATE_KEY: ${{ secrets.WACHHUND_APP_PRIVATE_KEY }}

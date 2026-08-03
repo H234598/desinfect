@@ -23,6 +23,31 @@ def test_all_registered_schemas_are_strict_draft_2020_12() -> None:
         assert schema["$schema"].endswith("2020-12/schema")
 
 
+def test_invalid_registered_schema_raises_contract_error(tmp_path: Path) -> None:
+    schema_path = tmp_path / "invalid.schema.json"
+    schema_path.write_text(
+        json.dumps(
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "not-a-json-schema-type",
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry = {
+        "contracts": [
+            {
+                "name": "invalid",
+                "path": str(schema_path),
+                "current_version": "1.0.0",
+            }
+        ]
+    }
+
+    with pytest.raises(SchemaContractError, match="Schema ist ungültig"):
+        load_schema("invalid", registry)
+
+
 def test_public_status_validates_and_unknown_field_fails_closed() -> None:
     status = json.loads((ROOT / "status.json").read_text(encoding="utf-8"))
     validate_document("status", status)

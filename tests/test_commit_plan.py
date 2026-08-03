@@ -9,6 +9,7 @@ from scripts.rki_pipeline.commit_plan import (
     build_commit_plan,
     compute_tree_sha256,
 )
+from scripts.rki_pipeline.io_utils import PathCollisionError
 
 
 def entry(path: str, payload: str = "a", mode: str = "100644") -> TreeEntry:
@@ -44,7 +45,7 @@ def test_commit_plan_is_canonical_and_internal_only() -> None:
 def test_commit_plan_rejects_empty_and_colliding_paths() -> None:
     with pytest.raises(CommitPlanError, match="Leerer"):
         compute_tree_sha256(())
-    with pytest.raises(Exception):
+    with pytest.raises(PathCollisionError):
         build_commit_plan(
             expected_base_sha="a" * 40,
             entries=(entry("A.txt", "a"), entry("a.txt", "b")),

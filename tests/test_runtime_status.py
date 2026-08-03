@@ -13,6 +13,7 @@ from scripts.rki_pipeline.runtime_status import (
     redact_text,
     update_run,
 )
+from scripts.rki_pipeline.schema_registry import SchemaContractError
 
 ROOT = Path(__file__).resolve().parents[1]
 NOW = "2026-07-28T07:00:00Z"
@@ -65,6 +66,19 @@ def test_new_run_preserves_dispatch_trigger_and_canonical_task_ids(trigger_sourc
         "week:2026-W30",
         "year:2025",
     ]
+
+
+@pytest.mark.parametrize(
+    "task_id",
+    ["year:2025\n", "year:2025\r\n", "year: 2025", "year:\t2025"],
+)
+def test_new_run_rejects_whitespace_in_task_ids(task_id: str) -> None:
+    with pytest.raises(SchemaContractError):
+        new_run(
+            workflow="rki-dispatcher", trigger_source="schedule", run_mode="apply",
+            storage_backend="lfs", run_id="dispatch-invalid-task", now=NOW,
+            tasks=[task_id],
+        )
 
 
 def test_failed_run_does_not_change_success_clocks_and_redacts_secret() -> None:

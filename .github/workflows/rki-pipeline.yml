@@ -12,6 +12,9 @@ on:
         required: false
         default: ""
         type: string
+    secrets:
+      WACHHUND_APP_PRIVATE_KEY:
+        required: true
   workflow_dispatch:
     inputs:
       dispatch_plan_b64:
@@ -205,6 +208,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BOT_EMAIL: ${{ vars.WACHHUND_BOT_EMAIL || '41898282+github-actions[bot]@users.noreply.github.com' }}
         run: |
           set -Eeuo pipefail
           git status --short
@@ -213,7 +217,7 @@ jobs:
             exit 0
           fi
           git config user.name "Wachhund[bot]"
-          git config user.email "${{ vars.WACHHUND_BOT_EMAIL || '41898282+github-actions[bot]@users.noreply.github.com' }}"
+          git config user.email "$BOT_EMAIL"
           gh auth setup-git
           python3 -m scripts.rki_pipeline.pipeline_cli commit \
             --plan build/pipeline/commit-plan.json \

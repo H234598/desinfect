@@ -119,7 +119,7 @@ def _failed_run(
                 "acknowledged": False,
             },
         )
-    except BaseException:
+    except Exception:
         return run
 
 
@@ -186,8 +186,8 @@ def execute_transaction(
         raise TypeError("plan muss DispatchPlan sein")
     if type(current_head) is not str or current_head != plan.base_sha:
         raise TransactionError("Dispatchplan-Basis stimmt nicht mit aktuellem HEAD überein")
-    repository = Path(repository_root).absolute()
-    temporary = Path(temp_root).absolute()
+    repository = Path(repository_root).resolve()
+    temporary = Path(temp_root).resolve()
     run = new_run(
         workflow="rki-pipeline",
         trigger_source=plan.trigger,
@@ -339,6 +339,6 @@ def execute_transaction(
             changed_paths=changed_paths,
             validation_count=validation_count,
         )
-    except BaseException as exc:
+    except Exception as exc:
         failed = _failed_run(run, phase=run.get("phase", "initialize"), error=exc, now=now)
         raise TransactionError(str(exc), run_manifest=failed) from exc
