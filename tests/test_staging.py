@@ -8,7 +8,11 @@ import pytest
 
 from scripts.rki_pipeline.io_utils import UnsafePathError, mark_generated_root
 from scripts.rki_pipeline import staging as staging_module
-from scripts.rki_pipeline.staging import StagingError, staged_directory
+from scripts.rki_pipeline.staging import (
+    StagingError,
+    StagingUnsupportedError,
+    staged_directory,
+)
 
 
 def _generated(path: Path, payload: str) -> None:
@@ -72,6 +76,31 @@ def test_staged_directory_rejects_cross_device(
     with pytest.raises(StagingError, match="Cross-device"):
         with staged_directory(target, allowed_root=tmp_path):
             pass
+
+
+def test_rename_noreplace_reports_unsupported_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UnsupportedRename:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *args: object) -> int:
+            del args
+            return -1
+
+    class Library:
+        renameat2 = UnsupportedRename()
+
+    monkeypatch.setattr(staging_module.ctypes, "CDLL", lambda *args, **kwargs: Library())
+    monkeypatch.setattr(
+        staging_module.ctypes,
+        "get_errno",
+        lambda: staging_module.errno.ENOSYS,
+    )
+
+    with pytest.raises(StagingUnsupportedError, match="nicht unterstützt"):
+        staging_module._rename_noreplace(3, "source", "target")
 
 
 def test_staged_directory_cleans_setup_failure(

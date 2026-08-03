@@ -31,6 +31,16 @@
       "synthetic": true
     },
     {
+      "bytes": 979,
+      "license_status": "synthetic",
+      "media_type": "application/pdf",
+      "path": "pdf/text.pdf",
+      "provenance": "Desinfect P06 synthetic two-page Poppler fixture",
+      "purpose": "real deterministic text-PDF conversion smoke",
+      "sha256": "4665c3b8cfa6de8d9792a8defb977bfd200465b513575419e0a88541000f5b2a",
+      "synthetic": true
+    },
+    {
       "bytes": 134,
       "license_status": "synthetic",
       "media_type": "application/json",
@@ -118,6 +128,16 @@
       "provenance": "H234598/desinfect P06 synthetic migration fixture",
       "purpose": "deterministic source-manifest migration from 1.0.0 to 1.1.0",
       "sha256": "7f3701800642bb4352d7ce1bea1462c0d49d862b10a80e94beb3c6026a665a10",
+      "synthetic": true
+    },
+    {
+      "bytes": 469,
+      "license_status": "synthetic",
+      "media_type": "application/json",
+      "path": "schemas/conversion-manifest-v1.0.json",
+      "provenance": "H234598/desinfect P06 synthetic migration fixture",
+      "purpose": "deterministic conversion-manifest migration from 1.0.0 to 1.1.0",
+      "sha256": "21c8760f73494b1c006b7d7828ffd4884a076be3e1ec83c2d357b541879307e6",
       "synthetic": true
     },
     {

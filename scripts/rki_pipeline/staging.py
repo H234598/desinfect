@@ -4,14 +4,17 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import ctypes
+from dataclasses import dataclass
+import errno
 import os
 from pathlib import Path
+import signal
 import sys
 from typing import Iterator
 import uuid
 
 from scripts.rki_pipeline.io_utils import (
-    UnsafePathError,
     assert_generated_root_fd,
     entry_exists,
     fd_directory_path,
@@ -27,6 +30,83 @@ from scripts.rki_pipeline.io_utils import (
 
 class StagingError(RuntimeError):
     """A staging transaction cannot safely reach or restore its target."""
+
+
+class StagingConflictError(StagingError):
+    """A create-if-absent publication found a concurrently published target."""
+
+
+class StagingUnsupportedError(StagingError):
+    """Host filesystem cannot provide atomic no-replace publication."""
+
+
+@dataclass(slots=True)
+class StagingState:
+    """Observable publication state for ledger/error reconciliation."""
+
+    published: bool = False
+
+
+def _rename_noreplace(parent_fd: int, source: str, target: str) -> None:
+    """Atomically publish one directory only when target does not exist."""
+
+    try:
+        renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
+    except AttributeError as exc:
+        raise StagingUnsupportedError(
+            "Atomare NOREPLACE-Veröffentlichung wird nicht unterstützt"
+        ) from exc
+    renameat2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        parent_fd,
+        os.fsencode(source),
+        parent_fd,
+        os.fsencode(target),
+        1,  # RENAME_NOREPLACE
+    )
+    if result == 0:
+        return
+    error = ctypes.get_errno()
+    if error in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise StagingConflictError(f"Ziel wurde parallel veröffentlicht: {target}")
+    if error in {
+        errno.ENOSYS,
+        errno.EINVAL,
+        getattr(errno, "EOPNOTSUPP", errno.ENOTSUP),
+    }:
+        raise StagingUnsupportedError(
+            "Atomare NOREPLACE-Veröffentlichung wird nicht unterstützt"
+        )
+    raise StagingError(
+        f"Atomare NOREPLACE-Veröffentlichung fehlgeschlagen: {os.strerror(error)}"
+    )
+
+
+@contextmanager
+def _publication_signal_guard() -> Iterator[None]:
+    """Defer cancellation signals until rename and publication state agree."""
+
+    blocked = {
+        candidate
+        for candidate in (
+            getattr(signal, "SIGINT", None),
+            getattr(signal, "SIGTERM", None),
+            getattr(signal, "SIGHUP", None),
+        )
+        if candidate is not None
+    }
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, blocked)
+    try:
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
 def _device_id(value: Path | int) -> int:
@@ -66,6 +146,8 @@ def staged_directory(
     *,
     allowed_root: Path,
     force: bool = False,
+    replace_existing: bool = True,
+    state: StagingState | None = None,
 ) -> Iterator[Path]:
     """Build a generated directory and atomically replace *target*.
 
@@ -79,6 +161,8 @@ def staged_directory(
     target_name = relative.name
     staging_name = f".{target_name}.staging-{uuid.uuid4().hex}"
     backup_name = f".{target_name}.backup"
+    publication_state = state if state is not None else StagingState()
+    publication_state.published = False
 
     with open_root_directory(allowed_root, create=True) as root_fd:
         parent_fd = open_directory_beneath(root_fd, relative.parts[:-1], create=True)
@@ -111,6 +195,10 @@ def staged_directory(
             staging_fd = None
 
             if entry_exists(parent_fd, target_name):
+                if not replace_existing:
+                    raise StagingConflictError(
+                        f"Ziel wurde parallel veröffentlicht: {target_name}"
+                    )
                 _assert_marked_directory(parent_fd, target_name)
                 os.replace(
                     target_name,
@@ -121,14 +209,19 @@ def staged_directory(
                 target_moved = True
                 fsync_directory_fd(parent_fd)
 
-            os.replace(
-                staging_name,
-                target_name,
-                src_dir_fd=parent_fd,
-                dst_dir_fd=parent_fd,
-            )
-            staging_created = False
-            staging_published = True
+            with _publication_signal_guard():
+                if replace_existing:
+                    os.replace(
+                        staging_name,
+                        target_name,
+                        src_dir_fd=parent_fd,
+                        dst_dir_fd=parent_fd,
+                    )
+                else:
+                    _rename_noreplace(parent_fd, staging_name, target_name)
+                staging_created = False
+                staging_published = True
+                publication_state.published = True
             fsync_directory_fd(parent_fd)
             publication_committed = True
 
@@ -156,6 +249,7 @@ def staged_directory(
                 if staging_published and entry_exists(parent_fd, target_name):
                     remove_tree_at(parent_fd, target_name, require_sentinel=True)
                     staging_published = False
+                    publication_state.published = False
                 if target_moved and entry_exists(parent_fd, backup_name):
                     os.replace(
                         backup_name,

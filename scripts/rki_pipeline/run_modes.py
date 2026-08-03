@@ -106,7 +106,11 @@ class EffectLedger:
             if self.temp_root is None:
                 raise ModeViolation("TEMP_FILE benötigt einen temp_root")
             try:
-                candidate = ensure_within(Path(target), self.temp_root)
+                candidate = ensure_within(
+                    Path(target),
+                    self.temp_root,
+                    allow_missing_parents=True,
+                )
             except (OSError, UnsafePathError) as exc:
                 raise ModeViolation(
                     f"Temporärer Effekt liegt außerhalb temp_root: {target}"

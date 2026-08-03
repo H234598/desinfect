@@ -1,2 +1,8 @@
 schema_version: 1
-decisions: []
+decisions:
+  - source_id: "rki:176904/900000001"
+    source_sha256: "4665c3b8cfa6de8d9792a8defb977bfd200465b513575419e0a88541000f5b2a"
+    state: "approved"
+    basis: "Synthetic P06 conversion fixture; no external publication rights claim"
+    reviewed_by: "Desinfect maintainers"
+    reviewed_at: "2026-08-03T14:00:00Z"

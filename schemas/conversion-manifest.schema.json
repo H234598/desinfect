@@ -1,8 +1,484 @@
 {
-  "$id": "https://h234598.github.io/desinfect/schemas/conversion-manifest-1.0.0.json",
+  "$defs": {
+    "environmentVariable": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "name": {
+              "const": "LANG"
+            },
+            "value": {
+              "const": "C.UTF-8"
+            }
+          }
+        },
+        {
+          "properties": {
+            "name": {
+              "const": "LC_ALL"
+            },
+            "value": {
+              "const": "C.UTF-8"
+            }
+          }
+        },
+        {
+          "properties": {
+            "name": {
+              "const": "TZ"
+            },
+            "value": {
+              "const": "UTC"
+            }
+          }
+        }
+      ],
+      "properties": {
+        "name": {
+          "enum": [
+            "LANG",
+            "LC_ALL",
+            "TZ"
+          ],
+          "type": "string"
+        },
+        "value": {
+          "maxLength": 7,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "type": "object"
+    },
+    "namedDigest": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "ocrSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "color_mode": {
+          "enum": [
+            "mono",
+            "gray",
+            "rgb"
+          ]
+        },
+        "dpi": {
+          "maximum": 1200,
+          "minimum": 72,
+          "type": "integer"
+        },
+        "languages": {
+          "items": {
+            "pattern": "^[a-z]{3}$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "oem": {
+          "maximum": 3,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "psm": {
+          "maximum": 13,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tessdata": {
+          "items": {
+            "$ref": "#/$defs/namedDigest"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "dpi",
+        "color_mode",
+        "psm",
+        "oem",
+        "languages",
+        "tessdata"
+      ],
+      "type": "object"
+    },
+    "runtimeEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "fonts": {
+          "items": {
+            "$ref": "#/$defs/namedDigest"
+          },
+          "type": "array"
+        },
+        "libc": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "platform": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "shared_libraries": {
+          "items": {
+            "$ref": "#/$defs/namedDigest"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "platform",
+        "libc",
+        "shared_libraries",
+        "fonts"
+      ],
+      "type": "object"
+    },
+    "toolEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "argv": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "environment": {
+          "items": {
+            "$ref": "#/$defs/environmentVariable"
+          },
+          "maxItems": 3,
+          "type": "array"
+        },
+        "executable_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 120,
+          "minLength": 1,
+          "type": "string"
+        },
+        "ocr_settings": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ocrSettings"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "version_output": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version_output",
+        "executable_sha256",
+        "argv",
+        "environment",
+        "ocr_settings"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://h234598.github.io/desinfect/schemas/conversion-manifest-1.1.0.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "provenance_state": {
+            "const": "current"
+          }
+        },
+        "required": [
+          "provenance_state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "bitstream_id": {
+            "type": "string"
+          },
+          "conversion_id": {
+            "type": "string"
+          },
+          "fingerprint_sha256": {
+            "type": "string"
+          },
+          "page_count": {
+            "type": "integer"
+          },
+          "runtime": {
+            "$ref": "#/$defs/runtimeEvidence"
+          },
+          "toolchain": {
+            "type": "array"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance_state": {
+            "const": "current"
+          },
+          "state": {
+            "enum": [
+              "failed",
+              "not_materialized"
+            ]
+          }
+        },
+        "required": [
+          "provenance_state",
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "output_sha256": {
+            "type": "null"
+          },
+          "storage_reference": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance_state": {
+            "const": "current"
+          },
+          "state": {
+            "enum": [
+              "converted",
+              "needs_review",
+              "skipped_unchanged"
+            ]
+          }
+        },
+        "required": [
+          "provenance_state",
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "output_sha256": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance_state": {
+            "const": "current"
+          },
+          "state": {
+            "const": "converted"
+          }
+        },
+        "required": [
+          "provenance_state",
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "quality": {
+            "const": "good"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance_state": {
+            "const": "current"
+          },
+          "state": {
+            "const": "needs_review"
+          }
+        },
+        "required": [
+          "provenance_state",
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "quality": {
+            "const": "needs_review"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance_state": {
+            "const": "current"
+          },
+          "state": {
+            "const": "failed"
+          }
+        },
+        "required": [
+          "provenance_state",
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "quality": {
+            "const": "failed"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance_state": {
+            "const": "current"
+          },
+          "state": {
+            "const": "not_materialized"
+          }
+        },
+        "required": [
+          "provenance_state",
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "quality": {
+            "const": "not_assessed"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance_state": {
+            "const": "current"
+          },
+          "state": {
+            "const": "skipped_unchanged"
+          }
+        },
+        "required": [
+          "provenance_state",
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "quality": {
+            "enum": [
+              "good",
+              "needs_review"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "ocr_used": {
+            "const": true
+          },
+          "provenance_state": {
+            "const": "current"
+          }
+        },
+        "required": [
+          "ocr_used",
+          "provenance_state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "quality": {
+            "const": "needs_review"
+          },
+          "toolchain": {
+            "contains": {
+              "properties": {
+                "ocr_settings": {
+                  "$ref": "#/$defs/ocrSettings"
+                }
+              },
+              "required": [
+                "ocr_settings"
+              ]
+            },
+            "minContains": 1,
+            "type": "array"
+          }
+        }
+      }
+    }
+  ],
   "properties": {
+    "bitstream_id": {
+      "pattern": "^rki-bitstream-[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "conversion_id": {
+      "pattern": "^conv-[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "converter": {
       "maxLength": 120,
       "minLength": 1,
@@ -14,9 +490,15 @@
       "type": "string"
     },
     "document_id": {
-      "maxLength": 200,
-      "minLength": 3,
+      "pattern": "^rki-176904-[0-9]+-v[1-9][0-9]*$",
       "type": "string"
+    },
+    "fingerprint_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "ocr_used": {
       "type": "boolean"
@@ -26,14 +508,23 @@
       "type": "string"
     },
     "output_sha256": {
-      "oneOf": [
-        {
-          "pattern": "^[0-9a-f]{64}$",
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "page_count": {
+      "minimum": 1,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "provenance_state": {
+      "enum": [
+        "current",
+        "legacy_needs_review"
       ]
     },
     "quality": {
@@ -44,8 +535,18 @@
         "not_assessed"
       ]
     },
+    "runtime": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/runtimeEvidence"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "schema_version": {
-      "const": "1.0.0"
+      "const": "1.1.0"
     },
     "source_sha256": {
       "pattern": "^[0-9a-f]{64}$",
@@ -59,19 +560,49 @@
         "failed",
         "not_materialized"
       ]
+    },
+    "storage_reference": {
+      "maxLength": 200,
+      "pattern": "^[a-z0-9][a-z0-9._-]{2,200}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "toolchain": {
+      "oneOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/toolEvidence"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [
     "schema_version",
+    "conversion_id",
     "document_id",
+    "bitstream_id",
     "source_sha256",
     "converter",
     "converter_version",
     "options_sha256",
+    "page_count",
+    "toolchain",
+    "runtime",
+    "fingerprint_sha256",
     "output_sha256",
+    "storage_reference",
     "state",
     "quality",
-    "ocr_used"
+    "ocr_used",
+    "provenance_state"
   ],
   "title": "Desinfect conversion manifest",
   "type": "object"

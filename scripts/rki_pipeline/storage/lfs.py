@@ -29,6 +29,7 @@ _REQUIRED_TRACKING = (
     "rki/Bulletins/**/Markdown/**/*.md filter=lfs diff=lfs merge=lfs -text",
     "rki/Bulletins/**/*.zip filter=lfs diff=lfs merge=lfs -text",
 )
+_BINARY_FIXTURE_ATTRIBUTE = "tests/fixtures/**/*.pdf -diff -text"
 _POINTER_RE = re.compile(
     r"\Aversion https://git-lfs\.github\.com/spec/v1\n"
     r"oid sha256:(?P<oid>[0-9a-f]{64})\n"
@@ -145,9 +146,12 @@ def validate_lfs_tracking(path: Path) -> tuple[str, ...]:
         )
     except OSError as exc:
         raise LfsIntegrityError(f".gitattributes ist nicht lesbar: {path}") from exc
-    if lines != _REQUIRED_TRACKING:
+    if lines not in (
+        _REQUIRED_TRACKING,
+        (*_REQUIRED_TRACKING, _BINARY_FIXTURE_ATTRIBUTE),
+    ):
         raise LfsIntegrityError("Git-LFS-Trackingregeln weichen vom kanonischen Vertrag ab")
-    return lines
+    return _REQUIRED_TRACKING
 
 
 def parse_lfs_pointer(text: str | bytes) -> LfsPointer:
