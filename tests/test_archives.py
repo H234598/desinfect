@@ -25,9 +25,12 @@ from scripts.rki_pipeline.archive import (
     _zip_datetime,
     archive_input_fingerprint,
     build_archive,
+    materialize_archive,
     validate_archive,
 )
+from scripts.rki_pipeline.io_utils import stable_json_dumps
 from scripts.rki_pipeline.rights import resolve_rights
+from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 from scripts.rki_pipeline.storage.base import PreparedObject, RightsStorageAuthorizer
 
 
@@ -103,7 +106,7 @@ def _prepared_entries(
 def _spec(
     entries: tuple[ArchiveEntry, ...],
     *,
-    archive_id: str = "archive-2026-W01-pdf",
+    archive_id: str = "archive-2026-w01-pdf",
     period: str = "2026-W01",
     kind: str = "week-pdf",
     visibility: str = "public",
@@ -866,4 +869,267 @@ def test_security_validator_rejects_malformed_checksums(
             tampered,
             expected_fingerprint=build.input_fingerprint,
             expected_output_sha256=hashlib.sha256(tampered.read_bytes()).hexdigest(),
+        )
+
+
+def test_materialization_writes_canonical_schema_sidecar_and_two_events(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _spec(_prepared_entries(tmp_path, monkeypatch))
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+
+    result = materialize_archive(
+        spec,
+        tmp_path / "out",
+        temp_root=tmp_path,
+        ledger=ledger,
+        authorizer=_authorizer(tmp_path, monkeypatch),
+    )
+
+    expected = {
+        "schema_version": "1.0.0",
+        "archive_id": spec.archive_id,
+        "period": spec.period,
+        "kind": spec.kind,
+        "entries": ["PDF/first.pdf", "PDF/second.pdf"],
+        "input_fingerprint": result.build.input_fingerprint,
+        "output_sha256": result.build.output_sha256,
+        "storage_reference": None,
+    }
+    assert result.changed is True
+    assert result.zip_path.name == "archive.zip"
+    assert result.manifest_path.name == "archive-manifest.json"
+    assert result.manifest_path.read_text(encoding="utf-8") == stable_json_dumps(expected)
+    assert [event.kind for event in ledger.events] == [EffectKind.TEMP_FILE] * 2
+    assert [event.target for event in ledger.events] == [
+        result.zip_path.as_posix(),
+        result.manifest_path.as_posix(),
+    ]
+
+
+def test_materialization_noop_preserves_mtimes_and_events(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _spec(_prepared_entries(tmp_path, monkeypatch))
+    first = materialize_archive(
+        spec,
+        tmp_path / "out",
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=_authorizer(tmp_path, monkeypatch),
+    )
+    before = {path.name: path.stat().st_mtime_ns for path in first.root.iterdir() if path.is_file()}
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+
+    second = materialize_archive(
+        spec,
+        tmp_path / "out",
+        temp_root=tmp_path,
+        ledger=ledger,
+        authorizer=_authorizer(tmp_path, monkeypatch),
+    )
+
+    assert second.changed is False
+    assert ledger.events == []
+    assert {
+        path.name: path.stat().st_mtime_ns for path in second.root.iterdir() if path.is_file()
+    } == before
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ("malformed", "noncanonical", "schema-drift", "wrong-sha", "invalid-zip", "unknown"),
+)
+def test_materialization_self_heals_invalid_existing_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    corruption: str,
+) -> None:
+    spec = _spec(_prepared_entries(tmp_path, monkeypatch))
+    first = materialize_archive(
+        spec,
+        tmp_path / "out",
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=_authorizer(tmp_path, monkeypatch),
+    )
+    valid_zip = first.zip_path.read_bytes()
+    valid_manifest = first.manifest_path.read_bytes()
+    manifest = json.loads(valid_manifest)
+    if corruption == "malformed":
+        first.manifest_path.write_text("{", encoding="utf-8")
+    elif corruption == "noncanonical":
+        first.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    elif corruption == "schema-drift":
+        manifest["schema_version"] = "9.0.0"
+        first.manifest_path.write_text(stable_json_dumps(manifest), encoding="utf-8")
+    elif corruption == "wrong-sha":
+        manifest["output_sha256"] = "a" * 64
+        first.manifest_path.write_text(stable_json_dumps(manifest), encoding="utf-8")
+    elif corruption == "invalid-zip":
+        first.zip_path.write_bytes(b"not a zip")
+    else:
+        (first.root / "unexpected.txt").write_text("unexpected", encoding="utf-8")
+
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+    healed = materialize_archive(
+        spec,
+        tmp_path / "out",
+        temp_root=tmp_path,
+        ledger=ledger,
+        authorizer=_authorizer(tmp_path, monkeypatch),
+    )
+
+    assert healed.changed is True
+    assert healed.zip_path.read_bytes() == valid_zip
+    assert healed.manifest_path.read_bytes() == valid_manifest
+    assert len(ledger.events) == 2
+
+
+def test_materialization_replaces_zip_and_sidecar_for_changed_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entries = _prepared_entries(tmp_path, monkeypatch)
+    first = materialize_archive(
+        _spec(entries),
+        tmp_path / "out",
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=_authorizer(tmp_path, monkeypatch),
+    )
+    before = (first.zip_path.read_bytes(), first.manifest_path.read_bytes())
+    changed_spec = _spec((_with_payload(entries[0], b"changed payload"), entries[1]))
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+
+    second = materialize_archive(
+        changed_spec,
+        tmp_path / "out",
+        temp_root=tmp_path,
+        ledger=ledger,
+        authorizer=_authorizer(tmp_path, monkeypatch),
+    )
+
+    assert second.changed is True
+    assert second.zip_path.read_bytes() != before[0]
+    assert second.manifest_path.read_bytes() != before[1]
+    assert len(ledger.events) == 2
+
+
+def test_materialization_stage_failure_preserves_old_bundle_and_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entries = _prepared_entries(tmp_path, monkeypatch)
+    first = materialize_archive(
+        _spec(entries),
+        tmp_path / "out",
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=_authorizer(tmp_path, monkeypatch),
+    )
+    before = {path.name: path.read_bytes() for path in first.root.iterdir() if path.is_file()}
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+    ledger.record(EffectKind.TEMP_FILE, (tmp_path / "preexisting.tmp").as_posix())
+    event_count = len(ledger.events)
+    real_build = archive_module.build_archive
+
+    def fail_after_build(*args: object, **kwargs: object) -> ArchiveBuild:
+        real_build(*args, **kwargs)
+        raise ArchiveIntegrityError("injected stage failure")
+
+    monkeypatch.setattr(archive_module, "build_archive", fail_after_build)
+
+    with pytest.raises(ArchiveIntegrityError, match="injected stage failure"):
+        materialize_archive(
+            _spec((_with_payload(entries[0], b"changed payload"), entries[1])),
+            tmp_path / "out",
+            temp_root=tmp_path,
+            ledger=ledger,
+            authorizer=_authorizer(tmp_path, monkeypatch),
+        )
+
+    assert {path.name: path.read_bytes() for path in first.root.iterdir() if path.is_file()} == before
+    assert len(ledger.events) == event_count
+
+
+def test_materialization_rejects_target_escape_and_wrong_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _spec(_prepared_entries(tmp_path, monkeypatch))
+    authorizer = _authorizer(tmp_path, monkeypatch)
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path / "root")
+    with pytest.raises(ArchiveSecurityError, match="temp_root"):
+        materialize_archive(
+            spec,
+            tmp_path / "outside",
+            temp_root=tmp_path / "root",
+            ledger=ledger,
+            authorizer=authorizer,
+        )
+
+    with pytest.raises(ValueError, match="Materialize|materialize"):
+        materialize_archive(
+            spec,
+            tmp_path / "out",
+            temp_root=tmp_path,
+            ledger=EffectLedger(RunMode.PLAN),
+            authorizer=authorizer,
+        )
+
+
+def test_materialization_noop_rechecks_current_rights(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _spec(_prepared_entries(tmp_path, monkeypatch))
+    authorizer = _authorizer(tmp_path, monkeypatch)
+    first = materialize_archive(
+        spec,
+        tmp_path / "out",
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=authorizer,
+    )
+    before = {path.name: path.read_bytes() for path in first.root.iterdir() if path.is_file()}
+    register = authorizer.authority._register_source
+    register.write_text(
+        register.read_text(encoding="utf-8").replace("state: approved", "state: takedown"),
+        encoding="utf-8",
+    )
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+
+    with pytest.raises(ArchiveSecurityError, match="Rechteentscheidung"):
+        materialize_archive(
+            spec,
+            tmp_path / "out",
+            temp_root=tmp_path,
+            ledger=ledger,
+            authorizer=authorizer,
+        )
+
+    assert {path.name: path.read_bytes() for path in first.root.iterdir() if path.is_file()} == before
+    assert ledger.events == []
+
+
+def test_materialization_rejects_symlinked_existing_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _spec(_prepared_entries(tmp_path, monkeypatch))
+    first = materialize_archive(
+        spec,
+        tmp_path / "out",
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=_authorizer(tmp_path, monkeypatch),
+    )
+    outside = tmp_path / "outside.json"
+    outside.write_text(first.manifest_path.read_text(encoding="utf-8"), encoding="utf-8")
+    first.manifest_path.unlink()
+    first.manifest_path.symlink_to(outside)
+
+    with pytest.raises(ArchiveSecurityError, match="Symlink|reguläre Datei"):
+        materialize_archive(
+            spec,
+            tmp_path / "out",
+            temp_root=tmp_path,
+            ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+            authorizer=_authorizer(tmp_path, monkeypatch),
         )

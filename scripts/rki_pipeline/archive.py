@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import stat
 import struct
@@ -14,7 +14,11 @@ from typing import Any
 from zipfile import BadZipFile, ZIP_STORED, ZipFile, ZipInfo
 
 from scripts.rki_pipeline.io_utils import (
+    assert_generated_root_fd,
     detect_path_collisions,
+    fd_directory_path,
+    fsync_directory_fd,
+    GENERATED_ROOT_SENTINEL,
     normalize_posix_path,
     open_directory_beneath,
     open_root_directory,
@@ -22,6 +26,9 @@ from scripts.rki_pipeline.io_utils import (
     stable_json_dumps,
     UnsafePathError,
 )
+from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
+from scripts.rki_pipeline.schema_registry import SchemaContractError, validate_document
+from scripts.rki_pipeline.staging import StagingState, staged_directory
 from scripts.rki_pipeline.storage.base import (
     PreparedObject,
     RightsStorageAuthorizer,
@@ -54,6 +61,10 @@ _ZIP_MAX = 4_354_819_198
 _EXPECTED_MODE = stat.S_IFREG | 0o644
 _READ_FLAGS = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
 _ZIP_VERSION = 20
+_BUNDLE_ZIP = "archive.zip"
+_BUNDLE_MANIFEST = "archive-manifest.json"
+_BUNDLE_FILES = frozenset({GENERATED_ROOT_SENTINEL, _BUNDLE_ZIP, _BUNDLE_MANIFEST})
+_MAX_SIDECAR_BYTES = 8 * 1024 * 1024
 
 
 class ArchiveError(ValueError):
@@ -355,6 +366,312 @@ def validate_archive(
         if descriptor is not None:
             os.close(descriptor)
     return inspection
+
+
+def materialize_archive(
+    spec: ArchiveSpec,
+    target: Path,
+    *,
+    temp_root: Path,
+    ledger: EffectLedger,
+    authorizer: RightsStorageAuthorizer,
+    limits: ArchiveLimits = ArchiveLimits(),
+) -> ArchiveMaterialization:
+    """Atomically publish one validated ZIP and canonical sidecar below ``temp_root``."""
+
+    if type(spec) is not ArchiveSpec:
+        raise ValueError("spec muss ein exakter ArchiveSpec sein")
+    if not isinstance(target, Path) or not isinstance(temp_root, Path):
+        raise ValueError("target und temp_root müssen Path-Werte sein")
+    if type(ledger) is not EffectLedger:
+        raise ValueError("ledger muss ein exaktes EffectLedger sein")
+    root = temp_root.resolve()
+    if ledger.mode is not RunMode.MATERIALIZE or ledger.temp_root != root:
+        raise ValueError("Archiv-Materialisierung benötigt passenden Materialize-Ledger/root")
+    if type(authorizer) is not RightsStorageAuthorizer:
+        raise ValueError("authorizer muss ein exakter RightsStorageAuthorizer sein")
+    if type(limits) is not ArchiveLimits:
+        raise ValueError("limits muss ein exaktes ArchiveLimits sein")
+    try:
+        relative = relative_path_beneath(target, root)
+    except (OSError, UnsafePathError) as exc:
+        raise ArchiveSecurityError("Archivziel liegt außerhalb temp_root") from exc
+    bundle_root = root / Path(relative.as_posix())
+
+    # A no-op is output mutation too: prove current rights and source identity first.
+    _load_authorized_entries(spec, authorizer=authorizer, limits=limits)
+    expected_fingerprint = archive_input_fingerprint(spec)
+    try:
+        existing = _load_existing_bundle(
+            root,
+            relative,
+            display_root=bundle_root,
+            spec=spec,
+            expected_fingerprint=expected_fingerprint,
+            limits=limits,
+        )
+    except ArchiveIntegrityError:
+        existing = None
+    if existing is not None:
+        return ArchiveMaterialization(
+            root=bundle_root,
+            zip_path=bundle_root / _BUNDLE_ZIP,
+            manifest_path=bundle_root / _BUNDLE_MANIFEST,
+            build=existing,
+            changed=False,
+        )
+
+    event_count = len(ledger.events)
+    staging_state = StagingState()
+    zip_path = bundle_root / _BUNDLE_ZIP
+    manifest_path = bundle_root / _BUNDLE_MANIFEST
+    try:
+        with staged_directory(
+            bundle_root,
+            allowed_root=root,
+            replace_existing=True,
+            state=staging_state,
+        ) as stage:
+            staged_build = build_archive(
+                spec,
+                stage / _BUNDLE_ZIP,
+                authorizer=authorizer,
+                limits=limits,
+            )
+            sidecar = _archive_sidecar(spec, staged_build)
+            sidecar_bytes = stable_json_dumps(sidecar).encode("utf-8")
+            stage_fd = os.open(
+                stage,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
+            )
+            try:
+                _write_bundle_file(stage_fd, _BUNDLE_MANIFEST, sidecar_bytes)
+                staged_result = _inspect_bundle_fd(
+                    stage_fd,
+                    display_root=bundle_root,
+                    spec=spec,
+                    expected_fingerprint=expected_fingerprint,
+                    limits=limits,
+                )
+                fsync_directory_fd(stage_fd)
+            finally:
+                os.close(stage_fd)
+            ledger.record(
+                EffectKind.TEMP_FILE,
+                zip_path.as_posix(),
+                sha256=staged_result.output_sha256,
+                size=staged_result.size,
+            )
+            ledger.record(
+                EffectKind.TEMP_FILE,
+                manifest_path.as_posix(),
+                sha256=hashlib.sha256(sidecar_bytes).hexdigest(),
+                size=len(sidecar_bytes),
+            )
+    except BaseException:
+        if not staging_state.published:
+            del ledger.events[event_count:]
+        raise
+    return ArchiveMaterialization(
+        root=bundle_root,
+        zip_path=zip_path,
+        manifest_path=manifest_path,
+        build=staged_result,
+        changed=True,
+    )
+
+
+def _archive_sidecar(spec: ArchiveSpec, build: ArchiveBuild) -> dict[str, Any]:
+    value = {
+        "schema_version": "1.0.0",
+        "archive_id": spec.archive_id,
+        "period": spec.period,
+        "kind": spec.kind,
+        "entries": list(build.entries),
+        "input_fingerprint": build.input_fingerprint,
+        "output_sha256": build.output_sha256,
+        "storage_reference": None,
+    }
+    try:
+        validate_document("archive-manifest", value)
+    except SchemaContractError as exc:
+        raise ArchiveIntegrityError("Archiv-Sidecar verletzt den Schema-Vertrag") from exc
+    return value
+
+
+def _load_existing_bundle(
+    root: Path,
+    relative: PurePosixPath,
+    *,
+    display_root: Path,
+    spec: ArchiveSpec,
+    expected_fingerprint: str,
+    limits: ArchiveLimits,
+) -> ArchiveBuild | None:
+    with open_root_directory(root, create=True) as root_fd:
+        try:
+            parent_fd = open_directory_beneath(root_fd, relative.parts[:-1])
+        except FileNotFoundError:
+            return None
+        try:
+            try:
+                metadata = os.stat(relative.name, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return None
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise ArchiveSecurityError("Bestehendes Archiv-Bundle ist kein reguläres Verzeichnis")
+            try:
+                bundle_fd = open_directory_beneath(parent_fd, (relative.name,))
+            except UnsafePathError as exc:
+                raise ArchiveSecurityError("Bestehendes Archiv-Bundle ist ein Symlink") from exc
+            try:
+                return _inspect_bundle_fd(
+                    bundle_fd,
+                    display_root=display_root,
+                    spec=spec,
+                    expected_fingerprint=expected_fingerprint,
+                    limits=limits,
+                )
+            finally:
+                os.close(bundle_fd)
+        finally:
+            os.close(parent_fd)
+
+
+def _inspect_bundle_fd(
+    bundle_fd: int,
+    *,
+    display_root: Path,
+    spec: ArchiveSpec,
+    expected_fingerprint: str,
+    limits: ArchiveLimits,
+) -> ArchiveBuild:
+    names = frozenset(os.listdir(bundle_fd))
+    if names != _BUNDLE_FILES:
+        raise ArchiveIntegrityError("Archiv-Bundle enthält unbekannte oder fehlende Dateien")
+    try:
+        assert_generated_root_fd(bundle_fd)
+    except UnsafePathError as exc:
+        raise ArchiveSecurityError("Archiv-Bundle-Sentinel ist unsicher") from exc
+    for name in (_BUNDLE_ZIP, _BUNDLE_MANIFEST):
+        metadata = os.stat(name, dir_fd=bundle_fd, follow_symlinks=False)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ArchiveSecurityError(f"Archiv-Bundle-Datei {name!r} ist keine reguläre Datei")
+
+    sidecar = _strict_sidecar(
+        _read_bundle_file(bundle_fd, _BUNDLE_MANIFEST, maximum=_MAX_SIDECAR_BYTES)
+    )
+    expected_entries = [entry.path for entry in sorted(spec.entries, key=lambda entry: entry.path)]
+    if (
+        sidecar["archive_id"] != spec.archive_id
+        or sidecar["period"] != spec.period
+        or sidecar["kind"] != spec.kind
+        or sidecar["entries"] != expected_entries
+        or sidecar["input_fingerprint"] != expected_fingerprint
+    ):
+        raise ArchiveIntegrityError("Archiv-Sidecar stimmt nicht mit den erwarteten Eingaben überein")
+    archive_path = fd_directory_path(bundle_fd) / _BUNDLE_ZIP
+    try:
+        inspection = validate_archive(
+            archive_path,
+            expected_fingerprint=expected_fingerprint,
+            expected_output_sha256=sidecar["output_sha256"],
+            limits=limits,
+        )
+    except ArchiveError as exc:
+        raise ArchiveIntegrityError("Bestehendes Archiv im Bundle ist ungültig") from exc
+    if list(inspection.entries) != sidecar["entries"]:
+        raise ArchiveIntegrityError("Archiv und Sidecar enthalten verschiedene Einträge")
+    return ArchiveBuild(
+        path=display_root / _BUNDLE_ZIP,
+        input_fingerprint=inspection.input_fingerprint,
+        output_sha256=inspection.output_sha256,
+        size=inspection.size,
+        entries=inspection.entries,
+    )
+
+
+def _strict_sidecar(payload: bytes) -> dict[str, Any]:
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("Doppelter JSON-Schlüssel")
+            value[key] = item
+        return value
+
+    def reject_constant(value: str) -> Any:
+        raise ValueError(f"Nichtendliche JSON-Zahl: {value}")
+
+    try:
+        value = json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+        )
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ArchiveIntegrityError("Archiv-Sidecar enthält ungültiges JSON") from exc
+    if type(value) is not dict or stable_json_dumps(value).encode("utf-8") != payload:
+        raise ArchiveIntegrityError("Archiv-Sidecar-JSON ist nicht kanonisch")
+    try:
+        validate_document("archive-manifest", value)
+    except SchemaContractError as exc:
+        raise ArchiveIntegrityError("Archiv-Sidecar verletzt den Schema-Vertrag") from exc
+    return value
+
+
+def _read_bundle_file(bundle_fd: int, name: str, *, maximum: int) -> bytes:
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(name, _READ_FLAGS, dir_fd=bundle_fd)
+        initial = os.fstat(descriptor)
+        if not stat.S_ISREG(initial.st_mode):
+            raise ArchiveSecurityError(f"Archiv-Bundle-Datei {name!r} ist keine reguläre Datei")
+        if initial.st_size > maximum:
+            raise ArchiveSecurityError(f"Archiv-Bundle-Datei {name!r} überschreitet das Limit")
+        chunks: list[bytes] = []
+        remaining = initial.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 1024 * 1024))
+            if not chunk:
+                raise ArchiveIntegrityError(f"Archiv-Bundle-Datei {name!r} ist unvollständig")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        final = os.fstat(descriptor)
+        current = os.stat(name, dir_fd=bundle_fd, follow_symlinks=False)
+        if (
+            (initial.st_dev, initial.st_ino, initial.st_size, initial.st_mtime_ns)
+            != (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns)
+            or (final.st_dev, final.st_ino) != (current.st_dev, current.st_ino)
+        ):
+            raise ArchiveIntegrityError(f"Archiv-Bundle-Datei {name!r} änderte sich beim Lesen")
+        return b"".join(chunks)
+    except ArchiveError:
+        raise
+    except OSError as exc:
+        raise ArchiveSecurityError(f"Archiv-Bundle-Datei {name!r} ist nicht sicher lesbar") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _write_bundle_file(bundle_fd: int, name: str, payload: bytes) -> None:
+    descriptor: int | None = None
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(
+        os, "O_NOFOLLOW", 0
+    )
+    try:
+        descriptor = os.open(name, flags, 0o644, dir_fd=bundle_fd)
+        view = memoryview(payload)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("Sidecar-Write machte keinen Fortschritt")
+            view = view[written:]
+        os.fsync(descriptor)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _load_authorized_entries(
