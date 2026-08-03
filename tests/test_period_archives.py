@@ -1,10 +1,21 @@
+from dataclasses import replace
 from datetime import date, datetime, timezone
+import hashlib
+from pathlib import Path
 
 import pytest
 
 from scripts.rki_grabber.models import AffectedPeriods
-from scripts.rki_pipeline.aggregation import PeriodSelectionError, period_ref, select_periods
+from scripts.rki_pipeline.aggregation import (
+    AggregationError,
+    PeriodSelectionError,
+    plan_period_archives,
+    period_ref,
+    select_periods,
+)
 from scripts.rki_pipeline.due_tasks import DueTask, TaskKind
+from scripts.rki_pipeline.manifests import ManifestGraph
+from scripts.rki_pipeline.storage.base import PreparedObject
 
 
 def due(kind: TaskKind, period: str) -> DueTask:
@@ -97,4 +108,331 @@ def test_berlin_dst_month_endpoints_are_stable(
         start,
         end,
         source_date_epoch,
+    )
+
+
+_SOURCE_ID = "rki:176904/900000001.2"
+_DOCUMENT_ID = "rki-176904-900000001-v2"
+_DECISION_SHA256 = "d" * 64
+
+
+def _prepared(
+    tmp_path: Path,
+    *,
+    artifact_id: str,
+    logical_key: str,
+    payload: bytes,
+    source_id: str = _SOURCE_ID,
+    source_sha256: str,
+    document_id: str = _DOCUMENT_ID,
+    conversion_id: str | None = None,
+    visibility: str = "repository_authorized",
+) -> PreparedObject:
+    path = tmp_path / logical_key
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    return PreparedObject(
+        artifact_id=artifact_id,
+        logical_key=logical_key,
+        path=path,
+        temp_root=tmp_path,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        size=len(payload),
+        source_id=source_id,
+        source_sha256=source_sha256,
+        decision_sha256=_DECISION_SHA256,
+        visibility=visibility,
+        rights_state="approved",
+        document_id=document_id,
+        conversion_id=conversion_id,
+    )
+
+
+def _plan_inputs(
+    tmp_path: Path,
+    *,
+    markdown: bool = True,
+    visibility: str = "repository_authorized",
+) -> dict[str, object]:
+    pdf_path = "rki/Bulletins/Jahre/2026/PDF/2026-07-10_bulletin.pdf"
+    markdown_path = "rki/Bulletins/Jahre/2026/Markdown/2026-07-10_bulletin.md"
+    pdf_payload = b"pdf current v2"
+    source_sha256 = hashlib.sha256(pdf_payload).hexdigest()
+    markdown_payload = b"# current v2\n"
+    markdown_sha256 = hashlib.sha256(markdown_payload).hexdigest()
+    markdown_id = "conv-" + "a" * 64
+    source = {
+        "bitstream_id": "rki-bitstream-" + "b" * 64,
+        "source_id": _SOURCE_ID,
+        "title": "Current | bulletin",
+        "handle": "176904/900000001.2",
+        "version": 2,
+        "publication_date": "2026-07-10",
+        "sha256": source_sha256,
+        "decision_sha256": _DECISION_SHA256,
+        "rights": {"state": "approved"},
+    }
+    old_source = {
+        **source,
+        "bitstream_id": "rki-bitstream-" + "c" * 64,
+        "source_id": "rki:176904/900000001",
+        "handle": "176904/900000001",
+        "version": 1,
+    }
+    document = {
+        "document_id": _DOCUMENT_ID,
+        "version": 2,
+        "source_id": _SOURCE_ID,
+        "bitstream_id": source["bitstream_id"],
+        "publication_date": "2026-07-10",
+        "canonical_periods": {"week": "2026-W28", "month": "2026-07", "year": 2026},
+        "paths": {"pdf": pdf_path, "markdown": markdown_path if markdown else None},
+        "superseded_by": None,
+    }
+    old_document = {
+        **document,
+        "document_id": "rki-176904-900000001-v1",
+        "version": 1,
+        "source_id": old_source["source_id"],
+        "bitstream_id": old_source["bitstream_id"],
+        "superseded_by": _DOCUMENT_ID,
+    }
+    conversion = {
+        "conversion_id": markdown_id,
+        "document_id": _DOCUMENT_ID,
+        "bitstream_id": source["bitstream_id"],
+        "source_sha256": source_sha256,
+        "state": "converted" if markdown else "not_materialized",
+        "output_sha256": markdown_sha256 if markdown else None,
+        "storage_reference": markdown_id if markdown else None,
+    }
+    common = {
+        "source_id": _SOURCE_ID,
+        "source_sha256": source_sha256,
+        "document_id": _DOCUMENT_ID,
+        "decision_sha256": _DECISION_SHA256,
+        "visibility": visibility,
+        "rights_state": "approved",
+    }
+    storage = [
+        {
+            **common,
+            "artifact_id": "pdf-current-v2",
+            "relative_path": pdf_path,
+            "sha256": source_sha256,
+            "bytes": len(pdf_payload),
+            "conversion_id": None,
+        }
+    ]
+    prepared = {
+        pdf_path: _prepared(
+            tmp_path,
+            artifact_id="pdf-current-v2",
+            logical_key=pdf_path,
+            payload=pdf_payload,
+            source_sha256=source_sha256,
+            visibility=visibility,
+        )
+    }
+    if markdown:
+        storage.append(
+            {
+                **common,
+                "artifact_id": markdown_id,
+                "relative_path": markdown_path,
+                "sha256": markdown_sha256,
+                "bytes": len(markdown_payload),
+                "conversion_id": markdown_id,
+            }
+        )
+        prepared[markdown_path] = _prepared(
+            tmp_path,
+            artifact_id=markdown_id,
+            logical_key=markdown_path,
+            payload=markdown_payload,
+            source_sha256=source_sha256,
+            conversion_id=markdown_id,
+            visibility=visibility,
+        )
+    return {
+        "as_of": datetime(2026, 8, 4, tzinfo=timezone.utc),
+        "due_tasks": (due(TaskKind.MONTH, "2026-07"),),
+        "affected_periods": AffectedPeriods(),
+        "graph": ManifestGraph(
+            sources=(old_source, source),
+            documents=(old_document, document),
+            conversions=(conversion,),
+            storage_references=tuple(storage),
+        ),
+        "prepared_by_logical_key": prepared,
+    }
+
+
+def test_plan_selects_current_documents_and_separates_formats(tmp_path: Path) -> None:
+    plan = plan_period_archives(**_plan_inputs(tmp_path))
+
+    period = plan.periods[0]
+    assert tuple(document.document_id for document in period.documents) == (_DOCUMENT_ID,)
+    assert tuple(archive.spec.kind for archive in period.archives) == (
+        "month-markdown",
+        "month-pdf",
+    )
+    assert all(
+        not entry.path.endswith(".zip")
+        for archive in period.archives
+        for entry in archive.spec.entries
+    )
+
+
+def test_empty_format_is_omitted_and_mixed_visibility_fails(tmp_path: Path) -> None:
+    pdf_only = plan_period_archives(**_plan_inputs(tmp_path, markdown=False))
+    assert tuple(archive.spec.kind for archive in pdf_only.periods[0].archives) == ("month-pdf",)
+
+    inputs = _plan_inputs(tmp_path)
+    prepared = inputs["prepared_by_logical_key"]
+    assert isinstance(prepared, dict)
+    markdown_path = next(path for path in prepared if path.endswith(".md"))
+    prepared[markdown_path] = replace(prepared[markdown_path], visibility="public")
+    with pytest.raises(AggregationError, match="Sichtbarkeit"):
+        plan_period_archives(**inputs)
+
+
+def _mutated_plan_inputs(tmp_path: Path, mutation: str) -> dict[str, object]:
+    inputs = _plan_inputs(tmp_path)
+    graph = inputs["graph"]
+    prepared = inputs["prepared_by_logical_key"]
+    assert isinstance(graph, ManifestGraph)
+    assert isinstance(prepared, dict)
+    storage = list(graph.storage_references)
+    conversions = list(graph.conversions)
+    if mutation == "missing-storage":
+        storage.pop()
+    elif mutation == "missing-prepared":
+        prepared.pop(next(iter(prepared)))
+    elif mutation == "size-drift":
+        storage[0] = {**storage[0], "bytes": storage[0]["bytes"] + 1}
+    elif mutation == "sha-drift":
+        storage[0] = {**storage[0], "sha256": "e" * 64}
+    elif mutation == "source-drift":
+        storage[0] = {**storage[0], "source_id": "rki:176904/900000002"}
+    elif mutation == "document-drift":
+        storage[0] = {**storage[0], "document_id": "rki-176904-900000002-v1"}
+    elif mutation == "conversion-drift":
+        storage[1] = {**storage[1], "conversion_id": "conv-" + "e" * 64}
+    elif mutation == "unknown-conversion-state":
+        conversions[0] = {**conversions[0], "state": "invented"}
+    elif mutation == "basename-collision":
+        duplicate = dict(graph.documents[1])
+        duplicate.update(
+            document_id="rki-176904-900000002-v1",
+            version=1,
+            source_id="rki:176904/900000002",
+            bitstream_id="rki-bitstream-" + "e" * 64,
+            paths={
+                "pdf": "rki/Bulletins/Jahre/2026/PDF/other/2026-07-10_bulletin.pdf",
+                "markdown": None,
+            },
+        )
+        second_payload = b"second pdf"
+        second_sha256 = hashlib.sha256(second_payload).hexdigest()
+        second_source = {
+            **graph.sources[1],
+            "bitstream_id": duplicate["bitstream_id"],
+            "source_id": duplicate["source_id"],
+            "handle": "176904/900000002",
+            "version": 1,
+            "sha256": second_sha256,
+        }
+        second_storage = {
+            **storage[0],
+            "artifact_id": "pdf-current-other",
+            "relative_path": duplicate["paths"]["pdf"],
+            "sha256": second_sha256,
+            "bytes": len(second_payload),
+            "source_id": duplicate["source_id"],
+            "source_sha256": second_sha256,
+            "document_id": duplicate["document_id"],
+        }
+        second_path = second_storage["relative_path"]
+        assert isinstance(second_path, str)
+        prepared[second_path] = _prepared(
+            tmp_path,
+            artifact_id="pdf-current-other",
+            logical_key=second_path,
+            payload=second_payload,
+            source_id=duplicate["source_id"],
+            source_sha256=second_sha256,
+            document_id=duplicate["document_id"],
+        )
+        second_conversion = {
+            **conversions[0],
+            "conversion_id": "conv-" + "f" * 64,
+            "document_id": duplicate["document_id"],
+            "bitstream_id": duplicate["bitstream_id"],
+            "source_sha256": second_sha256,
+            "state": "not_materialized",
+            "output_sha256": None,
+            "storage_reference": None,
+        }
+        inputs["graph"] = ManifestGraph(
+            sources=(*graph.sources, second_source),
+            documents=(*graph.documents, duplicate),
+            conversions=(*conversions, second_conversion),
+            storage_references=(*storage, second_storage),
+        )
+        return inputs
+    else:
+        raise AssertionError(f"unbekannte Mutation: {mutation}")
+    inputs["graph"] = ManifestGraph(
+        sources=graph.sources,
+        documents=graph.documents,
+        conversions=tuple(conversions),
+        storage_references=tuple(storage),
+    )
+    return inputs
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("missing-storage", "Storage"),
+        ("missing-prepared", "PreparedObject"),
+        ("size-drift", "Größe"),
+        ("sha-drift", "SHA-256"),
+        ("source-drift", "Source"),
+        ("document-drift", "Dokument"),
+        ("conversion-drift", "Conversion"),
+        ("unknown-conversion-state", "Konvertierungsstatus"),
+        ("basename-collision", "Kollision"),
+    ],
+)
+def test_manifest_join_drift_fails_closed(tmp_path: Path, mutation: str, message: str) -> None:
+    with pytest.raises(AggregationError, match=message):
+        plan_period_archives(**_mutated_plan_inputs(tmp_path, mutation))
+
+
+def test_year_archive_contains_payloads_not_month_zips(tmp_path: Path) -> None:
+    inputs = _plan_inputs(tmp_path)
+    graph = inputs["graph"]
+    assert isinstance(graph, ManifestGraph)
+    documents = list(graph.documents)
+    documents[1] = {
+        **documents[1],
+        "canonical_periods": {"week": "2025-W28", "month": "2025-07", "year": 2025},
+    }
+    inputs["graph"] = ManifestGraph(
+        sources=graph.sources,
+        documents=tuple(documents),
+        conversions=graph.conversions,
+        storage_references=graph.storage_references,
+    )
+    inputs["due_tasks"] = (due(TaskKind.YEAR, "2025"),)
+    year = plan_period_archives(**inputs).periods[0]
+
+    assert year.period.value == "2025"
+    assert year.archives
+    assert all(
+        entry.path.endswith((".pdf", ".md")) and not entry.path.endswith(".zip")
+        for archive in year.archives
+        for entry in archive.spec.entries
     )
