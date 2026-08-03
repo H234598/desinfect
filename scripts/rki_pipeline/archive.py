@@ -5,16 +5,22 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import stat
+import struct
 from typing import Any
 from zipfile import BadZipFile, ZIP_STORED, ZipFile, ZipInfo
 
 from scripts.rki_pipeline.io_utils import (
     detect_path_collisions,
     normalize_posix_path,
+    open_directory_beneath,
+    open_root_directory,
+    relative_path_beneath,
     stable_json_dumps,
+    UnsafePathError,
 )
 from scripts.rki_pipeline.storage.base import (
     PreparedObject,
@@ -23,7 +29,6 @@ from scripts.rki_pipeline.storage.base import (
     StorageError,
     authorize_storage_operation,
     hash_file,
-    read_verified_payload,
 )
 
 
@@ -47,6 +52,8 @@ _VISIBILITIES = frozenset({"public", "repository_authorized", "internal", "restr
 _ZIP_MIN = 315_532_800
 _ZIP_MAX = 4_354_819_198
 _EXPECTED_MODE = stat.S_IFREG | 0o644
+_READ_FLAGS = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+_ZIP_VERSION = 20
 
 
 class ArchiveError(ValueError):
@@ -255,7 +262,7 @@ def build_archive(
     metadata = {
         "MANIFEST.json": stable_json_dumps(manifest).encode("utf-8"),
         "README.md": _readme(manifest).encode("utf-8"),
-        "SHA256SUMS.txt": _checksums(records).encode("ascii"),
+        "SHA256SUMS.txt": _checksums(records).encode("utf-8"),
     }
     payloads = {entry.path: payload for entry, payload in loaded}
 
@@ -307,33 +314,46 @@ def validate_archive(
             raise ValueError(f"{field} muss ein kleingeschriebener SHA-256 sein")
     if type(limits) is not ArchiveLimits:
         raise ValueError("limits muss ein exaktes ArchiveLimits sein")
-    if path.is_symlink() or not path.is_file():
-        raise ArchiveSecurityError("Archivquelle ist keine reguläre Datei")
-
-    archive_size = path.stat().st_size
-    if archive_size > limits.max_archive_bytes:
-        raise ArchiveSecurityError("Archivgröße überschreitet das Limit")
+    descriptor: int | None = None
     try:
-        measured_size, output_sha256 = hash_file(path)
-    except StorageError as exc:
-        raise ArchiveSecurityError("Archivquelle ist keine reguläre Datei") from exc
-    if output_sha256 != expected_output_sha256:
-        raise ArchiveIntegrityError("Archiv-SHA-256 stimmt nicht mit dem erwarteten Ergebnis überein")
+        descriptor = os.open(path, _READ_FLAGS)
+        initial = os.fstat(descriptor)
+        if not stat.S_ISREG(initial.st_mode):
+            raise ArchiveSecurityError("Archivquelle ist keine reguläre Datei")
+        if initial.st_size > limits.max_archive_bytes:
+            raise ArchiveSecurityError("Archivgröße überschreitet das Limit")
+        measured_size, output_sha256 = _hash_descriptor(descriptor)
+        if measured_size != initial.st_size:
+            raise ArchiveIntegrityError("Archivgröße änderte sich während der Hash-Prüfung")
+        if output_sha256 != expected_output_sha256:
+            raise ArchiveIntegrityError("Archiv-SHA-256 stimmt nicht mit dem erwarteten Ergebnis überein")
 
-    try:
-        with ZipFile(path) as archive:
-            inspection = _inspect_open_archive(
-                archive,
-                path=path,
-                size=measured_size,
-                output_sha256=output_sha256,
-                expected_fingerprint=expected_fingerprint,
-                limits=limits,
-            )
+        with os.fdopen(os.dup(descriptor), "rb") as archive_handle:
+            with ZipFile(archive_handle) as archive:
+                inspection = _inspect_open_archive(
+                    archive,
+                    path=path,
+                    size=measured_size,
+                    output_sha256=output_sha256,
+                    expected_fingerprint=expected_fingerprint,
+                    limits=limits,
+                )
+        _verify_archive_identity(
+            path,
+            descriptor,
+            initial=initial,
+            expected_output_sha256=expected_output_sha256,
+            limits=limits,
+        )
     except ArchiveError:
         raise
     except (BadZipFile, OSError, EOFError, RuntimeError, UnicodeError) as exc:
+        if descriptor is None:
+            raise ArchiveSecurityError("Archivquelle ist keine reguläre Datei") from exc
         raise ArchiveIntegrityError("ZIP-Struktur oder CRC ist beschädigt") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
     return inspection
 
 
@@ -358,18 +378,101 @@ def _load_authorized_entries(
             authorize_storage_operation(authorizer, entry.prepared, operation="archive")
         except StorageAuthorizationError as exc:
             raise ArchiveSecurityError(f"Rechteentscheidung für {entry.path!r} ist ungültig") from exc
-        if entry.prepared.path.is_symlink() or not entry.prepared.path.is_file():
-            raise ArchiveSecurityError(f"Payloadquelle für {entry.path!r} ist keine reguläre Datei")
-        try:
-            payload = read_verified_payload(
-                entry.prepared.path,
-                sha256=entry.prepared.sha256,
-                size=entry.prepared.size,
-            )
-        except StorageError as exc:
-            raise ArchiveIntegrityError(f"Payload {entry.path!r} stimmt nicht mit PreparedObject überein") from exc
+        payload = _read_prepared_payload(entry)
         loaded.append((entry, payload))
     return tuple(loaded)
+
+
+def _read_prepared_payload(entry: ArchiveEntry) -> bytes:
+    prepared = entry.prepared
+    descriptor: int | None = None
+    parent_descriptor: int | None = None
+    try:
+        relative = relative_path_beneath(
+            Path(os.path.abspath(prepared.path)),
+            Path(os.path.abspath(prepared.temp_root)),
+        )
+        with open_root_directory(prepared.temp_root) as root_descriptor:
+            parent_descriptor = open_directory_beneath(root_descriptor, relative.parts[:-1])
+            descriptor = os.open(relative.name, _READ_FLAGS, dir_fd=parent_descriptor)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ArchiveSecurityError(f"Payloadquelle für {entry.path!r} ist keine reguläre Datei")
+        if metadata.st_size != prepared.size:
+            raise ArchiveIntegrityError(f"Payload {entry.path!r} hat eine unerwartete Größe")
+        digest = hashlib.sha256()
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 1024 * 1024):
+            chunks.append(chunk)
+            digest.update(chunk)
+        payload = b"".join(chunks)
+        if len(payload) != prepared.size or digest.hexdigest() != prepared.sha256:
+            raise ArchiveIntegrityError(
+                f"Payload {entry.path!r} stimmt nicht mit PreparedObject überein"
+            )
+        return payload
+    except ArchiveError:
+        raise
+    except (OSError, UnsafePathError) as exc:
+        raise ArchiveSecurityError(
+            f"Symlink- oder unsichere Pfadkomponente für Payload {entry.path!r}"
+        ) from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
+
+
+def _hash_descriptor(descriptor: int) -> tuple[int, str]:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    size = 0
+    while chunk := os.read(descriptor, 1024 * 1024):
+        size += len(chunk)
+        digest.update(chunk)
+    return size, digest.hexdigest()
+
+
+def _verify_archive_identity(
+    path: Path,
+    descriptor: int,
+    *,
+    initial: os.stat_result,
+    expected_output_sha256: str,
+    limits: ArchiveLimits,
+) -> None:
+    current = os.fstat(descriptor)
+    if current.st_size > limits.max_archive_bytes:
+        raise ArchiveSecurityError("Archivgröße überschreitet das Limit")
+    if (current.st_dev, current.st_ino, current.st_size) != (
+        initial.st_dev,
+        initial.st_ino,
+        initial.st_size,
+    ):
+        raise ArchiveSecurityError("Archivdatei änderte Größe oder Identität während der Prüfung")
+    measured_size, measured_sha256 = _hash_descriptor(descriptor)
+    after_hash = os.fstat(descriptor)
+    if after_hash.st_size > limits.max_archive_bytes:
+        raise ArchiveSecurityError("Archivgröße überschreitet das Limit")
+    if (after_hash.st_dev, after_hash.st_ino, after_hash.st_size) != (
+        current.st_dev,
+        current.st_ino,
+        current.st_size,
+    ):
+        raise ArchiveSecurityError("Archivdatei änderte Größe oder Identität während der Prüfung")
+    if measured_size != after_hash.st_size or measured_sha256 != expected_output_sha256:
+        raise ArchiveIntegrityError("Archivdatei änderte Inhalt während der Prüfung")
+    try:
+        bound = os.stat(path, follow_symlinks=False)
+    except OSError as exc:
+        raise ArchiveSecurityError("Archivpfad wurde während der Prüfung ausgetauscht") from exc
+    if not stat.S_ISREG(bound.st_mode) or (bound.st_dev, bound.st_ino, bound.st_size) != (
+        after_hash.st_dev,
+        after_hash.st_ino,
+        after_hash.st_size,
+    ):
+        raise ArchiveSecurityError("Archivpfad wurde während der Prüfung ausgetauscht")
 
 
 def _zip_info(name: str, epoch: int) -> ZipInfo:
@@ -450,6 +553,15 @@ def _inspect_open_archive(
             raise ArchiveSecurityError(f"ZIP-Mitglied {info.filename!r} verwendet unerlaubte Kompression")
         if info.create_system != 3:
             raise ArchiveSecurityError(f"ZIP-Mitglied {info.filename!r} hat unerwartetes Erzeugersystem")
+        if (
+            info.create_version != _ZIP_VERSION
+            or info.extract_version != _ZIP_VERSION
+            or info.reserved != 0
+            or info.volume != 0
+        ):
+            raise ArchiveSecurityError(
+                f"ZIP-Mitglied {info.filename!r} hat unerwartete Version oder ZIP64-Metadaten"
+            )
         if info.external_attr != _EXPECTED_MODE << 16:
             raise ArchiveSecurityError(f"ZIP-Mitglied {info.filename!r} hat unerwarteten Modus")
         if info.is_dir() or not stat.S_ISREG(info.external_attr >> 16):
@@ -460,6 +572,7 @@ def _inspect_open_archive(
             raise ArchiveSecurityError(f"ZIP-Mitglied {info.filename!r} enthält einen Kommentar")
         if info.filename.casefold().endswith(".zip"):
             raise ArchiveSecurityError("Verschachtelte ZIP-Mitglieder sind unzulässig")
+        _validate_local_header(archive, info)
 
     metadata_names = set(RESERVED_MEMBERS)
     present_names = set(names)
@@ -484,7 +597,7 @@ def _inspect_open_archive(
     if record_names != payload_names:
         raise ArchiveIntegrityError("Manifest-Einträge stimmen nicht mit Payload-Mitgliedern überein")
     checksum_bytes = _read_member_bytes(archive, archive.getinfo("SHA256SUMS.txt"))
-    expected_checksums = _checksums(records).encode("ascii")
+    expected_checksums = _checksums(records).encode("utf-8")
     if checksum_bytes != expected_checksums:
         raise ArchiveIntegrityError("Checksum-Datei ist malformed oder stimmt nicht mit dem Manifest überein")
     readme_bytes = _read_member_bytes(archive, archive.getinfo("README.md"))
@@ -508,6 +621,57 @@ def _inspect_open_archive(
         size=size,
         entries=payload_names,
     )
+
+
+def _validate_local_header(archive: ZipFile, info: ZipInfo) -> None:
+    handle = archive.fp
+    if handle is None:
+        raise ArchiveIntegrityError("ZIP-Datei ist während der Strukturprüfung geschlossen")
+    position = handle.tell()
+    try:
+        handle.seek(info.header_offset)
+        header = handle.read(30)
+        if len(header) != 30:
+            raise ArchiveIntegrityError(f"Lokaler ZIP-Header für {info.filename!r} ist unvollständig")
+        (
+            signature,
+            extract_version,
+            flags,
+            compression,
+            _modified_time,
+            _modified_date,
+            crc,
+            compressed_size,
+            file_size,
+            name_size,
+            extra_size,
+        ) = struct.unpack("<4s5H3I2H", header)
+        handle.read(name_size)
+        local_extra = handle.read(extra_size)
+    finally:
+        handle.seek(position)
+    if signature != b"PK\x03\x04":
+        raise ArchiveIntegrityError(f"Lokaler ZIP-Header für {info.filename!r} ist ungültig")
+    if (
+        extract_version != _ZIP_VERSION
+        or compressed_size == 0xFFFFFFFF
+        or file_size == 0xFFFFFFFF
+        or extra_size != 0
+        or local_extra
+    ):
+        raise ArchiveSecurityError(
+            f"Lokaler ZIP-Header für {info.filename!r} enthält ZIP64 oder unerwartete Version"
+        )
+    if (
+        flags != info.flag_bits
+        or compression != info.compress_type
+        or crc != info.CRC
+        or compressed_size != info.compress_size
+        or file_size != info.file_size
+    ):
+        raise ArchiveIntegrityError(
+            f"Lokaler und zentraler ZIP-Header für {info.filename!r} widersprechen sich"
+        )
 
 
 def _read_member_bytes(archive: ZipFile, info: ZipInfo) -> bytes:

@@ -11,6 +11,7 @@ from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
 
 import pytest
 
+from scripts.rki_pipeline import archive as archive_module
 from scripts.rki_pipeline import rights
 from scripts.rki_pipeline.archive import (
     ArchiveBuild,
@@ -175,6 +176,25 @@ def _canonical_json(payload: object) -> bytes:
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True, separators=(",", ": "))
         + "\n"
     ).encode("utf-8")
+
+
+def _rewrite_archive_with_zip64_member(source: Path, destination: Path, member: str) -> None:
+    with ZipFile(source) as archive:
+        members = [(info, archive.read(info)) for info in archive.infolist()]
+    with ZipFile(destination, "w", compression=ZIP_STORED, allowZip64=True) as archive:
+        for original, payload in members:
+            info = ZipInfo(original.filename, original.date_time)
+            for field in (
+                "compress_type",
+                "comment",
+                "extra",
+                "create_system",
+                "external_attr",
+                "internal_attr",
+            ):
+                setattr(info, field, getattr(original, field))
+            with archive.open(info, "w", force_zip64=info.filename == member) as handle:
+                handle.write(payload)
 
 
 def test_deterministic_archive_fingerprint_is_order_independent(
@@ -398,6 +418,27 @@ def test_deterministic_build_has_sorted_members_and_exact_metadata(
         ).encode("ascii")
 
 
+def test_deterministic_build_supports_nfc_unicode_payload_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry, _ = _prepared_entries(tmp_path, monkeypatch)
+    unicode_entry = ArchiveEntry("PDF/überblick.pdf", entry.prepared)
+    spec = _spec((unicode_entry,))
+    authorizer = _authorizer(tmp_path, monkeypatch)
+    first = tmp_path / "first.zip"
+    second = tmp_path / "second.zip"
+
+    first_build = build_archive(spec, first, authorizer=authorizer)
+    second_build = build_archive(spec, second, authorizer=authorizer)
+
+    assert first_build.output_sha256 == second_build.output_sha256
+    assert first.read_bytes() == second.read_bytes()
+    with ZipFile(first) as archive:
+        assert archive.read("SHA256SUMS.txt") == (
+            f"{entry.prepared.sha256}  PDF/überblick.pdf\n".encode("utf-8")
+        )
+
+
 @pytest.mark.parametrize("path", ("../escape.pdf", "/absolute.pdf", "PDF\\bad.pdf", "PDF/nested.ZIP"))
 def test_security_validator_rejects_unsafe_or_nested_member_names(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str
@@ -455,6 +496,23 @@ def test_security_builder_rejects_symlink_source(
     original.symlink_to(moved)
 
     with pytest.raises(ArchiveSecurityError, match="regulär|Symlink"):
+        build_archive(
+            _spec((entry,)),
+            tmp_path / "archive.zip",
+            authorizer=_authorizer(tmp_path, monkeypatch),
+        )
+
+
+def test_security_builder_rejects_symlinked_payload_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry, _ = _prepared_entries(tmp_path, monkeypatch)
+    prepared_parent = entry.prepared.path.parent
+    outside_parent = tmp_path / "outside"
+    prepared_parent.rename(outside_parent)
+    prepared_parent.symlink_to(outside_parent, target_is_directory=True)
+
+    with pytest.raises(ArchiveSecurityError, match="Symlink|Pfadkomponente"):
         build_archive(
             _spec((entry,)),
             tmp_path / "archive.zip",
@@ -562,6 +620,65 @@ def test_security_validator_rejects_archive_comment(
         )
 
 
+def test_security_validator_rejects_path_swap_after_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry, _ = _prepared_entries(tmp_path, monkeypatch)
+    archive_path = tmp_path / "archive.zip"
+    build = build_archive(_spec((entry,)), archive_path, authorizer=_authorizer(tmp_path, monkeypatch))
+    replacement = tmp_path / "replacement.zip"
+    replacement.write_bytes(archive_path.read_bytes())
+    original_zip_file = archive_module.ZipFile
+    swapped = False
+
+    class SwappingZipFile(original_zip_file):
+        def __init__(self, file: object, *args: object, **kwargs: object) -> None:
+            nonlocal swapped
+            if not swapped:
+                replacement.replace(archive_path)
+                swapped = True
+            super().__init__(file, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(archive_module, "ZipFile", SwappingZipFile)
+    with pytest.raises(ArchiveSecurityError, match="Identität|ausgetauscht"):
+        validate_archive(
+            archive_path,
+            expected_fingerprint=build.input_fingerprint,
+            expected_output_sha256=build.output_sha256,
+        )
+
+
+def test_security_validator_rejects_growth_after_hash_over_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry, _ = _prepared_entries(tmp_path, monkeypatch)
+    archive_path = tmp_path / "archive.zip"
+    build = build_archive(_spec((entry,)), archive_path, authorizer=_authorizer(tmp_path, monkeypatch))
+    original_size = archive_path.stat().st_size
+    original_zip_file = archive_module.ZipFile
+    grown = False
+
+    class GrowingZipFile(original_zip_file):
+        def __init__(self, file: object, *args: object, **kwargs: object) -> None:
+            nonlocal grown
+            if not grown:
+                with archive_path.open("ab") as handle:
+                    handle.write(b"x")
+                grown = True
+            super().__init__(file, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(archive_module, "ZipFile", GrowingZipFile)
+    with pytest.raises(ArchiveSecurityError, match="Archivgröße"):
+        validate_archive(
+            archive_path,
+            expected_fingerprint=build.input_fingerprint,
+            expected_output_sha256=build.output_sha256,
+            limits=ArchiveLimits(max_archive_bytes=original_size),
+        )
+
+
 def test_security_validator_rejects_duplicate_member(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -614,6 +731,25 @@ def test_security_validator_rejects_excessive_compression_ratio(tmp_path: Path) 
             expected_fingerprint="a" * 64,
             expected_output_sha256=hashlib.sha256(archive_path.read_bytes()).hexdigest(),
             limits=ArchiveLimits(max_compression_ratio=2),
+        )
+
+
+def test_security_validator_rejects_zip64_version_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry, _ = _prepared_entries(tmp_path, monkeypatch)
+    source = tmp_path / "archive.zip"
+    build = build_archive(_spec((entry,)), source, authorizer=_authorizer(tmp_path, monkeypatch))
+    tampered = tmp_path / "zip64.zip"
+    _rewrite_archive_with_zip64_member(source, tampered, entry.path)
+    with ZipFile(tampered) as archive:
+        assert archive.getinfo(entry.path).extract_version == 45
+
+    with pytest.raises(ArchiveSecurityError, match="Version|ZIP64"):
+        validate_archive(
+            tampered,
+            expected_fingerprint=build.input_fingerprint,
+            expected_output_sha256=hashlib.sha256(tampered.read_bytes()).hexdigest(),
         )
 
 
