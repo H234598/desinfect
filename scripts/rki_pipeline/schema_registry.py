@@ -67,6 +67,8 @@ def validate_document(name: str, payload: dict[str, Any]) -> None:
             for error in errors[:8]
         )
         raise SchemaContractError(f"{name}: {rendered}")
+    if name == "source-manifest" and payload["same_content_as"] != sorted(payload["same_content_as"]):
+        raise SchemaContractError("source-manifest: same_content_as muss lexikalisch sortiert sein")
 
 
 def _nullable_year(value: Any) -> int | None:

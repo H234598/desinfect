@@ -81,3 +81,14 @@ def test_document_manifest_v1_to_v1_1_is_deterministic_and_derives_periods() -> 
 def test_manifest_migrations_reject_versions_other_than_exact_v1(name: str) -> None:
     with pytest.raises(SchemaContractError, match="weder aktuell noch"):
         migrate_document(name, {"schema_version": "0.9.0"})
+
+
+def test_source_manifest_rejects_unsorted_content_aliases() -> None:
+    payload = migrate_document("source-manifest", _fixture("source-manifest-v1.0.json"))
+    payload["same_content_as"] = [
+        "rki-bitstream-" + "b" * 64,
+        "rki-bitstream-" + "a" * 64,
+    ]
+
+    with pytest.raises(SchemaContractError, match="sortiert"):
+        validate_document("source-manifest", payload)
