@@ -4,8 +4,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+import os
 from pathlib import Path
 import re
+import stat
 import tomllib
 from typing import Any
 
@@ -144,23 +146,43 @@ class _UniqueKeyLoader(yaml.SafeLoader):
                 raise RightsPolicyError("YAML-Schlüssel muss skalar sein") from exc
             if duplicate:
                 raise RightsPolicyError(f"Doppelter YAML-Schlüssel: {key!r}")
-            result[key] = self.construct_object(value_node, deep=deep)
+            value = self.construct_object(value_node, deep=deep)
+            try:
+                result[key] = value
+            except TypeError as exc:
+                raise RightsPolicyError("YAML-Schlüssel muss skalar sein") from exc
         return result
 
 
 def _read_text(path: Path, *, maximum: int, label: str) -> str:
     path = Path(path)
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        raise RightsPolicyError(f"{label} kann Symlinks nicht sicher ausschließen")
+    descriptor: int | None = None
     try:
-        metadata = path.lstat()
-        if path.is_symlink() or not path.is_file():
+        flags = os.O_RDONLY | no_follow | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_BINARY", 0)
+        descriptor = os.open(path, flags)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
             raise RightsPolicyError(f"{label} ist keine reguläre Datei: {path}")
         if metadata.st_size > maximum:
             raise RightsPolicyError(f"{label} ist zu groß: {path}")
-        return path.read_text(encoding="utf-8")
+        handle = os.fdopen(descriptor, "rb", closefd=True)
+        descriptor = None
+        with handle:
+            payload = handle.read(maximum + 1)
+        if len(payload) > maximum:
+            raise RightsPolicyError(f"{label} ist zu groß: {path}")
+        return payload.decode("utf-8")
     except RightsPolicyError:
         raise
     except (OSError, UnicodeError) as exc:
         raise RightsPolicyError(f"{label} ist nicht lesbar: {path}") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _exact_keys(value: dict[str, Any], expected: frozenset[str], *, label: str) -> None:

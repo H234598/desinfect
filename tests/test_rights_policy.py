@@ -1,6 +1,7 @@
 """Fail-closed rights policy and authoritative-register contracts."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -574,6 +575,7 @@ def test_rights_policy_toml_cannot_expand_fixed_matrix(tmp_path: Path, text: str
         "schema_version: 1\ndecisions: []\n---\nschema_version: 1\ndecisions: []\n",
         "schema_version: 1\ndecisions: !!python/object:builtins.list {}\n",
         "schema_version: 1\ndecisions: []\n1: invalid-key\n",
+        "schema_version: 1\ndecisions: []\n? [nested, key]\n: invalid-key\n",
     ),
 )
 def test_rights_register_rejects_ambiguous_or_unsafe_yaml(tmp_path: Path, text: str) -> None:
@@ -583,6 +585,132 @@ def test_rights_register_rejects_ambiguous_or_unsafe_yaml(tmp_path: Path, text: 
     path.write_text(text, encoding="utf-8")
 
     with pytest.raises(rights.RightsPolicyError):
+        rights.load_rights_register(path)
+
+
+def test_unique_key_loader_normalizes_key_that_becomes_unhashable_on_insert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch raw TypeError escaping while the authority YAML is constructed."""
+
+    class UnstableKey:
+        hash_calls = 0
+
+        def __hash__(self) -> int:
+            self.hash_calls += 1
+            if self.hash_calls > 1:
+                raise TypeError("unhashable after lookup")
+            return 1
+
+    loader = rights._UniqueKeyLoader("key: value\n")
+    try:
+        node = loader.get_single_node()
+        key_node = node.value[0][0]
+        original = loader.construct_object
+        unstable = UnstableKey()
+
+        def construct_object(candidate, deep=False):
+            if candidate is key_node:
+                return unstable
+            return original(candidate, deep=deep)
+
+        monkeypatch.setattr(loader, "construct_object", construct_object)
+        with pytest.raises(rights.RightsPolicyError, match="Schlüssel"):
+            loader.construct_mapping(node)
+    finally:
+        loader.dispose()
+
+
+def test_rights_register_read_is_bound_to_one_open_file_description(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch pathname replacement between metadata validation and authority read."""
+
+    path = write_register(tmp_path)
+    replacement = tmp_path / "replacement.yml"
+    replacement.write_text(
+        "schema_version: 1\ndecisions:\n" + decision_yaml("approved"),
+        encoding="utf-8",
+    )
+    original_lstat = Path.lstat
+    replaced = False
+
+    def replace_after_lstat(candidate: Path):
+        nonlocal replaced
+        metadata = original_lstat(candidate)
+        if candidate == path and not replaced:
+            replaced = True
+            replacement.replace(path)
+        return metadata
+
+    monkeypatch.setattr(Path, "lstat", replace_after_lstat)
+
+    assert rights.load_rights_register(path).entries == ()
+
+
+def test_rights_register_read_is_bounded_to_maximum_plus_one_byte(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch an unbounded authority read after a stale or racing size check."""
+
+    path = write_register(tmp_path)
+    original_fdopen = os.fdopen
+    read_sizes: list[int] = []
+
+    class TrackingHandle:
+        def __init__(self, handle) -> None:
+            self.handle = handle
+
+        def __enter__(self):
+            self.handle.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.handle.__exit__(*args)
+
+        def read(self, size: int = -1):
+            read_sizes.append(size)
+            return self.handle.read(size)
+
+    def tracking_fdopen(*args, **kwargs):
+        return TrackingHandle(original_fdopen(*args, **kwargs))
+
+    monkeypatch.setattr(os, "fdopen", tracking_fdopen)
+
+    rights.load_rights_register(path)
+
+    assert read_sizes == [rights.MAX_REGISTER_BYTES + 1]
+
+
+@pytest.mark.parametrize("kind", ("symlink", "directory"))
+def test_rights_register_read_rejects_non_regular_descriptor(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    """Keep symlinks and non-regular authority sources outside the trust boundary."""
+
+    target = write_register(tmp_path)
+    path = tmp_path / "authority-source"
+    if kind == "symlink":
+        path.symlink_to(target)
+    else:
+        path.mkdir()
+
+    with pytest.raises(rights.RightsPolicyError):
+        rights.load_rights_register(path)
+
+
+def test_rights_register_read_translates_invalid_utf8(
+    tmp_path: Path,
+) -> None:
+    """Expose malformed authority bytes only as the domain error contract."""
+
+    path = tmp_path / "invalid-utf8.yml"
+    path.write_bytes(b"schema_version: 1\ndecisions: []\n\xff")
+
+    with pytest.raises(rights.RightsPolicyError, match="lesbar"):
         rights.load_rights_register(path)
 
 
