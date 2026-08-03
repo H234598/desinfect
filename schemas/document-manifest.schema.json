@@ -1,10 +1,48 @@
 {
-  "$id": "https://h234598.github.io/desinfect/schemas/document-manifest-1.0.0.json",
+  "$id": "https://h234598.github.io/desinfect/schemas/document-manifest-1.1.0.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "bitstream_id": {
+      "pattern": "^rki-bitstream-[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "bitstream_version": {
+      "minimum": 1,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "canonical_periods": {
+      "additionalProperties": false,
+      "properties": {
+        "month": {
+          "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])$",
+          "type": "string"
+        },
+        "week": {
+          "pattern": "^[0-9]{4}-W(?:0[1-9]|[1-4][0-9]|5[0-3])$",
+          "type": "string"
+        },
+        "year": {
+          "maximum": 9999,
+          "minimum": 1990,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "week",
+        "month",
+        "year"
+      ],
+      "type": "object"
+    },
     "document_id": {
-      "pattern": "^rki-[a-z0-9-]{3,180}$",
+      "pattern": "^rki-176904-[0-9]+-v[1-9][0-9]*$",
       "type": "string"
     },
     "document_type": {
@@ -41,16 +79,32 @@
       "format": "date",
       "type": "string"
     },
+    "provenance_state": {
+      "enum": [
+        "current",
+        "legacy_needs_review"
+      ]
+    },
     "schema_version": {
-      "const": "1.0.0"
+      "const": "1.1.0"
     },
     "source_id": {
       "maxLength": 200,
       "minLength": 3,
+      "pattern": "^rki:176904/[0-9]+(?:\\.(?:[2-9]|[1-9][0-9]+))?$",
       "type": "string"
     },
     "supersedes": {
       "maxLength": 200,
+      "pattern": "^rki-176904-[0-9]+-v[1-9][0-9]*$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "superseded_by": {
+      "maxLength": 200,
+      "pattern": "^rki-176904-[0-9]+-v[1-9][0-9]*$",
       "type": [
         "string",
         "null"
@@ -69,7 +123,12 @@
     "document_type",
     "publication_date",
     "paths",
-    "supersedes"
+    "supersedes",
+    "provenance_state",
+    "bitstream_id",
+    "bitstream_version",
+    "canonical_periods",
+    "superseded_by"
   ],
   "title": "Desinfect document manifest",
   "type": "object"

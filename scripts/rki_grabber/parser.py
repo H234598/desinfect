@@ -16,6 +16,8 @@ from scripts.rki_grabber.models import (
     RightsMetadata,
     Scope,
 )
+from scripts.rki_pipeline.documents import DocumentIdentityError, bitstream_identity
+from scripts.rki_pipeline.paths import DocumentPathError, DocumentType, canonical_document_paths
 
 HANDLE_PATH_RE = re.compile(
     r"^/handle/(?P<handle>176904/[0-9]+(?:\.[0-9]+)?)/?$"
@@ -283,13 +285,38 @@ def _pdf_candidates(
             match = MD5_RE.search(parent.get_text(" ", strip=True))
             if match is not None:
                 expected_md5 = match.group(1).lower()
-        key = f"{parsed.path}|{expected_md5 or parsed.query}"
-        found[key] = PdfCandidate(
-            url=urlunsplit(("https", parsed.netloc, parsed.path, parsed.query, "")),
+        candidate_url = urlunsplit(("https", parsed.netloc, parsed.path, parsed.query, ""))
+        try:
+            bitstream_identity(candidate_url)
+        except DocumentIdentityError:
+            continue
+        candidate = PdfCandidate(
+            url=candidate_url,
             source_name=unquote(source_name),
             expected_md5=expected_md5,
         )
-    return tuple(found[key] for key in sorted(found))
+        previous = found.get(candidate.bitstream_id)
+        if (
+            previous is not None
+            and previous.expected_md5 is not None
+            and candidate.expected_md5 is not None
+            and previous.expected_md5 != candidate.expected_md5
+        ):
+            raise ValueError("Widersprüchliche MD5-Werte für RKI-Bitstream")
+        if previous is None or (
+            previous.expected_md5 is None and candidate.expected_md5 is not None
+        ):
+            found[candidate.bitstream_id] = candidate
+    return tuple(
+        sorted(
+            found.values(),
+            key=lambda candidate: (
+                candidate.bitstream_version is None,
+                candidate.bitstream_version or 0,
+                candidate.bitstream_id,
+            ),
+        )
+    )
 
 
 def parse_item_metadata(
@@ -346,14 +373,17 @@ def safe_component(value: str, *, max_length: int = 100) -> str:
 
 
 def target_relative_path(metadata: ItemMetadata, candidate: PdfCandidate) -> str:
-    """Return the P03-compatible relative output path beneath a caller-owned root."""
+    """Return canonical PDF path beneath the caller-owned output root."""
 
-    year_dir = str(metadata.year) if metadata.year is not None else "unbekanntes-jahr"
-    handle_suffix = metadata.item_handle.split("/", 1)[1].replace(".", "-")
-    filename = (
-        f"{safe_component(metadata.title)}__{handle_suffix}__"
-        f"{safe_component(candidate.source_name)}"
-    )
-    if not filename.lower().endswith(".pdf"):
-        filename += ".pdf"
-    return PurePosixPath(metadata.scope.value, year_dir, filename).as_posix()
+    document_type = {
+        Scope.ISSUES: DocumentType.ISSUE,
+        Scope.ARTICLES: DocumentType.ARTICLE,
+    }.get(metadata.scope)
+    if document_type is None:
+        raise DocumentPathError("Scope.ALL besitzt keinen kanonischen Dokumentpfad")
+    return canonical_document_paths(
+        document_id=metadata.document_id,
+        bitstream_id=candidate.bitstream_id,
+        document_type=document_type,
+        publication_date=metadata.publication_date,
+    ).pdf

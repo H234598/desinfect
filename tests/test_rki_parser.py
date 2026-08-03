@@ -1,7 +1,10 @@
 """Pure parser regressions for the modular RKI grabber."""
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from scripts.rki_grabber.models import AffectedPeriods, Scope
 from scripts.rki_grabber.parser import (
@@ -11,6 +14,7 @@ from scripts.rki_grabber.parser import (
     parse_listing_bounds,
     target_relative_path,
 )
+from scripts.rki_pipeline.paths import DocumentPathError
 
 FIXTURES = Path(__file__).parent / "fixtures" / "rki-html"
 BASE_URL = "https://edoc.rki.de"
@@ -58,13 +62,124 @@ def test_item_parser_preserves_version_date_rights_and_deduplicates_bitstream() 
     assert metadata.doi == "10.25646/12345.2"
     assert metadata.rights.label == "Synthetic fixture — no publication decision"
     assert metadata.etag == '"item-v2"'
+    assert [candidate.bitstream_version for candidate in metadata.pdfs] == [1, 2]
+    assert len({candidate.bitstream_id for candidate in metadata.pdfs}) == 2
+    assert {candidate.expected_md5 for candidate in metadata.pdfs} == {
+        "397039b5b63ce567c48e787bbb3e18ae"
+    }
+    path = target_relative_path(metadata, metadata.pdfs[0])
+    assert path == (
+        "Jahre/1996/PDF/1996-03-22_gesamtausgabe_"
+        "rki-176904-12345-v2_"
+        "rki-bitstream-423fd381b99c455851cf7ce9b6a25788db6d8cc7ee70c56007a93b2f4c856275.pdf"
+    )
+
+
+def test_item_parser_collapses_exact_duplicate_bitstream_urls() -> None:
+    """Repeated anchor for one canonical bitstream must produce one candidate."""
+
+    metadata = parse_item_metadata(
+        """
+        <a href="/bitstream/handle/176904/12345/minimal.pdf?sequence=1">one.pdf</a>
+        <a href="/bitstream/handle/176904/12345/minimal.pdf?sequence=1">two.pdf</a>
+        """,
+        scope=Scope.ISSUES,
+        item_handle="176904/12345",
+        item_url="https://edoc.rki.de/handle/176904/12345",
+        fallback_year=1996,
+        base_url=BASE_URL,
+    )
+
     assert len(metadata.pdfs) == 1
-    candidate = metadata.pdfs[0]
-    assert candidate.expected_md5 == "397039b5b63ce567c48e787bbb3e18ae"
-    assert candidate.url.endswith("minimal.pdf?sequence=2")
-    path = target_relative_path(metadata, candidate)
-    assert path.startswith("issues/1996/")
-    assert path.endswith("minimal.pdf")
+
+
+@pytest.mark.parametrize(
+    "invalid_query",
+    ("foo=bar", "sequence=0", "sequence=1&sequence=2"),
+)
+def test_item_parser_skips_invalid_pdf_query_candidate(invalid_query: str) -> None:
+    """One malformed PDF link must not discard valid siblings from the item."""
+
+    metadata = parse_item_metadata(
+        f"""
+        <a href="/bitstream/handle/176904/12345/bad.pdf?{invalid_query}">bad.pdf</a>
+        <a href="/bitstream/handle/176904/12345/good.pdf?sequence=2">good.pdf</a>
+        """,
+        scope=Scope.ISSUES,
+        item_handle="176904/12345",
+        item_url="https://edoc.rki.de/handle/176904/12345",
+        fallback_year=1996,
+        base_url=BASE_URL,
+    )
+
+    assert [candidate.url for candidate in metadata.pdfs] == [
+        "https://edoc.rki.de/bitstream/handle/176904/12345/good.pdf?sequence=2"
+    ]
+
+
+@pytest.mark.parametrize(
+    "html",
+    (
+        """
+        <div><a href="/bitstream/handle/176904/12345/minimal.pdf?sequence=1">one.pdf</a></div>
+        <div><a href="/bitstream/handle/176904/12345/minimal.pdf?sequence=1">two.pdf</a>
+        MD5: 397039b5b63ce567c48e787bbb3e18ae</div>
+        """,
+        """
+        <div><a href="/bitstream/handle/176904/12345/minimal.pdf?sequence=1">one.pdf</a>
+        MD5: 397039b5b63ce567c48e787bbb3e18ae</div>
+        <div><a href="/bitstream/handle/176904/12345/minimal.pdf?sequence=1">two.pdf</a></div>
+        """,
+    ),
+)
+def test_item_parser_retains_md5_when_duplicate_anchor_lacks_it(html: str) -> None:
+    """A duplicate without checksum must not erase canonical MD5 evidence."""
+
+    metadata = parse_item_metadata(
+        html,
+        scope=Scope.ISSUES,
+        item_handle="176904/12345",
+        item_url="https://edoc.rki.de/handle/176904/12345",
+        fallback_year=1996,
+        base_url=BASE_URL,
+    )
+
+    assert len(metadata.pdfs) == 1
+    assert metadata.pdfs[0].expected_md5 == "397039b5b63ce567c48e787bbb3e18ae"
+
+
+def test_target_relative_path_rejects_unscoped_all_documents() -> None:
+    metadata = parse_item_metadata(
+        read("p03-item.html"),
+        scope=Scope.ISSUES,
+        item_handle="176904/12345.2",
+        item_url="https://edoc.rki.de/handle/176904/12345.2",
+        fallback_year=1996,
+        base_url=BASE_URL,
+    )
+    with pytest.raises(DocumentPathError, match="Scope.ALL"):
+        target_relative_path(replace(metadata, scope=Scope.ALL), metadata.pdfs[0])
+
+
+def test_item_parser_rejects_conflicting_md5_for_duplicate_bitstream() -> None:
+    """Same canonical bitstream cannot silently choose one conflicting checksum."""
+
+    html = """
+    <div><a href="/bitstream/handle/176904/12345/minimal.pdf?sequence=1">one.pdf</a>
+    MD5: 397039b5b63ce567c48e787bbb3e18ae</div>
+    <div><a href="/bitstream/handle/176904/12345/minimal.pdf?sequence=1">two.pdf</a>
+    MD5: 0123456789abcdef0123456789abcdef</div>
+    """
+
+    with pytest.raises(ValueError):
+        parse_item_metadata(
+            html,
+            scope=Scope.ISSUES,
+            item_handle="176904/12345",
+            item_url="https://edoc.rki.de/handle/176904/12345",
+            fallback_year=1996,
+            base_url=BASE_URL,
+        )
 
 
 def test_affected_periods_use_source_publication_date() -> None:

@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0.0",
+  "document_id": "rki-176904-12345-v2",
+  "version": 2,
+  "source_id": "rki:176904/12345.2",
+  "document_type": "gesamtausgabe",
+  "publication_date": "1996-03-22",
+  "paths": {
+    "pdf": "Jahre/1996/PDF/legacy.pdf",
+    "markdown": null
+  },
+  "supersedes": "rki-176904-12345-v1"
+}

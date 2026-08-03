@@ -99,6 +99,26 @@
       "purpose": "synthetic RKI item metadata, rights, version, and PDF parser regression",
       "sha256": "f4db8371a6dd11408e88321067dd74d1f39964482f972c8e3c738bc91a595994",
       "synthetic": true
+    },
+    {
+      "bytes": 315,
+      "license_status": "synthetic",
+      "media_type": "application/json",
+      "path": "schemas/document-manifest-v1.0.json",
+      "provenance": "H234598/desinfect P06 synthetic migration fixture",
+      "purpose": "deterministic document-manifest migration from 1.0.0 to 1.1.0",
+      "sha256": "8f5f69aab423d2760b74b137497e0c2dedff4d153782fd0391d92d3c8fc10cbb",
+      "synthetic": true
+    },
+    {
+      "bytes": 485,
+      "license_status": "synthetic",
+      "media_type": "application/json",
+      "path": "schemas/source-manifest-v1.0.json",
+      "provenance": "H234598/desinfect P06 synthetic migration fixture",
+      "purpose": "deterministic source-manifest migration from 1.0.0 to 1.1.0",
+      "sha256": "7f3701800642bb4352d7ce1bea1462c0d49d862b10a80e94beb3c6026a665a10",
+      "synthetic": true
     }
   ],
   "max_file_bytes": 65536,

@@ -47,7 +47,7 @@ Unbekannte Backends und unbekannte TOML-Schlüssel brechen fail-closed ab. `conf
 
 ```text
 rki/Bulletins/**/*.pdf
-rki/Bulletins/Quellen/**/*.md
+rki/Bulletins/**/Markdown/**/*.md
 rki/Bulletins/**/*.zip
 ```
 

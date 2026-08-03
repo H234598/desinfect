@@ -17,18 +17,22 @@
       "previous_versions": []
     },
     {
-      "current_version": "1.0.0",
-      "migration": null,
+      "current_version": "1.1.0",
+      "migration": "migrate_source_manifest_v1_0_to_v1_1",
       "name": "source-manifest",
       "path": "schemas/source-manifest.schema.json",
-      "previous_versions": []
+      "previous_versions": [
+        "1.0.0"
+      ]
     },
     {
-      "current_version": "1.0.0",
-      "migration": null,
+      "current_version": "1.1.0",
+      "migration": "migrate_document_manifest_v1_0_to_v1_1",
       "name": "document-manifest",
       "path": "schemas/document-manifest.schema.json",
-      "previous_versions": []
+      "previous_versions": [
+        "1.0.0"
+      ]
     },
     {
       "current_version": "1.0.0",

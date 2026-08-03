@@ -35,13 +35,20 @@ def validate() -> None:
             if not ref.startswith("#/"):
                 raise SchemaContractError(f"{entry['name']}: externe $ref ist in P02 unzulässig: {ref}")
     validate_document("status", json.loads((ROOT / "status.json").read_text(encoding="utf-8")))
-    predecessor = json.loads(
-        (ROOT / "tests" / "fixtures" / "schemas" / "status-v2.json").read_text(encoding="utf-8")
-    )
-    first = migrate_document("status", predecessor)
-    second = migrate_document("status", predecessor)
-    if first != second:
-        raise SchemaContractError("Statusmigration ist nicht deterministisch")
+    predecessors = {
+        "status": "status-v2.json",
+        "source-manifest": "source-manifest-v1.0.json",
+        "document-manifest": "document-manifest-v1.0.json",
+    }
+    for name, fixture_name in predecessors.items():
+        predecessor = json.loads(
+            (ROOT / "tests" / "fixtures" / "schemas" / fixture_name).read_text(encoding="utf-8")
+        )
+        first = migrate_document(name, predecessor)
+        second = migrate_document(name, predecessor)
+        if first != second:
+            raise SchemaContractError(f"{name}-Migration ist nicht deterministisch")
+        validate_document(name, first)
 
 
 def _refs(value: object):
@@ -57,4 +64,8 @@ def _refs(value: object):
 
 if __name__ == "__main__":
     validate()
-    print("schema family: ok; 12 contracts; Draft 2020-12; status 2.0.0 -> 3.0.0")
+    print(
+        "schema family: ok; 12 contracts; Draft 2020-12; "
+        "status 2.0.0 -> 3.0.0; source-manifest 1.0.0 -> 1.1.0; "
+        "document-manifest 1.0.0 -> 1.1.0"
+    )

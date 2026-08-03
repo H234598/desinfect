@@ -25,7 +25,7 @@ from scripts.rki_pipeline.storage.lfs import (
 ROOT = Path(__file__).resolve().parents[1]
 _TRACKING = (
     "rki/Bulletins/**/*.pdf filter=lfs diff=lfs merge=lfs -text\n"
-    "rki/Bulletins/Quellen/**/*.md filter=lfs diff=lfs merge=lfs -text\n"
+    "rki/Bulletins/**/Markdown/**/*.md filter=lfs diff=lfs merge=lfs -text\n"
     "rki/Bulletins/**/*.zip filter=lfs diff=lfs merge=lfs -text\n"
 )
 
@@ -78,7 +78,7 @@ def test_gitattributes_tracks_only_canonical_archive_classes() -> None:
     rules = validate_lfs_tracking(ROOT / ".gitattributes")
     assert rules == (
         "rki/Bulletins/**/*.pdf filter=lfs diff=lfs merge=lfs -text",
-        "rki/Bulletins/Quellen/**/*.md filter=lfs diff=lfs merge=lfs -text",
+        "rki/Bulletins/**/Markdown/**/*.md filter=lfs diff=lfs merge=lfs -text",
         "rki/Bulletins/**/*.zip filter=lfs diff=lfs merge=lfs -text",
     )
 
@@ -269,3 +269,34 @@ def test_lfs_adapter_verifies_pointer_against_local_object(tmp_path: Path) -> No
     )
     adapter.verify(reference)
     assert reference.sha256 == oid
+
+
+def test_lfs_reference_inventory_excludes_noncanonical_markdown(tmp_path: Path) -> None:
+    repository = repository_with_tracking(tmp_path)
+    artifacts = repository / "rki" / "Bulletins"
+    artifacts.mkdir(parents=True)
+    (artifacts / "README.md").write_text("archive notes", encoding="utf-8")
+    (artifacts / "Jahre" / "1994" / "notes.md").parent.mkdir(parents=True)
+    (artifacts / "Jahre" / "1994" / "notes.md").write_text("not artifact", encoding="utf-8")
+    (artifacts / "Jahre" / "1994" / "Markdown" / "bulletin.md").parent.mkdir(
+        parents=True
+    )
+    (artifacts / "Jahre" / "1994" / "Markdown" / "bulletin.md").write_text(
+        "canonical artifact", encoding="utf-8"
+    )
+    (artifacts / "Jahre" / "1994" / "PDF" / "bulletin.pdf").parent.mkdir(parents=True)
+    (artifacts / "Jahre" / "1994" / "PDF" / "bulletin.pdf").write_bytes(b"%PDF")
+    (artifacts / "Jahre" / "1994" / "bundle.zip").write_bytes(b"PK")
+    (artifacts / "Jahre" / "1994" / "Markdown" / "upper.MD").write_text(
+        "not tracked", encoding="utf-8"
+    )
+    (artifacts / "Jahre" / "1994" / "PDF" / "upper.PDF").write_bytes(b"%PDF")
+    (artifacts / "Jahre" / "1994" / "upper.ZIP").write_bytes(b"PK")
+
+    adapter = LfsStorageAdapter(repository_root=repository, config=config())
+
+    assert {reference.relative_path for reference in adapter.list_references()} == {
+        "rki/Bulletins/Jahre/1994/Markdown/bulletin.md",
+        "rki/Bulletins/Jahre/1994/PDF/bulletin.pdf",
+        "rki/Bulletins/Jahre/1994/bundle.zip",
+    }

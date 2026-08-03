@@ -24,6 +24,7 @@ from scripts.rki_grabber.parser import (  # noqa: E402
     extract_submission_item_links,
     extract_year_collections,
     parse_item_metadata,
+    target_relative_path,
 )
 
 
@@ -59,7 +60,13 @@ def validate() -> None:
         fallback_year=1996,
         base_url=config.base_url,
     )
-    if metadata.document_id != "rki-176904-12345-v2" or len(metadata.pdfs) != 1:
+    if (
+        metadata.document_id != "rki-176904-12345-v2"
+        or [candidate.bitstream_version for candidate in metadata.pdfs] != [1, 2]
+        or len({candidate.bitstream_id for candidate in metadata.pdfs}) != 2
+        or len({target_relative_path(metadata, candidate) for candidate in metadata.pdfs})
+        != 2
+    ):
         raise ValueError("P03-Metadatenfixture driftet")
 
     schema = json.loads(

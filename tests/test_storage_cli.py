@@ -57,7 +57,7 @@ def test_materialize_manifest_must_stay_below_temp_root(tmp_path: Path) -> None:
     (source / ".git").mkdir()
     (source / ".gitattributes").write_text(
         "rki/Bulletins/**/*.pdf filter=lfs diff=lfs merge=lfs -text\n"
-        "rki/Bulletins/Quellen/**/*.md filter=lfs diff=lfs merge=lfs -text\n"
+        "rki/Bulletins/**/Markdown/**/*.md filter=lfs diff=lfs merge=lfs -text\n"
         "rki/Bulletins/**/*.zip filter=lfs diff=lfs merge=lfs -text\n",
         encoding="utf-8",
     )

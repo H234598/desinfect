@@ -19,7 +19,11 @@ ROBOTS = f"{BASE}/robots.txt"
 ISSUES_ROOT = f"{BASE}/handle/176904/10"
 LISTING = f"{BASE}/handle/176904/1996/recent-submissions"
 ITEM = f"{BASE}/handle/176904/12345.2"
-PDF_URL = f"{BASE}/bitstream/handle/176904/12345.2/minimal.pdf?sequence=2"
+PDF_URLS = (
+    f"{BASE}/bitstream/handle/176904/12345.2/minimal.pdf?sequence=1",
+    f"{BASE}/bitstream/handle/176904/12345.2/minimal.pdf?sequence=2",
+)
+PDF_URL = PDF_URLS[1]
 
 
 def html(name: str) -> bytes:
@@ -58,12 +62,13 @@ def responses(*, include_pdf: bool) -> dict[str, FakeResponse]:
     }
     if include_pdf:
         pdf = (FIXTURES / "pdf" / "minimal.pdf").read_bytes()
-        result[PDF_URL] = FakeResponse(
-            200,
-            PDF_URL,
-            pdf,
-            {"content-type": "application/pdf", "etag": '"pdf-v2"'},
-        )
+        for pdf_url in PDF_URLS:
+            result[pdf_url] = FakeResponse(
+                200,
+                pdf_url,
+                pdf,
+                {"content-type": "application/pdf", "etag": '"pdf-v2"'},
+            )
     return result
 
 
@@ -99,8 +104,10 @@ def test_dry_run_is_importable_structured_and_does_not_create_output(tmp_path: P
     )
     assert result.outcome is Outcome.SUCCESS
     assert result.exit_code == 0
-    assert len(result.records) == 1
-    assert result.records[0].state is RecordState.PLANNED
+    assert len(result.records) == 2
+    assert {record.state for record in result.records} == {RecordState.PLANNED}
+    assert {record.pdf_url for record in result.records} == set(PDF_URLS)
+    assert len({record.relative_path for record in result.records}) == 2
     assert not output.exists()
     payload = result.to_dict()
     validate_result(payload)
@@ -128,11 +135,24 @@ def test_materializing_api_downloads_to_relative_path_and_validates_schema(tmp_p
         now=clock(),
     )
     assert result.outcome is Outcome.SUCCESS
-    record = result.records[0]
-    assert record.state is RecordState.DOWNLOADED
-    assert record.relative_path is not None
-    assert not Path(record.relative_path).is_absolute()
-    assert (tmp_path / record.relative_path).is_file()
+    assert len(result.records) == 2
+    assert {record.state for record in result.records} == {RecordState.DOWNLOADED}
+    assert {record.pdf_url for record in result.records} == set(PDF_URLS)
+    assert len({record.relative_path for record in result.records}) == 2
+    assert {record.relative_path for record in result.records} == {
+        "Jahre/1996/PDF/1996-03-22_gesamtausgabe_"
+        "rki-176904-12345-v2_"
+        "rki-bitstream-423fd381b99c455851cf7ce9b6a25788db6d8cc7ee70c56007a93b2f4c856275.pdf",
+        "Jahre/1996/PDF/1996-03-22_gesamtausgabe_"
+        "rki-176904-12345-v2_"
+        "rki-bitstream-1a09c00506d9ad46283b3c75bcfedf8f1e26a95406e202ee8cc65f1c9162f0c3.pdf",
+    }
+    for record in result.records:
+        assert record.relative_path is not None
+        assert not Path(record.relative_path).is_absolute()
+        target = tmp_path / record.relative_path
+        assert target.is_relative_to(tmp_path / "Jahre")
+        assert target.is_file()
     validate_result(result.to_dict())
 
 
@@ -194,12 +214,13 @@ def test_only_error_records_are_failed_not_partial(tmp_path: Path) -> None:
     """A run with no usable record must use the failed outcome and exit code four."""
 
     broken = responses(include_pdf=False)
-    broken[PDF_URL] = FakeResponse(
-        200,
-        PDF_URL,
-        b"not-a-pdf",
-        {"content-type": "application/pdf"},
-    )
+    for pdf_url in PDF_URLS:
+        broken[pdf_url] = FakeResponse(
+            200,
+            pdf_url,
+            b"not-a-pdf",
+            {"content-type": "application/pdf"},
+        )
     result = grab(
         GrabberRequest(
             scope=Scope.ISSUES,
@@ -216,7 +237,10 @@ def test_only_error_records_are_failed_not_partial(tmp_path: Path) -> None:
     )
     assert result.outcome is Outcome.FAILED
     assert result.exit_code == 4
-    assert result.records[0].state is RecordState.ERROR
+    assert len(result.records) == 2
+    assert {record.pdf_url for record in result.records} == set(PDF_URLS)
+    assert {record.state for record in result.records} == {RecordState.ERROR}
+    assert {record.error_code for record in result.records} == {"download.integrity"}
 
 
 def test_robots_block_on_pdf_path_remains_global_block(tmp_path: Path) -> None:
