@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
+from datetime import date
 from importlib import import_module
 from pathlib import Path
 
@@ -14,6 +15,106 @@ FINGERPRINT_SHA256 = "f294e43694711cb2db6dbc71bdf26805ca504131fe6db2ae4b30e894ce
 
 def _base_module():
     return import_module("scripts.rki_pipeline.conversion.base")
+
+
+def _frontmatter_module():
+    return import_module("scripts.rki_pipeline.conversion.frontmatter")
+
+
+def test_markdown_frontmatter_is_exact_stable_and_immutable() -> None:
+    frontmatter = _frontmatter_module()
+    metadata = frontmatter.MarkdownMetadata(
+        title='Epidemiologisches Bulletin "12/1996"',
+        document_type=frontmatter.DocumentType.ISSUE,
+        publication_date=date(1996, 3, 22),
+        bulletin_number="12/1996",
+        doi=None,
+    )
+
+    assert frontmatter.render_frontmatter(
+        metadata,
+        document_id="rki-176904-12345-v1",
+        source_id="rki:176904/12345",
+        source_pdf="../PDF/source.pdf",
+        source_sha256="a" * 64,
+        conversion_quality="good",
+        ocr_used=False,
+    ) == (
+        "---\n"
+        'id: "rki-176904-12345-v1"\n'
+        'title: "Epidemiologisches Bulletin \\"12/1996\\""\n'
+        'document_type: "gesamtausgabe"\n'
+        'publication_date: "1996-03-22"\n'
+        "year: 1996\n"
+        "month: 3\n"
+        'bulletin_number: "12/1996"\n'
+        "doi: null\n"
+        'rki_handle: "176904/12345"\n'
+        'source_url: "https://edoc.rki.de/handle/176904/12345"\n'
+        'source_pdf: "../PDF/source.pdf"\n'
+        f'source_sha256: "{"a" * 64}"\n'
+        'conversion_quality: "good"\n'
+        "ocr_used: false\n"
+        "tags:\n"
+        '  - "rki"\n'
+        '  - "epidemiologisches-bulletin"\n'
+        '  - "quelle"\n'
+        '  - "jahr/1996"\n'
+        "---\n\n"
+    )
+
+    with pytest.raises(FrozenInstanceError):
+        metadata.title = "changed"
+
+
+def test_frontmatter_allows_review_state_without_ocr() -> None:
+    frontmatter = _frontmatter_module()
+    metadata = frontmatter.MarkdownMetadata(
+        title="Epidemiologisches Bulletin 12/1996",
+        document_type=frontmatter.DocumentType.ISSUE,
+        publication_date=date(1996, 3, 22),
+        bulletin_number="12/1996",
+        doi=None,
+    )
+
+    rendered = frontmatter.render_frontmatter(
+        metadata,
+        document_id="rki-176904-12345-v1",
+        source_id="rki:176904/12345",
+        source_pdf="../PDF/source.pdf",
+        source_sha256="a" * 64,
+        conversion_quality="needs_review",
+        ocr_used=False,
+    )
+
+    assert 'conversion_quality: "needs_review"\nocr_used: false\n' in rendered
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("title", "unsafe\nfrontmatter"),
+        ("document_type", "archive"),
+        ("bulletin_number", "12"),
+        ("doi", "/absolute/secret"),
+    ),
+)
+def test_markdown_metadata_rejects_unsafe_or_noncanonical_values(
+    field: str,
+    value: str,
+) -> None:
+    frontmatter = _frontmatter_module()
+    values = {
+        "title": "Epidemiologisches Bulletin 12/1996",
+        "document_type": frontmatter.DocumentType.ISSUE,
+        "publication_date": date(1996, 3, 22),
+        "bulletin_number": "12/1996",
+        "doi": None,
+    }
+    values[field] = value
+
+    with pytest.raises(ValueError):
+        frontmatter.MarkdownMetadata(**values)
 
 
 def _evidence():

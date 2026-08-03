@@ -184,6 +184,12 @@ jobs:
           set -Eeuo pipefail
           python3 scripts/validate_rights_register.py
 
+      - name: Validate P06 manifest catalog
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/validate_manifests.py --root tests/fixtures/manifests
+
       - name: Validate CI mutation safety
         shell: bash
         run: |
@@ -201,7 +207,7 @@ jobs:
           python3 -m scripts.rki_pipeline.pipeline_cli --help
           python3 -m scripts.rki_pipeline.cli convert --help
 
-      - name: Run focused P06 conversion contracts
+      - name: Run focused P06 contracts
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -210,6 +216,7 @@ jobs:
             tests/test_conversion.py \
             tests/test_conversion_service.py \
             tests/test_conversion_ocr.py \
+            tests/test_manifests.py \
             tests/test_cli_entrypoints.py
 
       - name: Run focused P05 contracts

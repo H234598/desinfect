@@ -1,6 +1,8 @@
 """Atomic, rights-bound PDF conversion orchestration."""
 from __future__ import annotations
 from contextlib import contextmanager
+from dataclasses import replace
+from datetime import date
 
 import hashlib
 from importlib import import_module
@@ -19,6 +21,8 @@ from scripts.rki_pipeline.conversion.base import (
     ToolEvidence,
 )
 from scripts.rki_pipeline.conversion.ocr import OcrExtraction, OcrUnavailableError
+from scripts.rki_pipeline.conversion.frontmatter import MarkdownMetadata
+from scripts.rki_pipeline.paths import DocumentType
 from scripts.rki_pipeline.pdf_validation import PdfLimits, ProcessResult
 from scripts.rki_pipeline.rights import (
     load_rights_authority,
@@ -98,6 +102,16 @@ def _runtime(font_sha: str = "d" * 64) -> RuntimeEvidence:
     )
 
 
+def _metadata() -> MarkdownMetadata:
+    return MarkdownMetadata(
+        title="Epidemiologisches Bulletin 1/2020",
+        document_type=DocumentType.ISSUE,
+        publication_date=date(2020, 1, 1),
+        bulletin_number="1/2020",
+        doi=None,
+    )
+
+
 def _authorizer_and_intent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -156,6 +170,7 @@ def _materialize(
     runner: _ConversionRunner | None = None,
     runtime: RuntimeEvidence | None = None,
     limits: PdfLimits | None = None,
+    metadata: MarkdownMetadata | None = None,
 ):
     service = import_module("scripts.rki_pipeline.conversion.service")
     authorizer, intent = _authorizer_and_intent(tmp_path, monkeypatch)
@@ -167,6 +182,7 @@ def _materialize(
         temp_root=temp_root,
         ledger=ledger,
         authorizer=authorizer,
+        metadata=metadata or _metadata(),
         runtime=runtime or _runtime(),
         runner=runner or _ConversionRunner(b"A" * 80 + b"\f"),
         limits=limits or PdfLimits(),
@@ -183,7 +199,14 @@ def test_good_text_conversion_publishes_atomic_valid_bundle(
     assert result.state == "converted"
     assert result.quality == "good"
     assert result.ocr_used is False
-    assert result.output_path.read_text(encoding="utf-8").count(
+    output = result.output_path.read_text(encoding="utf-8")
+    assert output.startswith(
+        "---\n"
+        f'id: "{DOCUMENT_ID}"\n'
+        'title: "Epidemiologisches Bulletin 1/2020"\n'
+    )
+    assert output.index("---\n\n") < output.index("<!-- rki-page: 1 -->")
+    assert output.count(
         "<!-- rki-page: 1 -->"
     ) == 1
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
@@ -207,6 +230,51 @@ def test_good_text_conversion_publishes_atomic_valid_bundle(
         result.output_path.absolute(),
         result.manifest_path.absolute(),
     }
+
+
+def test_metadata_changes_options_fingerprint_identity_and_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _service, first, _ledger, _intent = _materialize(tmp_path, monkeypatch)
+    _service, second, _ledger, _intent = _materialize(
+        tmp_path,
+        monkeypatch,
+        metadata=replace(_metadata(), title="Geänderter Titel"),
+    )
+    first_manifest = json.loads(first.manifest_path.read_text(encoding="utf-8"))
+    second_manifest = json.loads(second.manifest_path.read_text(encoding="utf-8"))
+
+    assert second_manifest["options_sha256"] != first_manifest["options_sha256"]
+    assert second.fingerprint_sha256 != first.fingerprint_sha256
+    assert second.conversion_id != first.conversion_id
+    assert second_manifest["output_sha256"] != first_manifest["output_sha256"]
+
+
+def test_invalid_metadata_fails_before_pdf_tool_or_ledger_effect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = import_module("scripts.rki_pipeline.conversion.service")
+    authorizer, intent = _authorizer_and_intent(tmp_path, monkeypatch)
+    temp_root = tmp_path / "materialized"
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root)
+    runner = _ConversionRunner(b"A" * 80 + b"\f")
+
+    with pytest.raises(service.ConversionIntegrityError, match="Markdown-Pfad"):
+        service.materialize_conversion(
+            intent,
+            bitstream_id=BITSTREAM_ID,
+            temp_root=temp_root,
+            ledger=ledger,
+            authorizer=authorizer,
+            metadata=replace(_metadata(), publication_date=date(2020, 1, 2)),
+            runtime=_runtime(),
+            runner=runner,
+        )
+
+    assert runner.calls == []
+    assert ledger.events == []
 
 
 def test_long_toolchain_version_summary_stays_schema_bounded() -> None:
@@ -253,6 +321,7 @@ def test_conversion_rejects_payload_not_bound_to_authorized_source_sha(
             temp_root=temp_root,
             ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root),
             authorizer=authorizer,
+            metadata=_metadata(),
             runtime=_runtime(),
             runner=runner,
         )
@@ -278,6 +347,7 @@ def test_conversion_rejects_source_drift_before_first_pdf_tool(
             temp_root=temp_root,
             ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root),
             authorizer=authorizer,
+            metadata=_metadata(),
             runtime=_runtime(),
             runner=runner,
         )
@@ -301,6 +371,7 @@ def test_conversion_binds_bitstream_id_to_storage_artifact(
             temp_root=temp_root,
             ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root),
             authorizer=authorizer,
+            metadata=_metadata(),
             runtime=_runtime(),
             runner=_ConversionRunner(b"A" * 80 + b"\f"),
         )
@@ -325,6 +396,7 @@ def test_conversion_requires_canonical_markdown_logical_key(
             temp_root=temp_root,
             ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root),
             authorizer=authorizer,
+            metadata=_metadata(),
             runtime=_runtime(),
             runner=_ConversionRunner(b"A" * 80 + b"\f"),
         )
@@ -429,6 +501,7 @@ def test_missing_ocr_tool_is_visible_and_publishes_nothing(
             temp_root=temp_root,
             ledger=ledger,
             authorizer=authorizer,
+            metadata=_metadata(),
             runtime=_runtime(),
             runner=_ConversionRunner(b"\f"),
         )
@@ -452,6 +525,7 @@ def test_same_fingerprint_and_output_skip_without_mtime_change(
         temp_root=ledger.temp_root,
         ledger=second_ledger,
         authorizer=_authorizer_and_intent(tmp_path, monkeypatch)[0],
+        metadata=_metadata(),
         runtime=_runtime(),
         runner=_ConversionRunner(b"A" * 80 + b"\f"),
     )
@@ -528,6 +602,7 @@ def test_rights_are_rechecked_immediately_before_ocr(
             temp_root=temp_root,
             ledger=ledger,
             authorizer=authorizer,
+            metadata=_metadata(),
             runtime=_runtime(),
             runner=_ConversionRunner(b"\f"),
         )
@@ -552,6 +627,7 @@ def test_tampered_existing_output_fails_closed_without_rewrite(
             temp_root=ledger.temp_root,
             ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=ledger.temp_root),
             authorizer=_authorizer_and_intent(tmp_path, monkeypatch)[0],
+            metadata=_metadata(),
             runtime=_runtime(),
             runner=_ConversionRunner(b"A" * 80 + b"\f"),
         )
@@ -581,6 +657,7 @@ def test_paired_output_and_manifest_tamper_cannot_claim_unchanged(
             temp_root=ledger.temp_root,
             ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=ledger.temp_root),
             authorizer=_authorizer_and_intent(tmp_path, monkeypatch)[0],
+            metadata=_metadata(),
             runtime=_runtime(),
             runner=_ConversionRunner(b"A" * 80 + b"\f"),
         )
@@ -607,6 +684,7 @@ def test_manifest_quality_tamper_cannot_claim_unchanged(
             temp_root=ledger.temp_root,
             ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=ledger.temp_root),
             authorizer=_authorizer_and_intent(tmp_path, monkeypatch)[0],
+            metadata=_metadata(),
             runtime=_runtime(),
             runner=_ConversionRunner(b"A" * 80 + b"\f"),
         )
@@ -645,6 +723,7 @@ def test_existing_bundle_swap_during_fd_read_fails_closed(
             temp_root=ledger.temp_root,
             ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=ledger.temp_root),
             authorizer=_authorizer_and_intent(tmp_path, monkeypatch)[0],
+            metadata=_metadata(),
             runtime=_runtime(),
             runner=_ConversionRunner(b"A" * 80 + b"\f"),
         )
@@ -683,6 +762,7 @@ def test_peer_publish_between_check_and_publish_is_revalidated_and_skipped(
         temp_root=temp_root,
         ledger=ledger,
         authorizer=authorizer,
+        metadata=_metadata(),
         runtime=_runtime(),
         runner=_ConversionRunner(b"A" * 80 + b"\f"),
     )
@@ -716,6 +796,7 @@ def test_ledger_failure_occurs_before_bundle_publication(
             temp_root=temp_root,
             ledger=ledger,
             authorizer=authorizer,
+            metadata=_metadata(),
             runtime=_runtime(),
             runner=_ConversionRunner(b"A" * 80 + b"\f"),
         )
@@ -749,6 +830,7 @@ def test_post_commit_interrupt_keeps_ledger_for_published_bundle(
             temp_root=temp_root,
             ledger=ledger,
             authorizer=authorizer,
+            metadata=_metadata(),
             runtime=_runtime(),
             runner=_ConversionRunner(b"A" * 80 + b"\f"),
         )
@@ -798,6 +880,7 @@ def test_public_service_normalizes_staging_failure(
             temp_root=temp_root,
             ledger=ledger,
             authorizer=authorizer,
+            metadata=_metadata(),
             runtime=_runtime(),
             runner=_ConversionRunner(b"A" * 80 + b"\f"),
         )
@@ -830,6 +913,7 @@ def test_revocation_before_first_temp_write_rolls_back_bundle_and_ledger(
             temp_root=temp_root,
             ledger=ledger,
             authorizer=authorizer,
+            metadata=_metadata(),
             runtime=_runtime(),
             runner=_ConversionRunner(b"A" * 80 + b"\f"),
         )
@@ -865,6 +949,7 @@ def test_base_exception_during_pair_write_removes_owned_staging(
             temp_root=temp_root,
             ledger=ledger,
             authorizer=authorizer,
+            metadata=_metadata(),
             runtime=_runtime(),
             runner=_ConversionRunner(b"A" * 80 + b"\f"),
         )

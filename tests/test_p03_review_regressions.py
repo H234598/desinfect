@@ -13,7 +13,6 @@ from scripts.rki_grabber.download import PdfDownloadError, download_pdf
 from scripts.rki_grabber.models import (
     GrabberRequest,
     PdfCandidate,
-    Scope,
     SourceConfig,
 )
 from scripts.rki_grabber.rki_epidbull_grabber import (

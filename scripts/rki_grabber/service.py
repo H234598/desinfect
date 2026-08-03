@@ -23,7 +23,6 @@ from scripts.rki_grabber.models import (
     GrabberRequest,
     GrabberResult,
     ItemMetadata,
-    Outcome,
     RecordState,
     Scope,
     SourceConfig,

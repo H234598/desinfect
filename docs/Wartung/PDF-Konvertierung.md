@@ -49,6 +49,14 @@ SHA-256, Parseröffnung, Seitenzahl und Verschlüsselung geprüft. Textausgabe n
 <!-- rki-page: N -->
 ```
 
+Vor erstem Seitenmarker steht deterministisches YAML-kompatibles Frontmatter.
+Es enthält Dokument-ID, Titel, Dokumenttyp, Publikationsdatum, Jahr/Monat,
+Bulletinnummer, DOI, RKI-Handle, kanonische Quell-URL, relativen PDF-Pfad,
+Quell-SHA, Konvertierungsqualität, OCR-Zustand und abgeleitete Tags. Aufrufer
+liefern nur redaktionelle Metadaten; IDs, URLs, Pfade, Hashes und Tags werden aus
+validierter Identität und Conversion-Intent abgeleitet. Frontmatterbytes fließen
+in Output-SHA, Options-SHA, Fingerprint und Conversion-ID ein.
+
 Qualität ist nur `good`, wenn jede Seite mindestens 40 sichtbare Zeichen enthält,
 keine Seite leer ist, Seitenzahlen übereinstimmen und höchstens ein Prozent der
 Zeichen Unicode-Ersatzzeichen sind. Sonst läuft optional OCR pro Seite mit 300

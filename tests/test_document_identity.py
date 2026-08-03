@@ -4,7 +4,6 @@ from __future__ import annotations
 import pytest
 
 from scripts.rki_pipeline.documents import (
-    BitstreamIdentity,
     DocumentIdentity,
     DocumentIdentityError,
     bitstream_identity,

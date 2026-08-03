@@ -9,7 +9,7 @@ import shutil
 
 import pytest
 
-from scripts.validate_fixture_manifest import FIXTURE_ROOT, MANIFEST, validate
+from scripts.validate_fixture_manifest import FIXTURE_ROOT, validate
 
 
 def test_repository_fixture_manifest_is_valid() -> None:
