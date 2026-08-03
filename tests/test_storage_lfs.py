@@ -269,3 +269,27 @@ def test_lfs_adapter_verifies_pointer_against_local_object(tmp_path: Path) -> No
     )
     adapter.verify(reference)
     assert reference.sha256 == oid
+
+
+def test_lfs_reference_inventory_excludes_noncanonical_markdown(tmp_path: Path) -> None:
+    repository = repository_with_tracking(tmp_path)
+    artifacts = repository / "rki" / "Bulletins"
+    artifacts.mkdir(parents=True)
+    (artifacts / "README.md").write_text("archive notes", encoding="utf-8")
+    (artifacts / "Jahre" / "1994" / "notes.md").parent.mkdir(parents=True)
+    (artifacts / "Jahre" / "1994" / "notes.md").write_text("not artifact", encoding="utf-8")
+    (artifacts / "Jahre" / "1994" / "Markdown" / "bulletin.md").parent.mkdir(
+        parents=True
+    )
+    (artifacts / "Jahre" / "1994" / "Markdown" / "bulletin.md").write_text(
+        "canonical artifact", encoding="utf-8"
+    )
+    (artifacts / "Jahre" / "1994" / "PDF" / "bulletin.pdf").parent.mkdir(parents=True)
+    (artifacts / "Jahre" / "1994" / "PDF" / "bulletin.pdf").write_bytes(b"%PDF")
+
+    adapter = LfsStorageAdapter(repository_root=repository, config=config())
+
+    assert {reference.relative_path for reference in adapter.list_references()} == {
+        "rki/Bulletins/Jahre/1994/Markdown/bulletin.md",
+        "rki/Bulletins/Jahre/1994/PDF/bulletin.pdf",
+    }
