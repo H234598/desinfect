@@ -332,13 +332,13 @@ git commit -m "feat(p06): add canonical document paths"
 - Produces: `migrate_document_manifest_v1_0_to_v1_1(payload) -> dict[str, Any]`.
 - Registry maps both exact `(name, "1.0.0", "1.1.0")` triples in `MIGRATIONS`.
 
-- [ ] **Step 1: Add literal 1.0 fixtures and failing migration tests**
+- [x] **Step 1: Add literal 1.0 fixtures and failing migration tests**
 
 Source fixture uses source ID `rki:176904/12345.2`, title `Synthetic bulletin`, publication date `1996-03-22`, lowercase 64-hex `a` SHA, and `rights={state:"unknown",basis:"unreviewed",reviewed_at:null,reviewed_by:null}`. Document fixture uses `rki-176904-12345-v2`, same source ID/date, `gesamtausgabe`, `paths={pdf:"Jahre/1996/PDF/legacy.pdf",markdown:null}`, `supersedes="rki-176904-12345-v1"`.
 
 Test each fixture for: input unchanged after migration; two migrations equal; schema version `1.1.0`; `provenance_state=legacy_needs_review`; unknown bitstream fields `null`; Source raw rights evidence all null; Document periods exactly `{week:"1996-W12",month:"1996-03",year:1996}`; current schema validation passes. Add rejection test for `0.9.0`.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -348,7 +348,7 @@ Run:
 
 Expected: Source/Document registry has no supported predecessor migration.
 
-- [ ] **Step 3: Evolve schemas and registry exactly one version**
+- [x] **Step 3: Evolve schemas and registry exactly one version**
 
 Both `$id` and `schema_version.const` become `1.1.0`. Source adds required:
 
@@ -369,11 +369,11 @@ Document adds required:
 
 Registry entries set `current_version=1.1.0`, `previous_versions=["1.0.0"]`, and exact migration function names. Registry's own schema version remains `1.0.0`.
 
-- [ ] **Step 4: Implement deterministic migrations**
+- [x] **Step 4: Implement deterministic migrations**
 
 Deep-copy input. Require exact `1.0.0`. Add only the fields above. Source migration never derives bitstream/license/OA/decision data. Document migration derives ISO week/month/year solely with `date.fromisoformat(publication_date)`. Validate result before return. Register both functions in `MIGRATIONS`.
 
-- [ ] **Step 5: Verify GREEN and validator coverage**
+- [x] **Step 5: Verify GREEN and validator coverage**
 
 Run:
 
@@ -384,7 +384,7 @@ Run:
 
 Expected: migrations and all twelve registered schemas pass.
 
-- [ ] **Step 6: Extend offline schema validator and commit**
+- [x] **Step 6: Extend offline schema validator and commit**
 
 Make `validate_schemas.py` load all three predecessor fixtures (`status`, Source, Document), migrate each twice, compare equality, and validate outputs. Keep contract count exactly twelve and final message naming all three migration paths.
 
