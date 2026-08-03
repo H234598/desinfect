@@ -468,24 +468,25 @@ class LfsStorageAdapter:
             root=self.repository_root,
         )
         self.authorize(prepared, operation="apply")
-        object_created = False
+        object_write_started = False
         pointer_write_started = False
         try:
             if not object_exists:
+                # Repository apply is single-writer; fsync may fail after replace.
+                object_write_started = True
                 atomic_write_bytes(
                     object_path,
                     payload,
                     allowed_root=self.repository_root,
                 )
-                object_created = True
             self.authorize(prepared, operation="apply")
             pointer_write_started = True
             atomic_write_bytes(target, pointer, allowed_root=self.repository_root)
-        except Exception:
-            cleanup_failure: Exception | None = None
+        except BaseException:
+            cleanup_failure: BaseException | None = None
             for should_cleanup, owned_path, owned_payload, missing_parents in (
                 (pointer_write_started, target, pointer, target_missing_parents),
-                (object_created, object_path, payload, object_missing_parents),
+                (object_write_started, object_path, payload, object_missing_parents),
             ):
                 if not should_cleanup:
                     continue
@@ -495,7 +496,7 @@ class LfsStorageAdapter:
                         payload=owned_payload,
                         missing_parents=missing_parents,
                     )
-                except Exception as cleanup_exc:
+                except BaseException as cleanup_exc:
                     cleanup_failure = cleanup_failure or cleanup_exc
             if cleanup_failure is not None:
                 raise LfsIntegrityError(

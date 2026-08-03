@@ -631,7 +631,15 @@ def test_lfs_intra_call_revocation_blocks_next_payload_effect(
     assert ledger.events == []
 
 
-@pytest.mark.parametrize("failure", ("revocation", "pointer-write"))
+@pytest.mark.parametrize(
+    "failure",
+    (
+        "revocation",
+        "pointer-write",
+        "object-late-write",
+        "object-late-interrupt",
+    ),
+)
 def test_lfs_apply_rolls_back_its_new_object_before_pointer_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -653,6 +661,11 @@ def test_lfs_apply_rolls_back_its_new_object_before_pointer_failure(
     def fail_after_object_write(*args, **kwargs):
         nonlocal writes
         writes += 1
+        if writes == 1 and failure in {"object-late-write", "object-late-interrupt"}:
+            original(*args, **kwargs)
+            if failure == "object-late-interrupt":
+                raise KeyboardInterrupt
+            raise OSError("injected post-replace fsync failure")
         if writes == 2 and failure == "pointer-write":
             raise RuntimeError("injected pointer write failure")
         original(*args, **kwargs)
@@ -661,7 +674,12 @@ def test_lfs_apply_rolls_back_its_new_object_before_pointer_failure(
 
     monkeypatch.setattr(lfs_storage, "atomic_write_bytes", fail_after_object_write)
 
-    expected = StorageError if failure == "revocation" else RuntimeError
+    expected = {
+        "revocation": StorageError,
+        "pointer-write": RuntimeError,
+        "object-late-write": OSError,
+        "object-late-interrupt": KeyboardInterrupt,
+    }[failure]
     with pytest.raises(expected):
         adapter.apply(prepared, ledger=ledger)
 
