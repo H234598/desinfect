@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Deterministic, identity-bound Markdown frontmatter for RKI conversions."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -58,6 +59,7 @@ class MarkdownMetadata:
             or _DOI.fullmatch(self.doi) is None
         ):
             raise ValueError("doi ist nicht kanonisch")
+
     def fingerprint_dict(self) -> dict[str, object]:
         return {
             "bulletin_number": self.bulletin_number,
@@ -109,7 +111,7 @@ def render_frontmatter(
         raise ValueError("source_sha256 ist ungültig")
     if conversion_quality not in {"good", "needs_review"}:
         raise ValueError("conversion_quality ist ungültig")
-    if type(ocr_used) is not bool or (ocr_used != (conversion_quality == "needs_review")):
+    if type(ocr_used) is not bool or (ocr_used and conversion_quality != "needs_review"):
         raise ValueError("ocr_used widerspricht conversion_quality")
 
     published = metadata.publication_date

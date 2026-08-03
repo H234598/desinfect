@@ -22,22 +22,29 @@ from scripts.rki_pipeline.io_utils import stable_json_dumps
 from scripts.rki_pipeline.paths import DocumentType, repository_document_paths
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 
-SOURCE_ID = "rki:176904/12345"
-DOCUMENT_ID = "rki-176904-12345-v1"
-BITSTREAM_URL = "https://edoc.rki.de/bitstream/handle/176904/12345/source.pdf?sequence=1"
+SOURCE_ID = "rki:176904/900000001"
+DOCUMENT_ID = "rki-176904-900000001-v1"
+BITSTREAM_URL = "https://edoc.rki.de/bitstream/handle/176904/900000001/source.pdf?sequence=1"
 BITSTREAM_ID = bitstream_identity(BITSTREAM_URL).bitstream_id
-SOURCE_SHA256 = "a" * 64
+SOURCE_SHA256 = "4665c3b8cfa6de8d9792a8defb977bfd200465b513575419e0a88541000f5b2a"
 OUTPUT_SHA256 = "c" * 64
-DECISION_SHA256 = "d" * 64
+DECISION_SHA256 = "e36c7613fc7b87bf1c6a6b497355ab63a317a24d3d590ef0e255a3098f9ff926"
+
+
+def _authorizer():
+    from scripts.rki_pipeline.rights import load_rights_authority, load_rights_policy
+    from scripts.rki_pipeline.storage.base import RightsStorageAuthorizer
+
+    return RightsStorageAuthorizer(load_rights_authority(), load_rights_policy())
 
 
 def _source() -> dict[str, object]:
     return {
         "schema_version": "1.1.0",
         "source_id": SOURCE_ID,
-        "handle": "176904/12345",
+        "handle": "176904/900000001",
         "version": 1,
-        "source_url": "https://edoc.rki.de/handle/176904/12345",
+        "source_url": "https://edoc.rki.de/handle/176904/900000001",
         "title": "Synthetic bulletin",
         "publication_date": "1996-03-22",
         "etag": None,
@@ -45,9 +52,9 @@ def _source() -> dict[str, object]:
         "sha256": SOURCE_SHA256,
         "rights": {
             "state": "approved",
-            "basis": "Reviewed fixture",
-            "reviewed_at": "2026-08-03T08:00:00Z",
-            "reviewed_by": "Test Reviewer",
+            "basis": "Synthetic P06 conversion fixture; no external publication rights claim",
+            "reviewed_at": "2026-08-03T14:00:00Z",
+            "reviewed_by": "Desinfect maintainers",
         },
         "provenance_state": "current",
         "bitstream_id": BITSTREAM_ID,
@@ -192,6 +199,7 @@ def _build(
         documents=(_document(),) if documents is None else documents,
         conversions=(_conversion(),) if conversions is None else conversions,
         storage_references=_storage() if storage is None else storage,
+        authorizer=_authorizer(),
     )
 
 
@@ -213,7 +221,7 @@ def test_graph_accepts_exact_linked_current_manifests() -> None:
     (
         ("documents", "bitstream_id", "rki-bitstream-" + "2" * 64, "Bitstream"),
         ("documents", "source_id", "rki:176904/54321", "verknüpfter Source"),
-        ("sources", "sha256", "2" * 64, "Source-SHA"),
+        ("sources", "sha256", "2" * 64, "Rechteentscheidung"),
         ("storage", "sha256", "2" * 64, "Artefakt-SHA"),
         ("storage", "storage_object_id", "sha256:" + "2" * 64, "LFS-Objekt"),
         ("storage", "decision_sha256", "2" * 64, "Rechteentscheidung"),
@@ -244,14 +252,37 @@ def test_graph_rejects_duplicate_primary_identity() -> None:
         _build(sources=(_source(), _source()))
 
 
+def test_graph_rejects_source_and_bitstream_cross_handle_drift() -> None:
+    source = _source()
+    source["source_url"] = "https://edoc.rki.de/handle/176904/999999999"
+    with pytest.raises(ValueError, match="Source-URL"):
+        _build(sources=(source,), documents=(), conversions=(), storage=())
+
+    source = _source()
+    source["bitstream_url"] = (
+        "https://edoc.rki.de/bitstream/handle/176904/999999999/source.pdf?sequence=1"
+    )
+    source["bitstream_id"] = bitstream_identity(source["bitstream_url"]).bitstream_id
+    with pytest.raises(ValueError, match="Source-Bitstream"):
+        _build(sources=(source,), documents=(), conversions=(), storage=())
+
+
+def test_graph_rejects_stale_embedded_rights_decision() -> None:
+    source = _source()
+    source["decision_sha256"] = "0" * 64
+
+    with pytest.raises(ValueError, match="Rechteentscheidung.*veraltet"):
+        _build(sources=(source,))
+
+
 def _second_bitstream() -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
-    url = "https://edoc.rki.de/bitstream/handle/176904/12345/source.pdf?sequence=2"
+    url = "https://edoc.rki.de/bitstream/handle/176904/900000001/source.pdf?sequence=3"
     bitstream = bitstream_identity(url)
     source = deepcopy(_source())
     source.update(
         bitstream_id=bitstream.bitstream_id,
         bitstream_url=url,
-        bitstream_version=2,
+        bitstream_version=3,
         same_content_as=[BITSTREAM_ID],
     )
     document = deepcopy(_document())
@@ -263,7 +294,7 @@ def _second_bitstream() -> tuple[dict[str, object], dict[str, object], dict[str,
     )
     document.update(
         bitstream_id=bitstream.bitstream_id,
-        bitstream_version=2,
+        bitstream_version=3,
         paths={"pdf": paths.pdf, "markdown": None},
     )
     storage = deepcopy(_storage()[0])
@@ -347,12 +378,91 @@ def test_pdf_storage_artifact_id_is_independent_from_bitstream_id() -> None:
     }
 
 
+def test_graph_rejects_storage_object_id_with_conflicting_hashes() -> None:
+    pdf_reference, markdown_reference = _storage()
+    for reference in (pdf_reference, markdown_reference):
+        reference["storage_backend"] = "release"
+        reference["storage_object_id"] = "release:shared-object"
+
+    with pytest.raises(ValueError, match="Storage-Objekt-ID.*widersprüchliche Hashes"):
+        _build(storage=(pdf_reference, markdown_reference))
+
+
 def test_graph_rejects_public_reference_without_public_visibility() -> None:
     pdf_reference, markdown_reference = _storage()
     pdf_reference["public_reference"] = "https://example.test/archive.pdf"
 
     with pytest.raises(ValueError, match="public visibility"):
         _build(storage=(pdf_reference, markdown_reference))
+
+
+def test_graph_enforces_rights_visibility_matrix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts.rki_pipeline import rights
+
+    register = tmp_path / "rights-register.yml"
+    register.write_text(
+        "schema_version: 1\n"
+        "decisions:\n"
+        f'  - source_id: "{SOURCE_ID}"\n'
+        f'    source_sha256: "{SOURCE_SHA256}"\n'
+        '    state: "internal_only"\n'
+        '    basis: "Synthetic internal-only manifest test"\n'
+        '    reviewed_by: "Test Reviewer"\n'
+        '    reviewed_at: "2026-08-03T16:00:00Z"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(rights, "_canonical_authority_source", register.resolve)
+    authorizer = _authorizer()
+    decision = rights.resolve_rights(
+        SOURCE_ID,
+        SOURCE_SHA256,
+        authority=authorizer.authority,
+        policy=authorizer.policy,
+    )
+    source = _source()
+    source["decision_sha256"] = decision.decision_sha256
+    source["rights"] = {
+        "basis": decision.basis,
+        "reviewed_at": decision.reviewed_at,
+        "reviewed_by": decision.reviewed_by,
+        "state": decision.state.value,
+    }
+    pdf_reference, markdown_reference = _storage()
+    for reference in (pdf_reference, markdown_reference):
+        reference["decision_sha256"] = decision.decision_sha256
+        reference["rights_state"] = "internal_only"
+        reference["visibility"] = "internal"
+
+    graph = _build(sources=(source,), storage=(pdf_reference, markdown_reference))
+    assert len(graph.storage_references) == 2
+
+    for reference in (pdf_reference, markdown_reference):
+        reference["visibility"] = "public"
+
+    with pytest.raises(ValueError, match="Storage-Referenz verletzt aktuelle Rechtepolicy"):
+        _build(sources=(source,), storage=(pdf_reference, markdown_reference))
+
+
+def test_stage_writer_rejects_symlinked_collection_directory(tmp_path: Path) -> None:
+    import os
+
+    from scripts.rki_pipeline.manifests import _write_stage_file
+
+    stage = tmp_path / "stage"
+    outside = tmp_path / "outside"
+    stage.mkdir()
+    outside.mkdir()
+    (stage / "Quellen").symlink_to(outside, target_is_directory=True)
+    stage_fd = os.open(stage, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        with pytest.raises(ValueError, match="Symlink"):
+            _write_stage_file(stage_fd, "Quellen/manifest.jsonl", b"{}\n")
+    finally:
+        os.close(stage_fd)
+    assert list(outside.iterdir()) == []
 
 
 def _write_rendered(root: Path, files: tuple[tuple[str, bytes], ...]) -> None:
@@ -531,7 +641,12 @@ def test_catalog_materialization_is_atomic_and_noop_preserves_mtimes(
     from scripts.rki_pipeline import manifests
 
     ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
-    first = manifests.materialize_manifest_catalog(_build(), temp_root=tmp_path, ledger=ledger)
+    first = manifests.materialize_manifest_catalog(
+        _build(),
+        temp_root=tmp_path,
+        ledger=ledger,
+        authorizer=_authorizer(),
+    )
     before = {
         path.relative_to(first.root).as_posix(): path.stat().st_mtime_ns
         for path in first.root.rglob("*")
@@ -543,7 +658,10 @@ def test_catalog_materialization_is_atomic_and_noop_preserves_mtimes(
 
     noop_ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
     second = manifests.materialize_manifest_catalog(
-        _build(), temp_root=tmp_path, ledger=noop_ledger
+        _build(),
+        temp_root=tmp_path,
+        ledger=noop_ledger,
+        authorizer=_authorizer(),
     )
     after = {
         path.relative_to(second.root).as_posix(): path.stat().st_mtime_ns
@@ -575,9 +693,76 @@ def test_catalog_materialization_is_atomic_and_noop_preserves_mtimes(
             changed,
             temp_root=tmp_path,
             ledger=failed_ledger,
+            authorizer=_authorizer(),
         )
     assert failed_ledger.events == []
     assert {path: (first.root / path).read_bytes() for path, _ in first.rendered.files} == original
+
+
+def test_concurrent_catalog_materializers_are_serialized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    import time
+
+    from scripts.rki_pipeline import manifests
+
+    second_pdf, second_markdown = _storage()
+    second_pdf["bytes"] += 1
+    graphs = (_build(), _build(storage=(second_pdf, second_markdown)))
+    real_write = manifests._write_stage_file
+    entered = threading.Event()
+    release = threading.Event()
+    active = 0
+    maximum_active = 0
+    guard = threading.Lock()
+
+    def tracked_write(stage_fd, relative, payload):
+        nonlocal active, maximum_active
+        with guard:
+            active += 1
+            maximum_active = max(maximum_active, active)
+            first = not entered.is_set()
+            entered.set()
+        try:
+            if first:
+                assert release.wait(timeout=2)
+            return real_write(stage_fd, relative, payload)
+        finally:
+            with guard:
+                active -= 1
+
+    def publish(graph):
+        ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+        result = manifests.materialize_manifest_catalog(
+            graph,
+            temp_root=tmp_path,
+            ledger=ledger,
+            authorizer=_authorizer(),
+        )
+        return result, ledger
+
+    monkeypatch.setattr(manifests, "_write_stage_file", tracked_write)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(publish, graphs[0])
+        assert entered.wait(timeout=2)
+        second = executor.submit(publish, graphs[1])
+        time.sleep(0.05)
+        release.set()
+        results = (first.result(timeout=5), second.result(timeout=5))
+
+    assert maximum_active == 1
+    assert all(result.changed for result, _ledger in results)
+    assert all(len(ledger.events) == 5 for _result, ledger in results)
+    loaded = manifests.load_manifest_catalog(
+        results[-1][0].root,
+        authorizer=_authorizer(),
+    )
+    assert loaded.rendered == manifests.render_manifest_catalog(graphs[1])
+    assert not any(".staging-" in path.name for path in tmp_path.rglob("*"))
+    assert not any(path.name.endswith(".backup") for path in tmp_path.rglob("*"))
 
 
 def test_offline_manifest_fixture_is_valid() -> None:

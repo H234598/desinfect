@@ -7,6 +7,7 @@ from collections import defaultdict, deque
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date
+import fcntl
 import hashlib
 import json
 import os
@@ -24,9 +25,22 @@ from scripts.rki_pipeline.io_utils import (
     stable_json_dumps,
 )
 from scripts.rki_pipeline.paths import DocumentType, repository_document_paths
+from scripts.rki_pipeline.rights import (
+    RightsPolicyError,
+    load_rights_authority,
+    load_rights_policy,
+    resolve_rights,
+)
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 from scripts.rki_pipeline.schema_registry import validate_document
 from scripts.rki_pipeline.staging import StagingState, staged_directory
+from scripts.rki_pipeline.storage.base import (
+    RightsStorageAuthorizer,
+    StorageAuthorizationError,
+    StorageBackend,
+    StorageReference,
+    authorize_storage_operation,
+)
 
 Manifest = dict[str, object]
 MAX_MANIFEST_LINE_BYTES = 1_048_576
@@ -143,7 +157,10 @@ def _reject_cycles(
         raise ManifestGraphError(f"{label}-Graph enthält einen Zyklus")
 
 
-def _validate_sources(sources: dict[str, Manifest]) -> None:
+def _validate_sources(
+    sources: dict[str, Manifest],
+    authorizer: RightsStorageAuthorizer,
+) -> None:
     by_sha256: dict[str, list[str]] = defaultdict(list)
     for bitstream_id, source in sources.items():
         identity = document_identity(source["handle"])
@@ -153,8 +170,30 @@ def _validate_sources(sources: dict[str, Manifest]) -> None:
         if (
             bitstream_id != bitstream.bitstream_id
             or source["bitstream_version"] != bitstream.version
+            or source["bitstream_url"] != bitstream.canonical_url
+            or not bitstream.canonical_url.startswith(
+                f"https://edoc.rki.de/bitstream/handle/{identity.handle}/"
+            )
         ):
             raise ManifestGraphError("Source-Bitstream widerspricht kanonischer URL")
+        if source["source_url"] != f"https://edoc.rki.de/handle/{identity.handle}":
+            raise ManifestGraphError("Source-URL widerspricht RKI-Handle")
+        try:
+            decision = resolve_rights(
+                source["source_id"],
+                source["sha256"],
+                authority=authorizer.authority,
+                policy=authorizer.policy,
+            )
+        except RightsPolicyError as exc:
+            raise ManifestGraphError("Source-Rechteentscheidung ist ungültig") from exc
+        if source["decision_sha256"] != decision.decision_sha256 or source["rights"] != {
+            "basis": decision.basis,
+            "reviewed_at": decision.reviewed_at,
+            "reviewed_by": decision.reviewed_by,
+            "state": decision.state.value,
+        }:
+            raise ManifestGraphError("Source-Rechteentscheidung ist veraltet oder falsch")
         by_sha256[source["sha256"]].append(bitstream_id)
     for ids in by_sha256.values():
         ordered = sorted(ids)
@@ -260,20 +299,46 @@ def _validate_conversions(
             raise ManifestGraphError("Conversion-Source-SHA widerspricht Source-SHA")
 
 
+def _storage_reference(value: Manifest) -> StorageReference:
+    return StorageReference(
+        artifact_id=value["artifact_id"],
+        relative_path=value["relative_path"],
+        storage_backend=StorageBackend(value["storage_backend"]),
+        storage_object_id=value["storage_object_id"],
+        sha256=value["sha256"],
+        size=value["bytes"],
+        source_id=value["source_id"],
+        source_sha256=value["source_sha256"],
+        document_id=value["document_id"],
+        conversion_id=value["conversion_id"],
+        decision_sha256=value["decision_sha256"],
+        provenance_state=value["provenance_state"],
+        visibility=value["visibility"],
+        rights_state=value["rights_state"],
+        public_reference=value["public_reference"],
+    )
+
+
 def _validate_storage(
     storage: dict[str, Manifest],
     sources: dict[str, Manifest],
     documents: dict[tuple[str, str], Manifest],
     conversions: dict[str, Manifest],
+    authorizer: RightsStorageAuthorizer,
 ) -> None:
     detect_path_collisions(item["relative_path"] for item in storage.values())
     paths: set[str] = set()
+    objects: dict[tuple[str, str], str] = {}
     persisted_owners: set[tuple[str, str]] = set()
     for artifact_id, reference in storage.items():
         relative_path = reference["relative_path"]
         if relative_path in paths:
             raise ManifestGraphError(f"Storage-Pfad ist doppelt: {relative_path}")
         paths.add(relative_path)
+        object_key = (reference["storage_backend"], reference["storage_object_id"])
+        previous_sha256 = objects.setdefault(object_key, reference["sha256"])
+        if previous_sha256 != reference["sha256"]:
+            raise ManifestGraphError("Storage-Objekt-ID verweist auf widersprüchliche Hashes")
         conversion_id_value = reference["conversion_id"]
         if conversion_id_value is None:
             matching_documents = [
@@ -321,6 +386,14 @@ def _validate_storage(
             raise ManifestGraphError("LFS-Objekt-SHA entspricht nicht Artefakt-SHA")
         if reference["public_reference"] is not None and reference["visibility"] != "public":
             raise ManifestGraphError("Öffentliche Storage-Referenz benötigt public visibility")
+        try:
+            authorize_storage_operation(
+                authorizer,
+                _storage_reference(reference),
+                operation="manifest_catalog",
+            )
+        except (StorageAuthorizationError, ValueError) as exc:
+            raise ManifestGraphError("Storage-Referenz verletzt aktuelle Rechtepolicy") from exc
     for conversion_id, conversion in conversions.items():
         storage_reference = conversion["storage_reference"]
         if storage_reference is not None:
@@ -339,9 +412,12 @@ def build_manifest_graph(
     documents: Iterable[Manifest],
     conversions: Iterable[Manifest],
     storage_references: Iterable[Manifest],
+    authorizer: RightsStorageAuthorizer,
 ) -> ManifestGraph:
     """Validate and stably sort one complete current manifest snapshot."""
 
+    if type(authorizer) is not RightsStorageAuthorizer:
+        raise TypeError("authorizer muss ein exakter RightsStorageAuthorizer sein")
     source_values = _validated(sources, contract="source-manifest")
     document_values = _validated(documents, contract="document-manifest")
     conversion_values = _validated(conversions, contract="conversion-manifest")
@@ -366,10 +442,16 @@ def build_manifest_graph(
         key=lambda value: value["artifact_id"],
         label="Storage",
     )
-    _validate_sources(source_index)
+    _validate_sources(source_index, authorizer)
     _validate_documents(document_index, source_index)
     _validate_conversions(conversion_index, document_index, source_index)
-    _validate_storage(storage_index, source_index, document_index, conversion_index)
+    _validate_storage(
+        storage_index,
+        source_index,
+        document_index,
+        conversion_index,
+        authorizer,
+    )
     return ManifestGraph(
         sources=tuple(source_index[key] for key in sorted(source_index)),
         documents=tuple(document_index[key] for key in sorted(document_index)),
@@ -617,7 +699,18 @@ def _validate_catalog(catalog_bytes: bytes, files: dict[str, bytes]) -> None:
             raise ManifestCatalogError(f"Katalogdeskriptor driftet: {relative}")
 
 
-def _load_catalog_files(files: dict[str, bytes]) -> LoadedManifestCatalog:
+def _default_authorizer() -> RightsStorageAuthorizer:
+    return RightsStorageAuthorizer(
+        authority=load_rights_authority(),
+        policy=load_rights_policy(),
+    )
+
+
+def _load_catalog_files(
+    files: dict[str, bytes],
+    *,
+    authorizer: RightsStorageAuthorizer,
+) -> LoadedManifestCatalog:
     collections = {
         attribute: _load_jsonl(files[relative], label=relative)
         for _kind, relative, attribute in _COLLECTIONS
@@ -628,6 +721,7 @@ def _load_catalog_files(files: dict[str, bytes]) -> LoadedManifestCatalog:
         documents=collections["documents"],
         conversions=collections["conversions"],
         storage_references=collections["storage_references"],
+        authorizer=authorizer,
     )
     rendered = render_manifest_catalog(graph)
     if dict(rendered.files) != files:
@@ -635,13 +729,21 @@ def _load_catalog_files(files: dict[str, bytes]) -> LoadedManifestCatalog:
     return LoadedManifestCatalog(graph=graph, rendered=rendered)
 
 
-def load_manifest_catalog(root: Path) -> LoadedManifestCatalog:
+def load_manifest_catalog(
+    root: Path,
+    *,
+    authorizer: RightsStorageAuthorizer | None = None,
+) -> LoadedManifestCatalog:
     """Load one fixed-layout manifest root without following symlinks."""
 
-    return _load_catalog_files(_read_catalog_files(Path(root)))
+    active_authorizer = _default_authorizer() if authorizer is None else authorizer
+    return _load_catalog_files(
+        _read_catalog_files(Path(root)),
+        authorizer=active_authorizer,
+    )
 
 
-def _write_stage_file(stage: Path, relative: str, payload: bytes) -> None:
+def _write_stage_file(stage_fd: int, relative: str, payload: bytes) -> None:
     expected = {path for _kind, path, _attribute in _COLLECTIONS} | {"catalog.json"}
     if relative not in expected:
         raise ManifestCatalogError(f"Unregistrierter Stagingpfad: {relative}")
@@ -652,8 +754,15 @@ def _write_stage_file(stage: Path, relative: str, payload: bytes) -> None:
         | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_NOFOLLOW", 0)
     )
-    descriptor = os.open(stage / relative, flags, 0o644)
+    parts = relative.split("/", 1)
+    parent_fd = stage_fd
+    close_parent = False
+    if len(parts) == 2:
+        parent_fd = open_directory_beneath(stage_fd, (parts[0],))
+        close_parent = True
+    descriptor: int | None = None
     try:
+        descriptor = os.open(parts[-1], flags, 0o644, dir_fd=parent_fd)
         view = memoryview(payload)
         while view:
             written = os.write(descriptor, view)
@@ -662,34 +771,34 @@ def _write_stage_file(stage: Path, relative: str, payload: bytes) -> None:
             view = view[written:]
         os.fsync(descriptor)
     finally:
-        os.close(descriptor)
+        if descriptor is not None:
+            os.close(descriptor)
+        if close_parent:
+            os.close(parent_fd)
 
 
-def _fsync_stage(stage: Path) -> None:
-    directories = [stage / relative.split("/", 1)[0] for _, relative, _ in _COLLECTIONS]
-    for path in (*directories, stage):
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+def _fsync_stage(stage_fd: int) -> None:
+    directories = [relative.split("/", 1)[0] for _, relative, _ in _COLLECTIONS]
+    for directory in directories:
+        descriptor = open_directory_beneath(stage_fd, (directory,))
         try:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+    os.fsync(stage_fd)
 
 
-def materialize_manifest_catalog(
+def _materialize_locked(
     graph: ManifestGraph,
     *,
-    temp_root: Path,
+    root: Path,
     ledger: EffectLedger,
+    authorizer: RightsStorageAuthorizer,
 ) -> ManifestCatalogResult:
-    """Atomically replace one generated manifest snapshot below ``temp_root``."""
-
-    root = Path(temp_root).resolve()
-    if ledger.mode is not RunMode.MATERIALIZE or ledger.temp_root != root:
-        raise ValueError("Manifest-Materialisierung benötigt passenden materialize ledger/root")
     rendered = render_manifest_catalog(graph)
     target = root / "rki" / "Bulletins" / "Manifeste"
     if target.exists():
-        loaded = load_manifest_catalog(target)
+        loaded = load_manifest_catalog(target, authorizer=authorizer)
         if loaded.rendered == rendered:
             return ManifestCatalogResult(root=target, rendered=rendered, changed=False)
 
@@ -709,16 +818,19 @@ def materialize_manifest_catalog(
             replace_existing=True,
             state=staging_state,
         ) as stage:
-            for directory in sorted(
-                {relative.split("/", 1)[0] for _kind, relative, _attribute in _COLLECTIONS}
-            ):
-                os.mkdir(stage / directory, mode=0o755)
-            for relative, payload in rendered.files:
-                _write_stage_file(stage, relative, payload)
-            _fsync_stage(stage)
             stage_fd = os.open(stage, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
             try:
-                loaded = _load_catalog_files(_read_catalog_files_fd(stage_fd))
+                for directory in sorted(
+                    {relative.split("/", 1)[0] for _kind, relative, _attribute in _COLLECTIONS}
+                ):
+                    os.mkdir(directory, mode=0o755, dir_fd=stage_fd)
+                for relative, payload in rendered.files:
+                    _write_stage_file(stage_fd, relative, payload)
+                _fsync_stage(stage_fd)
+                loaded = _load_catalog_files(
+                    _read_catalog_files_fd(stage_fd),
+                    authorizer=authorizer,
+                )
             finally:
                 os.close(stage_fd)
             if loaded.rendered != rendered:
@@ -728,3 +840,30 @@ def materialize_manifest_catalog(
             del ledger.events[event_count:]
         raise
     return ManifestCatalogResult(root=target, rendered=rendered, changed=True)
+
+
+def materialize_manifest_catalog(
+    graph: ManifestGraph,
+    *,
+    temp_root: Path,
+    ledger: EffectLedger,
+    authorizer: RightsStorageAuthorizer,
+) -> ManifestCatalogResult:
+    """Serialize and atomically replace one manifest snapshot below ``temp_root``."""
+
+    root = Path(temp_root).resolve()
+    if ledger.mode is not RunMode.MATERIALIZE or ledger.temp_root != root:
+        raise ValueError("Manifest-Materialisierung benötigt passenden materialize ledger/root")
+    if type(authorizer) is not RightsStorageAuthorizer:
+        raise TypeError("authorizer muss ein exakter RightsStorageAuthorizer sein")
+    with open_root_directory(root, create=True) as lock_fd:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        try:
+            return _materialize_locked(
+                graph,
+                root=root,
+                ledger=ledger,
+                authorizer=authorizer,
+            )
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)

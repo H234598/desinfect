@@ -25,17 +25,22 @@ Artefaktidentität.
 
 ## Referenzvertrag
 
-`build_manifest_graph()` validiert jeden Datensatz zuerst gegen registriertes
-Schema 1.1 und akzeptiert nur `provenance_state=current`. Danach gelten:
+`build_manifest_graph(..., authorizer=...)` validiert jeden Datensatz zuerst
+gegen registriertes Schema 1.1 und akzeptiert nur `provenance_state=current`.
+Authorizer löst jede Quelle frisch gegen kanonisches Rechte-Register und Policy
+auf; jede Storage-Referenz wird erneut autorisiert. Danach gelten:
 
 - Quelle und Dokument teilen exakte `source_id`, `bitstream_id`, Version,
-  Publikationsdatum und kanonische Repositorypfade.
+  Publikationsdatum und kanonische Repositorypfade. Quell- und Bitstream-URL
+  müssen auf denselben RKI-Handle zeigen.
 - Gleicher Inhalt verwendet kleinste `bitstream_id` als kanonisches Aliasziel.
 - Dokument-Supersession ist reziprok und zyklenfrei.
 - Konvertierung bindet Dokument, Bitstream und Quell-SHA; höchstens eine
   persistierte Konvertierung je Dokument/Bitstream besitzt eine Storagekante.
 - PDF-Storage bindet Quell-SHA und PDF-Pfad. Markdown-Storage bindet
   `conversion_id`, Output-SHA und Markdown-Pfad.
+- Byteidentische Aliasquellen dürfen Storage-Objekte deduplizieren; dieselbe
+  Backend-/Objekt-ID mit widersprüchlichen Hashes blockiert.
 - Storage übernimmt `decision_sha256` und Rechtezustand unverändert aus Quelle.
   Öffentliche Referenzen benötigen `visibility=public`.
 
@@ -45,11 +50,12 @@ IDs, Drift, Orphans, doppelte Identitäten und Pfadkollisionen blockieren.
 
 ## Materialisierung
 
-`materialize_manifest_catalog(graph, temp_root=..., ledger=...)` verlangt einen
-passenden `RunMode.MATERIALIZE`-Ledger. Sichtbare Effekte sind ausschließlich
-`TEMP_FILE` unter `temp_root`. Aufbau erfolgt vollständig in
-Sentinel-geschütztem Staging; Veröffentlichung ersetzt den gesamten Snapshot
-atomar. Kein Append-in-place.
+`materialize_manifest_catalog(graph, temp_root=..., ledger=...,
+authorizer=...)` verlangt passenden `RunMode.MATERIALIZE`-Ledger und frischen
+Rechte-Authorizer. Sichtbare Effekte sind ausschließlich `TEMP_FILE` unter
+`temp_root`. Ein exklusives Verzeichnis-Lock serialisiert konkurrierende
+Publisher. Aufbau erfolgt vollständig descriptor-relativ in Sentinel-geschütztem
+Staging; Veröffentlichung ersetzt gesamten Snapshot atomar. Kein Append-in-place.
 
 Identische Zielbytes ergeben No-op: keine Ledger-Events, keine geänderten mtimes.
 Schlägt Aufbau oder Vorabvalidierung fehl, bleibt alter Snapshot erhalten. Ein

@@ -151,53 +151,53 @@
       "synthetic": true
     },
     {
-      "bytes": 956,
+      "bytes": 1034,
       "license_status": "synthetic",
       "media_type": "application/x-ndjson",
       "path": "manifests/Quellen/manifest.jsonl",
       "provenance": "Desinfect P06 synthetic manifest graph fixture",
       "purpose": "canonical source-manifest collection",
-      "sha256": "d6f6c02de72ba68c51de58f8e778354353a1986172cfc17c46ca6d5ece98b3f9",
+      "sha256": "a121bc0d8636eca3ac9c1db0c51737bdad7d0f5e38899ede9017e462f14c50db",
       "synthetic": true
     },
     {
-      "bytes": 793,
+      "bytes": 809,
       "license_status": "synthetic",
       "media_type": "application/x-ndjson",
       "path": "manifests/Dokumente/manifest.jsonl",
       "provenance": "Desinfect P06 synthetic manifest graph fixture",
       "purpose": "canonical document-manifest collection",
-      "sha256": "25608fcf154c3db5e9946f60393ea2dfa9329bbb7183557b6b85e61c565fd837",
+      "sha256": "14c8ab3594169da8fa03e8ccfbf72d8c0bfa6a73686382f5d84e8d3a567f536f",
       "synthetic": true
     },
     {
-      "bytes": 1491,
+      "bytes": 1495,
       "license_status": "synthetic",
       "media_type": "application/x-ndjson",
       "path": "manifests/Konvertierungen/manifest.jsonl",
       "provenance": "Desinfect P06 synthetic manifest graph fixture",
       "purpose": "canonical conversion-manifest collection",
-      "sha256": "096929d72f5549e64be57072600ffabd5dd3613933e250b2fb906d2cbcf083e7",
+      "sha256": "1ae2ecdb83dcf72e30b7d355cdf88d6a313c01deff44872b6290403b1c66c246",
       "synthetic": true
     },
     {
-      "bytes": 1844,
+      "bytes": 1868,
       "license_status": "synthetic",
       "media_type": "application/x-ndjson",
       "path": "manifests/Storage/manifest.jsonl",
       "provenance": "Desinfect P06 synthetic manifest graph fixture",
       "purpose": "canonical storage-reference collection",
-      "sha256": "91aa172c79f83c4fff311c16da237e86b6d80fbc0e65d4c3cfed36544c1b2453",
+      "sha256": "ec66bd4b8445ec8022cf13dfe8541a19fbda723b9687829e4316e04d60d78ec4",
       "synthetic": true
     },
     {
-      "bytes": 903,
+      "bytes": 904,
       "license_status": "synthetic",
       "media_type": "application/json",
       "path": "manifests/catalog.json",
       "provenance": "Desinfect P06 synthetic manifest graph fixture",
       "purpose": "canonical manifest collection catalog",
-      "sha256": "05c07a8db39e073b534c23f548750108bbf73e94e594c0fe7ca2273efaa03488",
+      "sha256": "257ee98f520bd50af2f5434ff60ebbc202eb7b0afe658739b0f86693ea2c6b1f",
       "synthetic": true
     }
   ],

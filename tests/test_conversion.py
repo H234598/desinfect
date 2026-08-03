@@ -67,6 +67,29 @@ def test_markdown_frontmatter_is_exact_stable_and_immutable() -> None:
         metadata.title = "changed"
 
 
+def test_frontmatter_allows_review_state_without_ocr() -> None:
+    frontmatter = _frontmatter_module()
+    metadata = frontmatter.MarkdownMetadata(
+        title="Epidemiologisches Bulletin 12/1996",
+        document_type=frontmatter.DocumentType.ISSUE,
+        publication_date=date(1996, 3, 22),
+        bulletin_number="12/1996",
+        doi=None,
+    )
+
+    rendered = frontmatter.render_frontmatter(
+        metadata,
+        document_id="rki-176904-12345-v1",
+        source_id="rki:176904/12345",
+        source_pdf="../PDF/source.pdf",
+        source_sha256="a" * 64,
+        conversion_quality="needs_review",
+        ocr_used=False,
+    )
+
+    assert 'conversion_quality: "needs_review"\nocr_used: false\n' in rendered
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     (
