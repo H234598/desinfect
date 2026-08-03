@@ -67,6 +67,8 @@ def _pages(stdout: bytes, expected_page_count: int) -> tuple[str, ...]:
 def render_page_markers(pages: tuple[str, ...]) -> str:
     """Render exactly one stable marker for every positional PDF page."""
 
+    if any("<!-- rki-page:" in page for page in pages):
+        raise TextExtractionError("Extrahierter Text enthält reservierten Seitenmarker")
     blocks = []
     for number, page in enumerate(pages, start=1):
         blocks.append(f"<!-- rki-page: {number} -->\n{page.rstrip(chr(10))}")

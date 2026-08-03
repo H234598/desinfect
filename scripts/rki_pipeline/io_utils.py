@@ -406,7 +406,13 @@ def safe_remove_generated_tree(path: Path, allowed_root: Path) -> None:
             os.close(parent_fd)
 
 
-def ensure_within(path: Path, root: Path, *, reject_symlinks: bool = True) -> Path:
+def ensure_within(
+    path: Path,
+    root: Path,
+    *,
+    reject_symlinks: bool = True,
+    allow_missing_parents: bool = False,
+) -> Path:
     """Return a path below *root* after descriptor-based component validation.
 
     This helper is suitable for validation and display. Security-sensitive writes
@@ -416,7 +422,12 @@ def ensure_within(path: Path, root: Path, *, reject_symlinks: bool = True) -> Pa
     relative = relative_path_beneath(path, root)
     with open_root_directory(root, create=True) as root_fd:
         if reject_symlinks:
-            parent_fd = open_directory_beneath(root_fd, relative.parts[:-1])
+            try:
+                parent_fd = open_directory_beneath(root_fd, relative.parts[:-1])
+            except FileNotFoundError:
+                if allow_missing_parents:
+                    return Path(os.path.abspath(root)) / Path(relative.as_posix())
+                raise
             try:
                 try:
                     metadata = os.stat(

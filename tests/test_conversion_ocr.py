@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from importlib import import_module
 from pathlib import Path
 
@@ -38,6 +39,7 @@ class _OcrRunner:
         missing_output: int | None = None,
         symlink_output: int | None = None,
         drift_tool: str | None = None,
+        drift_tessdata: bool = False,
         missing_tool: str | None = None,
     ) -> None:
         self.page_text = page_text
@@ -48,6 +50,7 @@ class _OcrRunner:
         self.missing_output = missing_output
         self.symlink_output = symlink_output
         self.drift_tool = drift_tool
+        self.drift_tessdata = drift_tessdata
         self.missing_tool = missing_tool
         self.calls: list[tuple[str | Path, tuple[str, ...], Path]] = []
 
@@ -90,6 +93,10 @@ class _OcrRunner:
             sha256 = ("c" if self.drift_tool == name else "a") * 64
             return _result(name, arguments, sha256=sha256)
         page_number = int(Path(arguments[0]).stem.split("-")[-1])
+        if self.drift_tessdata:
+            model = Path(arguments[3]) / "deu.traineddata"
+            model.chmod(0o600)
+            model.write_bytes(b"changed model")
         sha256 = ("c" if self.drift_tool == name else "b") * 64
         return _result(
             name,
@@ -99,12 +106,13 @@ class _OcrRunner:
         )
 
 
-def _tessdata():
-    base = import_module("scripts.rki_pipeline.conversion.base")
-    return (
-        base.NamedDigest("deu", "1" * 64),
-        base.NamedDigest("eng", "2" * 64),
-    )
+def _tessdata(tmp_path: Path) -> tuple[Path, Path]:
+    model_dir = tmp_path / "models"
+    model_dir.mkdir(exist_ok=True)
+    paths = tuple(model_dir / f"{language}.traineddata" for language in ("deu", "eng"))
+    for path in paths:
+        path.write_bytes(f"{path.stem} model".encode())
+    return paths
 
 
 def _source(tmp_path: Path) -> Path:
@@ -122,7 +130,7 @@ def test_ocr_uses_pagewise_fixed_tools_and_forces_review(tmp_path: Path) -> None
         source,
         workdir=tmp_path,
         expected_page_count=2,
-        tessdata=_tessdata(),
+        tessdata=_tessdata(tmp_path),
         runner=runner,
     )
 
@@ -173,6 +181,8 @@ def test_ocr_uses_pagewise_fixed_tools_and_forces_review(tmp_path: Path) -> None
             (
                 (raster_dir / "page-0001.pgm").as_posix(),
                 "stdout",
+                "--tessdata-dir",
+                (tmp_path / "ocr-tessdata").as_posix(),
                 "-l",
                 "deu+eng",
                 "--psm",
@@ -187,6 +197,8 @@ def test_ocr_uses_pagewise_fixed_tools_and_forces_review(tmp_path: Path) -> None
             (
                 (raster_dir / "page-0002.pgm").as_posix(),
                 "stdout",
+                "--tessdata-dir",
+                (tmp_path / "ocr-tessdata").as_posix(),
                 "-l",
                 "deu+eng",
                 "--psm",
@@ -222,6 +234,8 @@ def test_ocr_uses_pagewise_fixed_tools_and_forces_review(tmp_path: Path) -> None
         "tesseract",
         "$INPUT",
         "stdout",
+        "--tessdata-dir",
+        "$TESSDATA",
         "-l",
         "deu+eng",
         "--psm",
@@ -236,8 +250,8 @@ def test_ocr_uses_pagewise_fixed_tools_and_forces_review(tmp_path: Path) -> None
         "oem": 1,
         "languages": ["deu", "eng"],
         "tessdata": [
-            {"name": "deu", "sha256": "1" * 64},
-            {"name": "eng", "sha256": "2" * 64},
+            {"name": "deu", "sha256": hashlib.sha256(b"deu model").hexdigest()},
+            {"name": "eng", "sha256": hashlib.sha256(b"eng model").hexdigest()},
         ],
     }
 
@@ -274,7 +288,7 @@ def test_ocr_requires_exact_regular_non_symlink_rasters(
             _source(tmp_path),
             workdir=tmp_path,
             expected_page_count=len(runner.page_text),
-            tessdata=_tessdata(),
+            tessdata=_tessdata(tmp_path),
             runner=runner,
         )
 
@@ -294,7 +308,7 @@ def test_ocr_rejects_invalid_pgm_before_tesseract(
             _source(tmp_path),
             workdir=tmp_path,
             expected_page_count=1,
-            tessdata=_tessdata(),
+            tessdata=_tessdata(tmp_path),
             runner=runner,
         )
 
@@ -311,7 +325,7 @@ def test_ocr_rejects_raster_pixel_limit_before_tesseract(tmp_path: Path) -> None
             _source(tmp_path),
             workdir=tmp_path,
             expected_page_count=1,
-            tessdata=_tessdata(),
+            tessdata=_tessdata(tmp_path),
             runner=runner,
             limits=validation.PdfLimits(raster_pixels=100),
         )
@@ -328,7 +342,7 @@ def test_ocr_reports_missing_tool_as_unavailable(tmp_path: Path, tool: str) -> N
             _source(tmp_path),
             workdir=tmp_path,
             expected_page_count=1,
-            tessdata=_tessdata(),
+            tessdata=_tessdata(tmp_path),
             runner=_OcrRunner((b"text",), missing_tool=tool),
         )
 
@@ -342,8 +356,52 @@ def test_ocr_rejects_executable_drift(tmp_path: Path, tool: str) -> None:
             _source(tmp_path),
             workdir=tmp_path,
             expected_page_count=1,
-            tessdata=_tessdata(),
+            tessdata=_tessdata(tmp_path),
             runner=_OcrRunner((b"text",), drift_tool=tool),
+        )
+
+
+def test_ocr_rejects_tessdata_snapshot_drift(tmp_path: Path) -> None:
+    ocr = _ocr_module()
+
+    with pytest.raises(ocr.OcrError, match="Tessdata-Snapshot deu driftete"):
+        ocr.extract_text(
+            _source(tmp_path),
+            workdir=tmp_path,
+            expected_page_count=1,
+            tessdata=_tessdata(tmp_path),
+            runner=_OcrRunner((b"text",), drift_tessdata=True),
+        )
+
+
+def test_ocr_maps_tessdata_snapshot_fsync_failure(tmp_path: Path, monkeypatch) -> None:
+    ocr = _ocr_module()
+
+    def fail_fsync(_descriptor):
+        raise OSError("fsync failed")
+
+    monkeypatch.setattr(ocr.os, "fsync", fail_fsync)
+
+    with pytest.raises(ocr.OcrError, match=r"Tessdata deu.*Snapshot"):
+        ocr.extract_text(
+            _source(tmp_path),
+            workdir=tmp_path,
+            expected_page_count=1,
+            tessdata=_tessdata(tmp_path),
+            runner=_OcrRunner((b"text",)),
+        )
+
+
+def test_ocr_maps_reserved_marker_to_ocr_error(tmp_path: Path) -> None:
+    ocr = _ocr_module()
+
+    with pytest.raises(ocr.OcrError, match="reservierten Seitenmarker"):
+        ocr.extract_text(
+            _source(tmp_path),
+            workdir=tmp_path,
+            expected_page_count=1,
+            tessdata=_tessdata(tmp_path),
+            runner=_OcrRunner((b"<!-- rki-page: 1 -->\n",)),
         )
 
 
@@ -356,12 +414,8 @@ def test_ocr_requires_exact_deu_eng_tessdata(
     names: tuple[str, ...],
 ) -> None:
     ocr = _ocr_module()
-    base = import_module("scripts.rki_pipeline.conversion.base")
     runner = _OcrRunner((b"text",))
-    tessdata = tuple(
-        base.NamedDigest(name, str(index) * 64)
-        for index, name in enumerate(names, start=1)
-    )
+    tessdata = tuple(tmp_path / f"{name}.traineddata" for name in names)
 
     with pytest.raises(ValueError, match="deu.*eng"):
         ocr.extract_text(
@@ -385,7 +439,7 @@ def test_ocr_enforces_page_limit_before_running_tools(tmp_path: Path) -> None:
             _source(tmp_path),
             workdir=tmp_path,
             expected_page_count=2,
-            tessdata=_tessdata(),
+            tessdata=_tessdata(tmp_path),
             runner=runner,
             limits=validation.PdfLimits(pages=1),
         )

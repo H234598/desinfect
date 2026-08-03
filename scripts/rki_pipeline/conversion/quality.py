@@ -37,7 +37,7 @@ def assess_quality(
     reasons: list[str] = []
     if len(pages) != expected_page_count:
         reasons.append("page_count_mismatch")
-    if character_count < expected_page_count * MIN_CHARACTERS_PER_PAGE:
+    if any(len(page) < MIN_CHARACTERS_PER_PAGE for page in visible):
         reasons.append("too_few_characters")
     if replacement_ratio > MAX_REPLACEMENT_RATIO:
         reasons.append("replacement_ratio")

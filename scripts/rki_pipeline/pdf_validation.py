@@ -748,13 +748,27 @@ def validated_pdf(
     runner: Runner | None = None,
     limits: PdfLimits = DEFAULT_PDF_LIMITS,
     pdfinfo_executable: str | Path = "pdfinfo",
+    expected_sha256: str | None = None,
+    expected_size: int | None = None,
 ) -> Iterator[ValidatedPdfCopy]:
     """Yield one parser-validated private copy and securely remove it afterward."""
 
+    if expected_sha256 is not None and (
+        type(expected_sha256) is not str
+        or len(expected_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in expected_sha256)
+    ):
+        raise ValueError("expected_sha256 muss ein kleingeschriebener SHA-256 sein")
+    if expected_size is not None and (type(expected_size) is not int or expected_size < 0):
+        raise ValueError("expected_size muss eine nichtnegative Ganzzahl sein")
     source = Path(path)
     source_fd = _open_pdf(source)
     try:
         byte_validation = validate_pdf_fd(source_fd, max_bytes=limits.source_bytes)
+        if expected_sha256 is not None and byte_validation.sha256 != expected_sha256:
+            raise PdfByteValidationError("PDF-SHA-256 driftet von erwarteter Byte-Identität")
+        if expected_size is not None and byte_validation.size != expected_size:
+            raise PdfByteValidationError("PDF-Größe driftet von erwarteter Byte-Identität")
         with _owned_directory(Path(temp_root)) as owned:
             copied_fd = _copy_descriptor(
                 source_fd,
@@ -823,6 +837,8 @@ def validate_pdf(
     runner: Runner | None = None,
     limits: PdfLimits = DEFAULT_PDF_LIMITS,
     pdfinfo_executable: str | Path = "pdfinfo",
+    expected_sha256: str | None = None,
+    expected_size: int | None = None,
 ) -> PdfValidation:
     """Return validation evidence while retaining no private source copy."""
 
@@ -832,5 +848,7 @@ def validate_pdf(
         runner=runner,
         limits=limits,
         pdfinfo_executable=pdfinfo_executable,
+        expected_sha256=expected_sha256,
+        expected_size=expected_size,
     ) as value:
         return value.validation

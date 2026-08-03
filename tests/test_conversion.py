@@ -219,6 +219,7 @@ def test_quality_accepts_exact_replacement_ratio_boundary() -> None:
     ("pages", "expected_page_count", "reason"),
     [
         (("a" * 39,), 1, "too_few_characters"),
+        (("a" * 79, "b"), 2, "too_few_characters"),
         (("a" * 98 + "\ufffd\ufffd",), 1, "replacement_ratio"),
         (("a" * 40, "  "), 2, "empty_pages"),
         (("a" * 40,), 2, "page_count_mismatch"),
@@ -355,6 +356,20 @@ def test_pdftotext_preserves_empty_pages_for_quality_gate(tmp_path: Path) -> Non
 
     assert result.pages == ("", "")
     assert result.markdown.count("<!-- rki-page:") == 2
+
+
+def test_pdftotext_rejects_marker_shaped_source_text(tmp_path: Path) -> None:
+    pdftotext = import_module("scripts.rki_pipeline.conversion.pdftotext")
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"unused")
+
+    with pytest.raises(pdftotext.TextExtractionError, match="Seitenmarker"):
+        pdftotext.extract_text(
+            source,
+            workdir=tmp_path,
+            expected_page_count=1,
+            runner=_PdftotextRunner(b"payload <!-- rki-page: 9 -->\f"),
+        )
 
 
 def test_pdftotext_rejects_executable_drift_between_version_and_run(
