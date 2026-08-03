@@ -7,11 +7,13 @@ from dataclasses import replace
 from pathlib import Path
 import stat
 import struct
+import tempfile
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
 
 import pytest
 
 from scripts.rki_pipeline import archive as archive_module
+from scripts.rki_pipeline import cli as pipeline_cli
 from scripts.rki_pipeline import rights
 from scripts.rki_pipeline.archive import (
     ArchiveBuild,
@@ -30,12 +32,18 @@ from scripts.rki_pipeline.archive import (
 )
 from scripts.rki_pipeline.io_utils import stable_json_dumps
 from scripts.rki_pipeline.rights import resolve_rights
-from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
+from scripts.rki_pipeline.run_modes import (
+    capture_repository_snapshot,
+    EffectKind,
+    EffectLedger,
+    RunMode,
+)
 from scripts.rki_pipeline.storage.base import PreparedObject, RightsStorageAuthorizer
 
 
 SOURCE_ID = "rki:176904/900000001"
 SOURCE_SHA256 = "a" * 64
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _authorizer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> RightsStorageAuthorizer:
@@ -132,6 +140,74 @@ def _with_payload(entry: ArchiveEntry, payload: bytes) -> ArchiveEntry:
         size=len(payload),
     )
     return ArchiveEntry(path=entry.path, prepared=prepared)
+
+
+def test_build_archive_pilot_cli_is_offline_and_deterministic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    temp_parent = tmp_path / "system-temp"
+    temp_parent.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temp_parent))
+    before = capture_repository_snapshot(
+        REPOSITORY_ROOT,
+        protected_paths=("status.json",),
+        temp_root=None,
+    )
+    command = ["build-archive", "--fixture", "pilot", "--mode", "materialize"]
+
+    assert pipeline_cli.main(command) == 0
+    first_output = capsys.readouterr().out
+    assert pipeline_cli.main(command) == 0
+    second_output = capsys.readouterr().out
+
+    payload = json.loads(first_output)
+    assert set(payload) == {
+        "bytes",
+        "changed",
+        "input_fingerprint",
+        "output_sha256",
+    }
+    assert payload["changed"] is True
+    assert type(payload["bytes"]) is int and payload["bytes"] > 0
+    assert len(payload["input_fingerprint"]) == 64
+    assert len(payload["output_sha256"]) == 64
+    assert first_output == second_output
+    assert first_output == (
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+            separators=(",", ": "),
+        )
+        + "\n"
+    )
+    assert list(temp_parent.iterdir()) == []
+    assert capture_repository_snapshot(
+        REPOSITORY_ROOT,
+        protected_paths=("status.json",),
+        temp_root=None,
+    ) == before
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    (
+        (("--fixture", "unknown", "--mode", "materialize"), "fixture muss pilot sein"),
+        (("--fixture", "pilot", "--mode", "plan"), "mode muss materialize sein"),
+    ),
+)
+def test_build_archive_cli_rejects_unsupported_values(
+    arguments: tuple[str, ...],
+    message: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert pipeline_cli.main(["build-archive", *arguments]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == f"build-archive: {message}\n"
 
 
 def _rewrite_archive(

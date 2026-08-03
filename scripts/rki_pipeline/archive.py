@@ -1,6 +1,7 @@
 """Immutable contracts for deterministic, rights-bound ZIP archives."""
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -10,6 +11,8 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import struct
+import sys
+from tempfile import TemporaryDirectory
 from typing import Any
 from zipfile import BadZipFile, ZIP_STORED, ZipFile, ZipInfo
 
@@ -27,6 +30,12 @@ from scripts.rki_pipeline.io_utils import (
     UnsafePathError,
 )
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
+from scripts.rki_pipeline.rights import (
+    RightsPolicyError,
+    load_rights_authority,
+    load_rights_policy,
+    resolve_rights,
+)
 from scripts.rki_pipeline.schema_registry import SchemaContractError, validate_document
 from scripts.rki_pipeline.staging import staged_directory
 from scripts.rki_pipeline.storage.base import (
@@ -65,6 +74,9 @@ _BUNDLE_ZIP = "archive.zip"
 _BUNDLE_MANIFEST = "archive-manifest.json"
 _BUNDLE_FILES = frozenset({GENERATED_ROOT_SENTINEL, _BUNDLE_ZIP, _BUNDLE_MANIFEST})
 _MAX_SIDECAR_BYTES = 8 * 1024 * 1024
+_PILOT_SOURCE_ID = "rki:176904/900000001"
+_PILOT_SOURCE_SHA256 = "4665c3b8cfa6de8d9792a8defb977bfd200465b513575419e0a88541000f5b2a"
+_PILOT_PAYLOAD = b"# Synthetic deterministic archive fixture\n"
 
 
 class ArchiveError(ValueError):
@@ -483,6 +495,99 @@ def materialize_archive(
         build=staged_result,
         changed=True,
     )
+
+
+def _pilot_spec(temp_root: Path) -> tuple[ArchiveSpec, RightsStorageAuthorizer]:
+    authority = load_rights_authority()
+    policy = load_rights_policy()
+    decision = resolve_rights(
+        _PILOT_SOURCE_ID,
+        _PILOT_SOURCE_SHA256,
+        authority=authority,
+        policy=policy,
+    )
+    if decision.decision_sha256 is None or decision.state.value != "approved":
+        raise RightsPolicyError("Synthetische Archivfixture besitzt keine Freigabe")
+
+    prepared_root = temp_root / "prepared"
+    prepared_root.mkdir()
+    payload_path = prepared_root / "pilot.md"
+    payload_path.write_bytes(_PILOT_PAYLOAD)
+    prepared = PreparedObject(
+        artifact_id="pilot-archive-payload",
+        logical_key="pilot/pilot.md",
+        path=payload_path,
+        temp_root=prepared_root,
+        sha256=hashlib.sha256(_PILOT_PAYLOAD).hexdigest(),
+        size=len(_PILOT_PAYLOAD),
+        source_id=_PILOT_SOURCE_ID,
+        source_sha256=_PILOT_SOURCE_SHA256,
+        decision_sha256=decision.decision_sha256,
+        visibility="public",
+        rights_state=decision.state.value,
+    )
+    return (
+        ArchiveSpec(
+            archive_id="pilot-2026-w01-markdown",
+            period="2026-W01",
+            kind="week-markdown",
+            visibility="public",
+            source_date_epoch=1_700_000_000,
+            entries=(ArchiveEntry(path="Markdown/pilot.md", prepared=prepared),),
+        ),
+        RightsStorageAuthorizer(authority=authority, policy=policy),
+    )
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Build one offline deterministic archive fixture.")
+    parser.add_argument("--fixture", required=True)
+    parser.add_argument("--mode", required=True)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Materialize and validate the exact offline pilot fixture."""
+
+    args = _build_parser().parse_args(argv)
+    if args.fixture != "pilot":
+        print("build-archive: fixture muss pilot sein", file=sys.stderr)
+        return 2
+    if args.mode != RunMode.MATERIALIZE.value:
+        print("build-archive: mode muss materialize sein", file=sys.stderr)
+        return 2
+
+    try:
+        with TemporaryDirectory(prefix="desinfect-p07-archive-") as directory:
+            temp_root = Path(directory).resolve()
+            spec, authorizer = _pilot_spec(temp_root)
+            result = materialize_archive(
+                spec,
+                temp_root / "bundle",
+                temp_root=temp_root,
+                ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root),
+                authorizer=authorizer,
+            )
+            inspection = validate_archive(
+                result.zip_path,
+                expected_fingerprint=result.build.input_fingerprint,
+                expected_output_sha256=result.build.output_sha256,
+            )
+            print(
+                stable_json_dumps(
+                    {
+                        "bytes": inspection.size,
+                        "changed": result.changed,
+                        "input_fingerprint": inspection.input_fingerprint,
+                        "output_sha256": inspection.output_sha256,
+                    }
+                ),
+                end="",
+            )
+        return 0
+    except (ArchiveError, OSError, RightsPolicyError, StorageError, ValueError) as exc:
+        print(f"build-archive: {exc}", file=sys.stderr)
+        return 2
 
 
 def _archive_sidecar(spec: ArchiveSpec, build: ArchiveBuild) -> dict[str, Any]:
