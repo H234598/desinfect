@@ -8,7 +8,8 @@ import hashlib
 import json
 import posixpath
 import re
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
+import stat
 from typing import Any, Iterable, Mapping
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -20,13 +21,29 @@ from scripts.rki_pipeline.archive import (
     ArchiveError,
     ArchiveSpec,
     archive_input_fingerprint,
+    materialize_archive,
     validate_archive,
 )
 from scripts.rki_pipeline.due_tasks import DueTask, TaskKind
-from scripts.rki_pipeline.io_utils import normalize_posix_path, stable_json_dumps
+from scripts.rki_pipeline.io_utils import (
+    GENERATED_ROOT_SENTINEL,
+    UnsafePathError,
+    atomic_write_bytes,
+    normalize_posix_path,
+    relative_path_beneath,
+    stable_json_dumps,
+)
 from scripts.rki_pipeline.manifests import ManifestGraph
+from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 from scripts.rki_pipeline.schema_registry import SchemaContractError, validate_document
-from scripts.rki_pipeline.storage.base import PreparedObject
+from scripts.rki_pipeline.staging import StagingError, staged_directory
+from scripts.rki_pipeline.storage.base import (
+    PreparedObject,
+    RightsStorageAuthorizer,
+    StorageAuthorizationError,
+    authorize_storage_operation,
+    hash_file,
+)
 
 _BERLIN = ZoneInfo("Europe/Berlin")
 _WEEK = re.compile(r"^(?P<year>[0-9]{4})-W(?P<week>0[1-9]|[1-4][0-9]|5[0-3])$")
@@ -99,6 +116,31 @@ class AggregationPlan:
 
     periods: tuple[PeriodPlan, ...]
     input_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class MaterializedPeriodArchive:
+    """One archive identity translated from staging to final output."""
+
+    archive_id: str
+    relative_bundle: str
+    build: ArchiveBuild
+
+
+@dataclass(frozen=True, slots=True)
+class PeriodArchiveMaterialization:
+    """Immutable result of one atomic aggregate product publication."""
+
+    root: Path
+    archives: tuple[MaterializedPeriodArchive, ...]
+    index_paths: tuple[Path, ...]
+    manifest_paths: tuple[Path, ...]
+    input_fingerprint: str
+    changed: bool
+
+
+class _NoAggregationChange(RuntimeError):
+    """Private control flow: staged tree equals existing published tree."""
 
 
 def _period_dates(kind: TaskKind, value: str) -> tuple[date, date]:
@@ -952,3 +994,214 @@ def render_period_manifest(period_plan: PeriodPlan, builds: Mapping[str, Archive
     payload = stable_json_dumps(value).encode("utf-8")
     validate_period_manifest(payload)
     return payload
+
+
+def _tree_signature(root: Path) -> tuple[tuple[str, int, int, str], ...]:
+    """Return canonical regular-file evidence, rejecting unsafe output trees."""
+
+    if root.is_symlink():
+        raise AggregationError("Symlink-Ziel ist unzulässig")
+    if not root.exists():
+        return ()
+    if not root.is_dir():
+        raise AggregationError("Aggregationsziel ist kein Verzeichnis")
+    rows: list[tuple[str, int, int, str]] = []
+    for path in sorted(root.rglob("*")):
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            raise AggregationError("Aggregationsbaum konnte nicht geprüft werden") from exc
+        if stat.S_ISLNK(metadata.st_mode):
+            raise AggregationError("Symlink im Aggregationsbaum ist unzulässig")
+        if stat.S_ISDIR(metadata.st_mode):
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            raise AggregationError("Aggregationsbaum enthält keine reguläre Datei")
+        try:
+            size, digest = hash_file(path)
+        except Exception as exc:
+            raise AggregationError("Aggregationsdatei konnte nicht geprüft werden") from exc
+        rows.append(
+            (
+                path.relative_to(root).as_posix(),
+                stat.S_IMODE(metadata.st_mode),
+                size,
+                digest,
+            )
+        )
+    return tuple(rows)
+
+
+def _authorize_plan(plan: AggregationPlan, authorizer: RightsStorageAuthorizer) -> None:
+    """Reauthorize every planned input before inspecting prior output."""
+
+    for period_plan in plan.periods:
+        if type(period_plan) is not PeriodPlan:
+            raise AggregationError("AggregationPlan enthält keinen exakten PeriodPlan")
+        for archive in period_plan.archives:
+            if type(archive) is not PlannedArchive:
+                raise AggregationError("AggregationPlan enthält keinen exakten PlannedArchive")
+            for entry in archive.spec.entries:
+                try:
+                    authorize_storage_operation(
+                        authorizer,
+                        entry.prepared,
+                        operation="period-archive-materialize",
+                    )
+                except StorageAuthorizationError as exc:
+                    raise AggregationError("Rechteentscheidung autorisiert Archivaggregation nicht") from exc
+
+
+def _final_build(build: ArchiveBuild, root: Path, relative_bundle: str) -> ArchiveBuild:
+    """Translate a stage-local archive identity to its final immutable path."""
+
+    return ArchiveBuild(
+        path=root / relative_bundle / "archive.zip",
+        input_fingerprint=build.input_fingerprint,
+        output_sha256=build.output_sha256,
+        size=build.size,
+        entries=build.entries,
+    )
+
+
+def _product_files(root: Path) -> tuple[tuple[Path, str, int], ...]:
+    """List final regular product files without exposing staging sentinel as output."""
+
+    files: list[tuple[Path, str, int]] = []
+    for relative, _mode, size, digest in _tree_signature(root):
+        if relative == GENERATED_ROOT_SENTINEL:
+            continue
+        files.append((root / relative, digest, size))
+    return tuple(files)
+
+
+def materialize_period_archives(
+    aggregation_plan: AggregationPlan,
+    target: Path,
+    *,
+    temp_root: Path,
+    ledger: EffectLedger,
+    authorizer: RightsStorageAuthorizer,
+) -> PeriodArchiveMaterialization:
+    """Atomically materialize one full aggregation plan below ``temp_root``."""
+
+    if type(aggregation_plan) is not AggregationPlan:
+        raise AggregationError("aggregation_plan muss ein exakter AggregationPlan sein")
+    if not isinstance(target, Path) or not isinstance(temp_root, Path):
+        raise AggregationError("target und temp_root müssen Path-Werte sein")
+    if type(ledger) is not EffectLedger:
+        raise AggregationError("ledger muss ein exaktes EffectLedger sein")
+    if type(authorizer) is not RightsStorageAuthorizer:
+        raise AggregationError("authorizer muss ein exakter RightsStorageAuthorizer sein")
+    root = temp_root.resolve()
+    if ledger.mode is not RunMode.MATERIALIZE or ledger.temp_root != root:
+        raise AggregationError("Materialize-Ledger und temp_root müssen exakt passen")
+    try:
+        relative_path_beneath(target, root)
+    except (OSError, UnsafePathError) as exc:
+        raise AggregationError("Aggregationsziel liegt außerhalb temp_root") from exc
+    if target.is_symlink():
+        raise AggregationError("Symlink-Ziel ist unzulässig")
+    if aggregation_plan.input_fingerprint != _plan_fingerprint(aggregation_plan.periods):
+        raise AggregationError("AggregationPlan-Fingerprint ist nicht kanonisch")
+
+    _authorize_plan(aggregation_plan, authorizer)
+    event_count = len(ledger.events)
+    stage_archives: list[MaterializedPeriodArchive] = []
+    index_relatives: list[str] = []
+    manifest_relatives: list[str] = []
+    try:
+        with staged_directory(target, allowed_root=root, replace_existing=True) as stage:
+            stage_root = stage.resolve()
+            inner_ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=stage_root)
+            builds_by_period: dict[int, dict[str, ArchiveBuild]] = {}
+            for period_index, period_plan in enumerate(aggregation_plan.periods):
+                builds: dict[str, ArchiveBuild] = {}
+                for archive in period_plan.archives:
+                    result = materialize_archive(
+                        archive.spec,
+                        stage_root / archive.relative_bundle,
+                        temp_root=stage_root,
+                        ledger=inner_ledger,
+                        authorizer=authorizer,
+                    )
+                    builds[archive.spec.archive_id] = result.build
+                    stage_archives.append(
+                        MaterializedPeriodArchive(
+                            archive_id=archive.spec.archive_id,
+                            relative_bundle=archive.relative_bundle,
+                            build=result.build,
+                        )
+                    )
+                builds_by_period[period_index] = builds
+            for period_index, period_plan in enumerate(aggregation_plan.periods):
+                if period_plan.index_path is not None:
+                    index_path = _canonical_path(period_plan.index_path, label="Indexpfad")
+                    atomic_write_bytes(
+                        stage_root / index_path,
+                        render_month_index(period_plan, aggregation_plan),
+                        allowed_root=stage_root,
+                    )
+                    index_relatives.append(index_path)
+                manifest_path = _canonical_path(period_plan.manifest_path, label="Manifestpfad")
+                manifest_payload = render_period_manifest(period_plan, builds_by_period[period_index])
+                validate_period_manifest(manifest_payload)
+                atomic_write_bytes(
+                    stage_root / manifest_path,
+                    manifest_payload,
+                    allowed_root=stage_root,
+                )
+                manifest_relatives.append(manifest_path)
+            if _tree_signature(stage_root) == _tree_signature(target):
+                raise _NoAggregationChange()
+            for path, digest, size in _product_files(stage_root):
+                relative = path.relative_to(stage_root)
+                ledger.record(
+                    EffectKind.TEMP_FILE,
+                    (target / relative).as_posix(),
+                    sha256=digest,
+                    size=size,
+                )
+    except _NoAggregationChange:
+        del ledger.events[event_count:]
+        return PeriodArchiveMaterialization(
+            root=target,
+            archives=tuple(
+                MaterializedPeriodArchive(
+                    archive_id=item.archive_id,
+                    relative_bundle=item.relative_bundle,
+                    build=_final_build(item.build, target, item.relative_bundle),
+                )
+                for item in stage_archives
+            ),
+            index_paths=tuple(target / relative for relative in index_relatives),
+            manifest_paths=tuple(target / relative for relative in manifest_relatives),
+            input_fingerprint=aggregation_plan.input_fingerprint,
+            changed=False,
+        )
+    except AggregationError:
+        del ledger.events[event_count:]
+        raise
+    except (ArchiveError, StagingError, UnsafePathError, OSError, ValueError) as exc:
+        del ledger.events[event_count:]
+        raise AggregationError("Archivaggregation konnte nicht materialisiert werden") from exc
+    except Exception as exc:
+        del ledger.events[event_count:]
+        raise AggregationError("Archivaggregation konnte nicht materialisiert werden") from exc
+
+    final_archives = tuple(
+        MaterializedPeriodArchive(
+            archive_id=item.archive_id,
+            relative_bundle=item.relative_bundle,
+            build=_final_build(item.build, target, item.relative_bundle),
+        )
+        for item in stage_archives
+    )
+    return PeriodArchiveMaterialization(
+        root=target,
+        archives=final_archives,
+        index_paths=tuple(target / relative for relative in index_relatives),
+        manifest_paths=tuple(target / relative for relative in manifest_relatives),
+        input_fingerprint=aggregation_plan.input_fingerprint,
+        changed=True,
+    )

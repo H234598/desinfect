@@ -12,8 +12,10 @@ from scripts.rki_pipeline import aggregation as aggregation_module
 from scripts.rki_pipeline import rights
 from scripts.rki_pipeline.aggregation import (
     AggregationError,
+    PeriodArchiveMaterialization,
     PeriodManifestError,
     PeriodSelectionError,
+    materialize_period_archives,
     plan_period_archives,
     period_ref,
     render_month_index,
@@ -26,6 +28,7 @@ from scripts.rki_pipeline.due_tasks import DueTask, TaskKind
 from scripts.rki_pipeline.io_utils import stable_json_dumps
 from scripts.rki_pipeline.manifests import ManifestGraph
 from scripts.rki_pipeline.rights import resolve_rights
+from scripts.rki_pipeline.run_modes import EffectLedger, RunMode
 from scripts.rki_pipeline.storage.base import PreparedObject, RightsStorageAuthorizer
 from tests.test_manifests import _build as build_p06_graph
 from tests.test_manifests import _document as p06_document
@@ -1033,3 +1036,344 @@ def test_month_index_escapes_backslash_and_pipe_without_markdown_ambiguity(
 
     assert b"A\\B &#124; C" in payload
     assert b"A\\B \\| C" not in payload
+
+
+def _materialize_authorizer(
+    tmp_path: Path, plan, monkeypatch: pytest.MonkeyPatch
+) -> tuple[object, RightsStorageAuthorizer]:
+    prepared = tuple(
+        entry.prepared
+        for period in plan.periods
+        for archive in period.archives
+        for entry in archive.spec.entries
+    )
+    register = tmp_path / "materialize-rights.yml"
+    register.write_text(
+        "\n".join(
+            (
+                "schema_version: 1",
+                "decisions:",
+                *(
+                    line
+                    for source_id, source_sha256 in sorted(
+                        {(item.source_id, item.source_sha256) for item in prepared}
+                    )
+                    for line in (
+                        f"  - source_id: {source_id}",
+                        f"    source_sha256: {source_sha256}",
+                        "    state: approved",
+                        "    basis: Reviewed RKI reuse terms",
+                        "    reviewed_by: Legal Reviewer",
+                        '    reviewed_at: "2026-08-03T08:00:00Z"',
+                    )
+                ),
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(rights, "DEFAULT_REGISTER_PATH", register)
+    authorizer = RightsStorageAuthorizer(rights.load_rights_authority(), rights.load_rights_policy())
+    prepared_by_id: dict[str, PreparedObject] = {}
+    for item in prepared:
+        prepared_by_id[item.artifact_id] = replace(
+            item,
+            decision_sha256=resolve_rights(
+                item.source_id,
+                item.source_sha256,
+                authority=authorizer.authority,
+                policy=authorizer.policy,
+            ).decision_sha256,
+        )
+    periods = []
+    for period in plan.periods:
+        documents = tuple(
+            replace(
+                document,
+                pdf=None if document.pdf is None else prepared_by_id[document.pdf.artifact_id],
+                markdown=(
+                    None
+                    if document.markdown is None
+                    else prepared_by_id[document.markdown.artifact_id]
+                ),
+            )
+            for document in period.documents
+        )
+        archives = tuple(
+            replace(
+                archive,
+                spec=replace(
+                    archive.spec,
+                    entries=tuple(
+                        replace(entry, prepared=prepared_by_id[entry.prepared.artifact_id])
+                        for entry in archive.spec.entries
+                    ),
+                ),
+            )
+            for archive in period.archives
+        )
+        periods.append(replace(period, documents=documents, archives=archives))
+    refreshed = replace(plan, periods=tuple(periods))
+    return (
+        replace(
+            refreshed,
+            input_fingerprint=aggregation_module._plan_fingerprint(refreshed.periods),
+        ),
+        authorizer,
+    )
+
+
+def _materialize_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, target: Path | None = None
+) -> tuple[object, RightsStorageAuthorizer, PeriodArchiveMaterialization, EffectLedger]:
+    plan, authorizer = _materialize_authorizer(
+        tmp_path,
+        plan_period_archives(**_plan_inputs(tmp_path)),
+        monkeypatch,
+    )
+    root = target if target is not None else tmp_path / "period-products"
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+    result = materialize_period_archives(
+        plan,
+        root,
+        temp_root=tmp_path,
+        ledger=ledger,
+        authorizer=authorizer,
+    )
+    return plan, authorizer, result, ledger
+
+
+def _tree_fingerprint(root: Path) -> dict[str, tuple[int, int, str]]:
+    return {
+        path.relative_to(root).as_posix(): (
+            path.stat().st_mode & 0o777,
+            path.stat().st_size,
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
+def _late_arrival_inputs(tmp_path: Path) -> dict[str, object]:
+    inputs = _plan_inputs(tmp_path, markdown=False)
+    graph = inputs["graph"]
+    prepared = inputs["prepared_by_logical_key"]
+    assert isinstance(graph, ManifestGraph)
+    assert isinstance(prepared, dict)
+    source = graph.sources[-1]
+    document = graph.documents[-1]
+    storage = graph.storage_references[0]
+    late_path = "rki/Bulletins/Jahre/2026/PDF/2026-04-23_late.pdf"
+    late_source = {
+        **source,
+        "bitstream_id": "rki-bitstream-" + "f" * 64,
+        "source_id": "rki:176904/900000099",
+        "publication_date": "2026-04-23",
+        "version": 1,
+    }
+    late_document = {
+        **document,
+        "document_id": "rki-176904-900000099-v1",
+        "version": 1,
+        "source_id": late_source["source_id"],
+        "bitstream_id": late_source["bitstream_id"],
+        "publication_date": "2026-04-23",
+        "canonical_periods": {"week": "2026-W17", "month": "2026-04", "year": 2026},
+        "paths": {"pdf": late_path, "markdown": None},
+    }
+    late_storage = {
+        **storage,
+        "artifact_id": "pdf-late-v1",
+        "relative_path": late_path,
+        "source_id": late_source["source_id"],
+        "document_id": late_document["document_id"],
+    }
+    original = prepared[storage["relative_path"]]
+    prepared[late_path] = replace(
+        original,
+        artifact_id="pdf-late-v1",
+        logical_key=late_path,
+        source_id=late_source["source_id"],
+        document_id=late_document["document_id"],
+    )
+    inputs["graph"] = ManifestGraph(
+        sources=(*graph.sources, late_source),
+        documents=(*graph.documents, late_document),
+        conversions=graph.conversions,
+        storage_references=(*graph.storage_references, late_storage),
+    )
+    inputs["due_tasks"] = (
+        due(TaskKind.WEEK, "2026-W28"),
+        due(TaskKind.MONTH, "2026-07"),
+        due(TaskKind.YEAR, "2026"),
+    )
+    inputs["as_of"] = datetime(2027, 1, 2, tzinfo=timezone.utc)
+    return inputs
+
+
+def test_late_arrival_changes_only_its_three_historical_periods(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    baseline_inputs = _late_arrival_inputs(tmp_path)
+    graph = baseline_inputs["graph"]
+    assert isinstance(graph, ManifestGraph)
+    baseline_inputs["graph"] = ManifestGraph(
+        sources=graph.sources[:-1],
+        documents=graph.documents[:-1],
+        conversions=graph.conversions,
+        storage_references=graph.storage_references[:-1],
+    )
+    prepared = baseline_inputs["prepared_by_logical_key"]
+    assert isinstance(prepared, dict)
+    prepared.pop("rki/Bulletins/Jahre/2026/PDF/2026-04-23_late.pdf")
+    first_plan, first_authorizer = _materialize_authorizer(
+        tmp_path, plan_period_archives(**baseline_inputs), monkeypatch
+    )
+    root = tmp_path / "period-products"
+    materialize_period_archives(
+        first_plan,
+        root,
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=first_authorizer,
+    )
+    before = _tree_fingerprint(root)
+    late_inputs = _late_arrival_inputs(tmp_path)
+    late_inputs["affected_periods"] = AffectedPeriods(
+        weeks={"2026-W17"}, months={"2026-04"}, years={2026}
+    )
+    late_plan, late_authorizer = _materialize_authorizer(
+        tmp_path, plan_period_archives(**late_inputs), monkeypatch
+    )
+    materialize_period_archives(
+        late_plan,
+        root,
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=late_authorizer,
+    )
+    changed = {
+        path for path, fingerprint in _tree_fingerprint(root).items() if before.get(path) != fingerprint
+    }
+    allowed_prefixes = (
+        "rki/Bulletins/Monate/2026/04/ZIP/Wochen/",
+        "rki/Bulletins/Monate/2026/04/ZIP/",
+        "rki/Bulletins/Monate/2026/04/Markdown/index.md",
+        "rki/Bulletins/Jahre/2026/ZIP/",
+        "rki/Bulletins/Manifeste/Archive/week/2026-W17.json",
+        "rki/Bulletins/Manifeste/Archive/month/2026-04.json",
+        "rki/Bulletins/Manifeste/Archive/year/2026.json",
+    )
+    assert changed
+    assert all(path.startswith(allowed_prefixes) for path in changed)
+
+
+def test_materialize_noop_preserves_tree_mtimes_and_outer_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, authorizer, first, ledger = _materialize_fixture(tmp_path, monkeypatch)
+    before = _tree_fingerprint(first.root)
+    mtimes = {path: (first.root / path).stat().st_mtime_ns for path in before}
+    event_count = len(ledger.events)
+
+    second = materialize_period_archives(
+        plan,
+        first.root,
+        temp_root=tmp_path,
+        ledger=ledger,
+        authorizer=authorizer,
+    )
+
+    assert second.changed is False
+    assert _tree_fingerprint(second.root) == before
+    assert {path: (second.root / path).stat().st_mtime_ns for path in before} == mtimes
+    assert len(ledger.events) == event_count
+    assert all(event.target.startswith(second.root.as_posix()) for event in ledger.events)
+    assert not list(tmp_path.rglob(".stage-*"))
+
+
+def test_materialize_rechecks_stale_rights_before_existing_tree_equivalence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, authorizer, first, _ledger = _materialize_fixture(tmp_path, monkeypatch)
+    authorizer.authority._register_source.write_text(
+        authorizer.authority._register_source.read_text(encoding="utf-8").replace(
+            "state: approved", "state: takedown"
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        aggregation_module,
+        "_tree_signature",
+        lambda _root: pytest.fail("existing output was read before rights authorization"),
+    )
+
+    with pytest.raises(AggregationError, match="Rechteentscheidung"):
+        materialize_period_archives(
+            plan,
+            first.root,
+            temp_root=tmp_path,
+            ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+            authorizer=authorizer,
+        )
+
+
+def test_materialize_rolls_back_complete_product_tree_on_manifest_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, authorizer, first, _ledger = _materialize_fixture(tmp_path, monkeypatch)
+    before = _tree_fingerprint(first.root)
+    monkeypatch.setattr(
+        aggregation_module,
+        "render_period_manifest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(PeriodManifestError("injected")),
+    )
+
+    with pytest.raises(PeriodManifestError, match="injected"):
+        materialize_period_archives(
+            plan,
+            first.root,
+            temp_root=tmp_path,
+            ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+            authorizer=authorizer,
+        )
+
+    assert _tree_fingerprint(first.root) == before
+
+
+def test_materialize_repairs_corruption_and_rejects_unsafe_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, authorizer, first, _ledger = _materialize_fixture(tmp_path, monkeypatch)
+    corrupt = first.manifest_paths[0]
+    corrupt.write_bytes(b"corrupt")
+
+    repaired = materialize_period_archives(
+        plan,
+        first.root,
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=authorizer,
+    )
+
+    assert repaired.changed is True
+    validate_period_manifest(repaired.manifest_paths[0].read_bytes())
+    symlink = tmp_path / "symlink-target"
+    symlink.symlink_to(first.root, target_is_directory=True)
+    with pytest.raises(AggregationError, match="Symlink"):
+        materialize_period_archives(
+            plan,
+            symlink,
+            temp_root=tmp_path,
+            ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+            authorizer=authorizer,
+        )
+    with pytest.raises(AggregationError, match="außerhalb"):
+        materialize_period_archives(
+            plan,
+            tmp_path.parent / "escape",
+            temp_root=tmp_path,
+            ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+            authorizer=authorizer,
+        )
