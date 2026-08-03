@@ -16,6 +16,11 @@ from scripts.rki_pipeline.aggregation import (
 from scripts.rki_pipeline.due_tasks import DueTask, TaskKind
 from scripts.rki_pipeline.manifests import ManifestGraph
 from scripts.rki_pipeline.storage.base import PreparedObject
+from tests.test_manifests import _build as build_p06_graph
+from tests.test_manifests import _document as p06_document
+from tests.test_manifests import _second_bitstream as p06_second_bitstream
+from tests.test_manifests import _source as p06_source
+from tests.test_manifests import _storage as p06_storage
 
 
 def due(kind: TaskKind, period: str) -> DueTask:
@@ -284,15 +289,36 @@ def test_plan_selects_current_documents_and_separates_formats(tmp_path: Path) ->
     )
 
 
-def test_empty_format_is_omitted_and_mixed_visibility_fails(tmp_path: Path) -> None:
+def test_empty_format_is_omitted(tmp_path: Path) -> None:
     pdf_only = plan_period_archives(**_plan_inputs(tmp_path, markdown=False))
     assert tuple(archive.spec.kind for archive in pdf_only.periods[0].archives) == ("month-pdf",)
 
-    inputs = _plan_inputs(tmp_path)
+
+def test_mixed_visibility_fails_after_exact_storage_prepared_joins(tmp_path: Path) -> None:
+    inputs = _mutated_plan_inputs(tmp_path, "basename-collision")
+    graph = inputs["graph"]
     prepared = inputs["prepared_by_logical_key"]
+    assert isinstance(graph, ManifestGraph)
     assert isinstance(prepared, dict)
-    markdown_path = next(path for path in prepared if path.endswith(".md"))
-    prepared[markdown_path] = replace(prepared[markdown_path], visibility="public")
+    old_path = graph.documents[-1]["paths"]["pdf"]
+    assert isinstance(old_path, str)
+    new_path = old_path.replace("2026-07-10_bulletin.pdf", "2026-07-10_other.pdf")
+    documents = list(graph.documents)
+    documents[-1] = {**documents[-1], "paths": {"pdf": new_path, "markdown": None}}
+    storage = list(graph.storage_references)
+    storage[-1] = {**storage[-1], "relative_path": new_path, "visibility": "public"}
+    second_prepared = prepared.pop(old_path)
+    prepared[new_path] = replace(
+        second_prepared,
+        logical_key=new_path,
+        visibility="public",
+    )
+    inputs["graph"] = ManifestGraph(
+        sources=graph.sources,
+        documents=tuple(documents),
+        conversions=graph.conversions,
+        storage_references=tuple(storage),
+    )
     with pytest.raises(AggregationError, match="Sichtbarkeit"):
         plan_period_archives(**inputs)
 
@@ -395,7 +421,7 @@ def _mutated_plan_inputs(tmp_path: Path, mutation: str) -> dict[str, object]:
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        ("missing-storage", "Storage"),
+        ("missing-storage", "PreparedObject"),
         ("missing-prepared", "PreparedObject"),
         ("size-drift", "Größe"),
         ("sha-drift", "SHA-256"),
@@ -436,3 +462,89 @@ def test_year_archive_contains_payloads_not_month_zips(tmp_path: Path) -> None:
         for archive in year.archives
         for entry in archive.spec.entries
     )
+
+
+def _prepared_for_graph(
+    tmp_path: Path, graph: ManifestGraph
+) -> dict[str, PreparedObject]:
+    return {
+        reference["relative_path"]: PreparedObject(
+            artifact_id=reference["artifact_id"],
+            logical_key=reference["relative_path"],
+            path=tmp_path / reference["relative_path"],
+            temp_root=tmp_path,
+            sha256=reference["sha256"],
+            size=reference["bytes"],
+            source_id=reference["source_id"],
+            source_sha256=reference["source_sha256"],
+            decision_sha256=reference["decision_sha256"],
+            visibility=reference["visibility"],
+            rights_state=reference["rights_state"],
+            document_id=reference["document_id"],
+            conversion_id=reference["conversion_id"],
+        )
+        for reference in graph.storage_references
+    }
+
+
+def test_plan_accepts_valid_p06_alias_and_conversionless_bitstream(tmp_path: Path) -> None:
+    alias_source, alias_document, alias_storage = p06_second_bitstream()
+    graph = build_p06_graph(
+        sources=(p06_source(), alias_source),
+        documents=(p06_document(), alias_document),
+        storage=(p06_storage()[0], p06_storage()[1], alias_storage),
+    )
+    plan = plan_period_archives(
+        as_of=datetime(2026, 8, 4, tzinfo=timezone.utc),
+        due_tasks=(due(TaskKind.MONTH, "1996-03"),),
+        affected_periods=AffectedPeriods(),
+        graph=graph,
+        prepared_by_logical_key=_prepared_for_graph(tmp_path, graph),
+    )
+
+    pdf_archive = next(archive for archive in plan.periods[0].archives if archive.spec.kind == "month-pdf")
+    assert len(pdf_archive.spec.entries) == 2
+
+
+def test_plan_resolves_markdown_storage_reference_by_artifact_id(tmp_path: Path) -> None:
+    inputs = _plan_inputs(tmp_path)
+    graph = inputs["graph"]
+    prepared = inputs["prepared_by_logical_key"]
+    assert isinstance(graph, ManifestGraph)
+    assert isinstance(prepared, dict)
+    markdown_path = next(path for path in prepared if path.endswith(".md"))
+    artifact_id = "markdown-storage-v2"
+    conversions = ({**graph.conversions[0], "storage_reference": artifact_id},)
+    storage = list(graph.storage_references)
+    storage[1] = {**storage[1], "artifact_id": artifact_id}
+    prepared[markdown_path] = replace(prepared[markdown_path], artifact_id=artifact_id)
+    inputs["graph"] = ManifestGraph(
+        sources=graph.sources,
+        documents=graph.documents,
+        conversions=conversions,
+        storage_references=tuple(storage),
+    )
+
+    plan = plan_period_archives(**inputs)
+
+    assert tuple(archive.spec.kind for archive in plan.periods[0].archives) == (
+        "month-markdown",
+        "month-pdf",
+    )
+
+
+def test_plan_rejects_graph_foreign_prepared_object(tmp_path: Path) -> None:
+    inputs = _plan_inputs(tmp_path)
+    prepared = inputs["prepared_by_logical_key"]
+    assert isinstance(prepared, dict)
+    extra_path = "rki/Bulletins/Jahre/2026/PDF/extra.pdf"
+    prepared[extra_path] = _prepared(
+        tmp_path,
+        artifact_id="extra-pdf",
+        logical_key=extra_path,
+        payload=b"extra",
+        source_sha256=next(iter(prepared.values())).source_sha256,
+    )
+
+    with pytest.raises(AggregationError, match="PreparedObject"):
+        plan_period_archives(**inputs)

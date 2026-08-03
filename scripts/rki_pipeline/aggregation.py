@@ -331,28 +331,30 @@ def _period_documents(
         source = _document_source(document, sources)
         document_id = _string(document, "document_id", label="Dokument")
         bitstream_id = _string(document, "bitstream_id", label="Dokument")
-        candidates = by_owner.get((document_id, bitstream_id), [])
-        if len(candidates) != 1:
-            raise AggregationError(f"Conversion für Dokument ist nicht eindeutig: {document_id}")
-        conversion = candidates[0]
-        conversion_id = _string(conversion, "conversion_id", label="Conversion")
-        state = _string(conversion, "state", label="Conversion")
-        if state not in _CONVERSION_STATES:
-            raise AggregationError(f"Konvertierungsstatus ist unbekannt: {state}")
-        if _mapping_value(conversion, "source_sha256", label="Conversion") != _mapping_value(
-            source, "sha256", label="Source"
-        ):
-            raise AggregationError("Conversion-Source-SHA stimmt nicht mit Source überein")
         paths = _mapping_value(document, "paths", label="Dokument")
         if type(paths) is not dict:
             raise AggregationError("Dokumentpfade sind ungültig")
         pdf_path = _string(paths, "pdf", label="Dokumentpfade")
         markdown_path = _nullable_string(paths, "markdown", label="Dokumentpfade")
-        owned_storage = [
-            reference
-            for reference in storage_by_path.values()
-            if _mapping_value(reference, "document_id", label="Storage") == document_id
+        candidates = [
+            candidate
+            for candidate in by_owner.get((document_id, bitstream_id), [])
+            if _mapping_value(candidate, "storage_reference", label="Conversion") is not None
         ]
+        if len(candidates) > 1:
+            raise AggregationError(f"Conversion für Dokument ist mehrdeutig: {document_id}")
+        conversion = candidates[0] if candidates else None
+        conversion_id = None
+        state = "not_materialized"
+        if conversion is not None:
+            conversion_id = _string(conversion, "conversion_id", label="Conversion")
+            state = _string(conversion, "state", label="Conversion")
+            if state not in _CONVERSION_STATES:
+                raise AggregationError(f"Konvertierungsstatus ist unbekannt: {state}")
+            if _mapping_value(conversion, "source_sha256", label="Conversion") != _mapping_value(
+                source, "sha256", label="Source"
+            ):
+                raise AggregationError("Conversion-Source-SHA stimmt nicht mit Source überein")
         pdf_reference = storage_by_path.get(pdf_path)
         if pdf_reference is None:
             raise AggregationError(f"Storage für PDF fehlt: {pdf_path}")
@@ -365,15 +367,18 @@ def _period_documents(
         )
         markdown: PreparedObject | None = None
         if state in _MATERIALIZED_CONVERSION_STATES:
+            assert conversion is not None and conversion_id is not None
             if markdown_path is None:
                 raise AggregationError("Dokument-Markdown fehlt trotz materialisierter Conversion")
-            if _mapping_value(conversion, "storage_reference", label="Conversion") != conversion_id:
-                raise AggregationError("Conversion-Storage-Referenz stimmt nicht exakt überein")
             if _mapping_value(conversion, "output_sha256", label="Conversion") is None:
                 raise AggregationError("Conversion-Ausgabe-SHA fehlt")
             markdown_reference = storage_by_path.get(markdown_path)
             if markdown_reference is None:
                 raise AggregationError(f"Storage für Markdown fehlt: {markdown_path}")
+            if _mapping_value(conversion, "storage_reference", label="Conversion") != _mapping_value(
+                markdown_reference, "artifact_id", label="Storage"
+            ):
+                raise AggregationError("Conversion-Storage-Referenz stimmt nicht exakt überein")
             if _mapping_value(markdown_reference, "sha256", label="Storage") != _mapping_value(
                 conversion, "output_sha256", label="Conversion"
             ):
@@ -385,15 +390,8 @@ def _period_documents(
                 document=document,
                 conversion_id=conversion_id,
             )
-        elif markdown_path is not None or _mapping_value(
-            conversion, "storage_reference", label="Conversion"
-        ) is not None:
+        elif markdown_path is not None:
             raise AggregationError("Nicht materialisierte Conversion besitzt Markdown-Storage")
-        expected_paths = {pdf_path}
-        if markdown_path is not None:
-            expected_paths.add(markdown_path)
-        if { _string(reference, "relative_path", label="Storage") for reference in owned_storage } != expected_paths:
-            raise AggregationError("Storage-Dokument enthält fehlende oder zusätzliche Artefakte")
         version = _mapping_value(document, "version", label="Dokument")
         if type(version) is not int:
             raise AggregationError("Dokumentversion ist ungültig")
@@ -546,6 +544,13 @@ def plan_period_archives(
         raise AggregationError("graph muss ein exakter ManifestGraph sein")
     if not isinstance(prepared_by_logical_key, Mapping):
         raise AggregationError("prepared_by_logical_key muss ein Mapping sein")
+    storage_by_path = _index_exact(
+        graph.storage_references, field="relative_path", label="Storage"
+    )
+    expected_keys = set(storage_by_path)
+    actual_keys = set(prepared_by_logical_key)
+    if expected_keys != actual_keys:
+        raise AggregationError("PreparedObject-Mapping enthält fehlende oder zusätzliche Schlüssel")
     for logical_key, prepared in prepared_by_logical_key.items():
         if type(logical_key) is not str or type(prepared) is not PreparedObject:
             raise AggregationError("prepared_by_logical_key enthält ungültige PreparedObject-Werte")
