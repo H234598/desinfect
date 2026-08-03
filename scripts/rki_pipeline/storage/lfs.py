@@ -296,6 +296,7 @@ class LfsStorageAdapter:
             size=intent.size,
         )
         target = Path(temp_root) / normalize_posix_path(intent.logical_key)
+        self.authorize(intent, operation="materialize")
         atomic_write_bytes(target, payload, allowed_root=Path(temp_root))
         ledger.record(EffectKind.TEMP_FILE, target.absolute().as_posix(), sha256=intent.sha256, size=intent.size)
         return PreparedObject(
@@ -329,19 +330,27 @@ class LfsStorageAdapter:
             if pointer is not None
             else source
         )
-        measured_size, measured_hash = hash_file(payload_source)
-        if (measured_size, measured_hash) != (reference.size, reference.sha256):
-            raise LfsIntegrityError("LFS-Exportquelle und Referenz driften")
+        payload = read_verified_payload(
+            payload_source,
+            sha256=reference.sha256,
+            size=reference.size,
+        )
         target = Path(temp_root) / normalize_posix_path(reference.relative_path)
-        atomic_write_bytes(target, payload_source.read_bytes(), allowed_root=Path(temp_root))
-        ledger.record(EffectKind.TEMP_FILE, target.absolute().as_posix(), sha256=measured_hash, size=measured_size)
+        self.authorize(reference, operation="export")
+        atomic_write_bytes(target, payload, allowed_root=Path(temp_root))
+        ledger.record(
+            EffectKind.TEMP_FILE,
+            target.absolute().as_posix(),
+            sha256=reference.sha256,
+            size=reference.size,
+        )
         return PreparedObject(
             artifact_id=reference.artifact_id,
             logical_key=reference.relative_path,
             path=target,
             temp_root=Path(temp_root),
-            sha256=measured_hash,
-            size=measured_size,
+            sha256=reference.sha256,
+            size=reference.size,
             source_id=reference.source_id,
             source_sha256=reference.source_sha256,
             decision_sha256=reference.decision_sha256,
@@ -376,6 +385,7 @@ class LfsStorageAdapter:
                 raise LfsIntegrityError(
                     f"Vorhandenes LFS-Ziel besitzt anderen Inhalt: {relative}"
                 )
+            self.authorize(prepared, operation="apply")
             return existing
 
         total_before = inventory_lfs_objects(self.repository_root)
@@ -397,13 +407,14 @@ class LfsStorageAdapter:
             total=total_after,
         )
 
+        pointer = LfsPointer(prepared.sha256, prepared.size).to_text().encode("utf-8")
+        self.authorize(prepared, operation="apply")
         if not object_exists:
             atomic_write_bytes(
                 object_path,
                 payload,
                 allowed_root=self.repository_root,
             )
-        pointer = LfsPointer(prepared.sha256, prepared.size).to_text().encode("utf-8")
         atomic_write_bytes(target, pointer, allowed_root=self.repository_root)
         ledger.record(EffectKind.REPOSITORY_FILE, relative, sha256=prepared.sha256, size=prepared.size)
         ledger.record(EffectKind.LFS, relative, sha256=prepared.sha256, size=prepared.size)
@@ -473,6 +484,7 @@ class LfsStorageAdapter:
         target, _relative = self._validated_source(
             self.repository_root / normalize_posix_path(reference.relative_path)
         )
+        self.authorize(reference, operation="verify")
         pointer = _pointer_from_path(target)
         if pointer is not None:
             if (pointer.oid, pointer.size) != (reference.sha256, reference.size):

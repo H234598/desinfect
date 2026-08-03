@@ -9,6 +9,7 @@ import pytest
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 from scripts.rki_pipeline.storage.base import StorageError, StorageIntent
 from scripts.rki_pipeline.storage.config import LfsConfig
+from scripts.rki_pipeline.storage import lfs as lfs_storage
 from scripts.rki_pipeline.storage.lfs import (
     LfsBudget,
     LfsBudgetError,
@@ -520,4 +521,111 @@ def test_lfs_materialize_validates_one_source_snapshot_before_temp_write(
         adapter.materialize(intent, temp_root=temp_root, ledger=ledger)
 
     assert tree_snapshot(temp_root) == before
+    assert ledger.events == []
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ("materialize", "export", "apply", "verify", "apply-idempotent"),
+)
+def test_lfs_intra_call_revocation_blocks_next_payload_effect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    storage_rights,
+    operation: str,
+) -> None:
+    repository = repository_with_tracking(tmp_path)
+    adapter = LfsStorageAdapter(
+        repository_root=repository,
+        config=config(),
+        authorizer=storage_rights.authorizer,
+    )
+    source_intent, prepared = materialized_pdf(tmp_path, adapter)
+    reference = None
+    if operation in {"export", "verify", "apply-idempotent"}:
+        reference = adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
+
+    destination = tmp_path / f"revoked-{operation}"
+    destination.mkdir()
+    (destination / "sentinel").write_bytes(b"keep")
+    mode = RunMode.APPLY if operation.startswith("apply") else RunMode.MATERIALIZE
+    ledger = EffectLedger(mode, temp_root=destination if mode is RunMode.MATERIALIZE else None)
+    repository_before = tree_snapshot(repository)
+    destination_before = tree_snapshot(destination)
+
+    def revoke() -> None:
+        storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))
+
+    if operation == "materialize":
+        original = lfs_storage.read_verified_payload
+
+        def read_then_revoke(*args, **kwargs):
+            payload = original(*args, **kwargs)
+            revoke()
+            return payload
+
+        monkeypatch.setattr(lfs_storage, "read_verified_payload", read_then_revoke)
+        action = lambda: adapter.materialize(
+            source_intent,
+            temp_root=destination,
+            ledger=ledger,
+        )
+    elif operation == "export":
+        original = lfs_storage.read_verified_payload
+
+        def read_then_revoke(*args, **kwargs):
+            result = original(*args, **kwargs)
+            revoke()
+            return result
+
+        monkeypatch.setattr(lfs_storage, "read_verified_payload", read_then_revoke)
+        action = lambda: adapter.export(
+            reference,
+            temp_root=destination,
+            ledger=ledger,
+        )
+    elif operation == "apply":
+        original = LfsStorageAdapter._prepared_payload
+
+        def read_prepared_then_revoke(subject):
+            payload = original(subject)
+            revoke()
+            return payload
+
+        monkeypatch.setattr(
+            LfsStorageAdapter,
+            "_prepared_payload",
+            staticmethod(read_prepared_then_revoke),
+        )
+        action = lambda: adapter.apply(prepared, ledger=ledger)
+    elif operation == "verify":
+        original = LfsStorageAdapter._validated_source
+
+        def validate_then_revoke(self, path):
+            result = original(self, path)
+            revoke()
+            return result
+
+        monkeypatch.setattr(LfsStorageAdapter, "_validated_source", validate_then_revoke)
+        action = lambda: adapter.verify(reference)
+    else:
+        original = LfsStorageAdapter.reference_for_path
+
+        def reference_then_revoke(self, *args, **kwargs):
+            result = original(self, *args, **kwargs)
+            revoke()
+            return result
+
+        monkeypatch.setattr(
+            LfsStorageAdapter,
+            "reference_for_path",
+            reference_then_revoke,
+        )
+        action = lambda: adapter.apply(prepared, ledger=ledger)
+
+    with pytest.raises(StorageError, match="Rechte|autorisiert"):
+        action()
+
+    assert tree_snapshot(repository) == repository_before
+    assert tree_snapshot(destination) == destination_before
     assert ledger.events == []

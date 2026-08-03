@@ -1,9 +1,12 @@
 """TDD contract for injected release/object clients without network access."""
 from __future__ import annotations
 
+from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass, field
 import hashlib
 from pathlib import Path
+import unicodedata
 
 import pytest
 
@@ -12,6 +15,7 @@ from scripts.rki_pipeline.storage.base import StorageBackend, StorageError, Stor
 from scripts.rki_pipeline.storage.config import ObjectConfig, ReleaseConfig
 from scripts.rki_pipeline.storage.object import ObjectStorageAdapter
 from scripts.rki_pipeline.storage.release import ReleaseStorageAdapter
+from scripts.rki_pipeline.storage import remote as remote_storage
 from scripts.rki_pipeline.storage.remote import RemoteStorageAdapter
 
 SOURCE_ID = "rki:176904/12345.2"
@@ -26,9 +30,14 @@ class MemoryClient:
     objects: dict[str, dict[str, object]] = field(default_factory=dict)
     calls: list[tuple[str, str]] = field(default_factory=list)
     get_failure: str | None = None
+    head_hook: Callable[[], None] | None = None
+    get_hook: Callable[[], None] | None = None
+    list_result: tuple[dict[str, object], ...] | None = None
 
     def head(self, key: str):
         self.calls.append(("head", key))
+        if self.head_hook is not None:
+            self.head_hook()
         value = self.objects.get(key)
         return None if value is None else {name: data for name, data in value.items() if name != "payload"}
 
@@ -43,6 +52,8 @@ class MemoryClient:
 
     def get(self, key: str, target_path: Path):
         self.calls.append(("get", key))
+        if self.get_hook is not None:
+            self.get_hook()
         if self.get_failure == "raise":
             target_path.write_bytes(b"partial")
             raise RuntimeError("injected get failure")
@@ -53,6 +64,8 @@ class MemoryClient:
 
     def list(self, prefix: str):
         self.calls.append(("list", prefix))
+        if self.list_result is not None:
+            return self.list_result
         return tuple(
             {"key": key, **{name: data for name, data in metadata.items() if name != "payload"}}
             for key, metadata in sorted(self.objects.items())
@@ -605,3 +618,173 @@ def test_remote_export_cleans_only_its_unique_partial_file(
         if path != preexisting_part and path.name.endswith(".part")
     ] == []
     assert ledger.events == []
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "materialize",
+        "export-before-get",
+        "export-before-write",
+        "apply",
+        "verify",
+        "apply-idempotent",
+    ),
+)
+def test_remote_intra_call_revocation_blocks_next_payload_effect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    storage_rights,
+    operation: str,
+) -> None:
+    client = MemoryClient()
+    adapter = object_adapter(client, storage_rights)
+    source_intent = intent(tmp_path)
+    prepared = None
+    reference = None
+    if operation != "materialize":
+        prepared_root = tmp_path / "prepared"
+        prepared_root.mkdir()
+        prepared = adapter.materialize(
+            source_intent,
+            temp_root=prepared_root,
+            ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=prepared_root),
+        )
+    if operation in {
+        "export-before-get",
+        "export-before-write",
+        "verify",
+        "apply-idempotent",
+    }:
+        reference = adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
+    client.calls.clear()
+
+    destination = tmp_path / f"revoked-{operation}"
+    destination.mkdir()
+    (destination / "sentinel").write_bytes(b"keep")
+    mode = RunMode.APPLY if operation.startswith("apply") else RunMode.MATERIALIZE
+    ledger = EffectLedger(mode, temp_root=destination if mode is RunMode.MATERIALIZE else None)
+    objects_before = deepcopy(client.objects)
+    destination_before = tree_snapshot(destination)
+
+    def revoke() -> None:
+        storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))
+
+    if operation == "materialize":
+        original = remote_storage.read_verified_payload
+
+        def read_then_revoke(*args, **kwargs):
+            payload = original(*args, **kwargs)
+            revoke()
+            return payload
+
+        monkeypatch.setattr(remote_storage, "read_verified_payload", read_then_revoke)
+        action = lambda: adapter.materialize(
+            source_intent,
+            temp_root=destination,
+            ledger=ledger,
+        )
+    elif operation == "export-before-get":
+        original = remote_storage.NamedTemporaryFile
+
+        def create_part_then_revoke(*args, **kwargs):
+            temporary = original(*args, **kwargs)
+            revoke()
+            return temporary
+
+        monkeypatch.setattr(
+            remote_storage,
+            "NamedTemporaryFile",
+            create_part_then_revoke,
+        )
+        action = lambda: adapter.export(
+            reference,
+            temp_root=destination,
+            ledger=ledger,
+        )
+    elif operation == "export-before-write":
+        client.get_hook = revoke
+        action = lambda: adapter.export(
+            reference,
+            temp_root=destination,
+            ledger=ledger,
+        )
+    elif operation == "apply":
+        client.head_hook = revoke
+        action = lambda: adapter.apply(prepared, ledger=ledger)
+    elif operation == "verify":
+        client.head_hook = revoke
+        action = lambda: adapter.verify(reference)
+    else:
+        head_calls = 0
+
+        def revoke_on_verify_head() -> None:
+            nonlocal head_calls
+            head_calls += 1
+            if head_calls == 2:
+                revoke()
+
+        client.head_hook = revoke_on_verify_head
+        action = lambda: adapter.apply(prepared, ledger=ledger)
+
+    with pytest.raises(StorageError, match="Rechte|autorisiert"):
+        action()
+
+    assert client.objects == objects_before
+    if operation.startswith("export"):
+        target = destination / reference.relative_path
+        assert not target.exists()
+        assert not tuple(destination.rglob("*.part"))
+        assert (destination / "sentinel").read_bytes() == b"keep"
+    else:
+        assert tree_snapshot(destination) == destination_before
+    assert ledger.events == []
+
+
+@pytest.mark.parametrize(
+    ("listed_key", "expected_key"),
+    (
+        ("rki/Bulletins", None),
+        ("rki/Bulletins-escape/archive.zip", None),
+        ("other/archive.zip", None),
+        ("rki/Bulletins/../archive.zip", None),
+        (
+            "rki/Bulletins/Jahre/1994/Cafe\u0301.zip",
+            "rki/Bulletins/Jahre/1994/Caf\u00e9.zip",
+        ),
+    ),
+)
+def test_remote_list_normalizes_strictly_confined_keys(
+    tmp_path: Path,
+    storage_rights,
+    listed_key: str,
+    expected_key: str | None,
+) -> None:
+    client = MemoryClient()
+    adapter = object_adapter(client, storage_rights)
+    prepared_root = tmp_path / "prepared-list"
+    prepared_root.mkdir()
+    prepared = adapter.materialize(
+        intent(tmp_path),
+        temp_root=prepared_root,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=prepared_root),
+    )
+    reference = adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
+    stored = client.objects[reference.relative_path]
+    client.list_result = (
+        {
+            "key": listed_key,
+            **{name: value for name, value in stored.items() if name != "payload"},
+        },
+    )
+    client.calls.clear()
+
+    if expected_key is None:
+        with pytest.raises(StorageError, match="Pfad|Prefix|Schl.ssel"):
+            adapter.list_references()
+    else:
+        listed = adapter.list_references()
+        assert listed[0].relative_path == unicodedata.normalize("NFC", expected_key)
+        assert listed[0].storage_object_id.endswith(f":{expected_key}")
+
+    assert client.calls == [("list", "rki/Bulletins")]

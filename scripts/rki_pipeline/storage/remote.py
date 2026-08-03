@@ -230,6 +230,7 @@ class RemoteStorageAdapter:
             size=intent.size,
         )
         target = Path(temp_root) / normalize_posix_path(intent.logical_key)
+        self.authorize(intent, operation="materialize")
         atomic_write_bytes(target, payload, allowed_root=Path(temp_root))
         ledger.record(EffectKind.TEMP_FILE, target.absolute().as_posix(), sha256=intent.sha256, size=intent.size)
         return PreparedObject(
@@ -266,12 +267,14 @@ class RemoteStorageAdapter:
         ) as handle:
             part = Path(handle.name)
         try:
+            self.authorize(reference, operation="export")
             self.client.get(reference.relative_path, part)
             payload = read_verified_payload(
                 part,
                 sha256=reference.sha256,
                 size=reference.size,
             )
+            self.authorize(reference, operation="export")
             atomic_write_bytes(target, payload, allowed_root=Path(temp_root))
         finally:
             part.unlink(missing_ok=True)
@@ -328,6 +331,7 @@ class RemoteStorageAdapter:
             if reference != expected:
                 raise StorageError(f"Remote-Konflikt für {key}")
             self.verify(reference)
+            self.authorize(prepared, operation="apply")
             return reference
 
         with TemporaryDirectory(prefix="desinfect-remote-upload-") as temporary:
@@ -335,10 +339,12 @@ class RemoteStorageAdapter:
                 prepared,
                 Path(temporary),
             )
+            metadata = self._metadata(prepared)
+            self.authorize(prepared, operation="apply")
             public_reference = self.client.put(
                 key,
                 snapshot,
-                self._metadata(prepared),
+                metadata,
             )
         ledger.record(
             self.effect_kind,
@@ -376,6 +382,7 @@ class RemoteStorageAdapter:
             raise StorageError(f"Remote-Metadaten driften: {reference.relative_path}")
         with TemporaryDirectory(prefix="desinfect-remote-verify-") as temporary:
             target = Path(temporary) / "payload.bin"
+            self.authorize(reference, operation="verify")
             self.client.get(reference.relative_path, target)
             measured_size, measured_hash = hash_file(target)
         if (measured_hash, measured_size) != (reference.sha256, reference.size):
@@ -388,7 +395,17 @@ class RemoteStorageAdapter:
         for metadata in self.client.list(self.prefix):
             if not isinstance(metadata, dict) or type(metadata.get("key")) is not str:
                 raise StorageError("Remote-Liste enthält ungültige Metadaten")
+            try:
+                key = normalize_posix_path(metadata["key"])
+            except ValueError as exc:
+                raise StorageError("Remote-Liste enthält ungültigen Pfad") from exc
+            if not key.startswith(f"{self.prefix}/"):
+                raise StorageError("Remote-Listenschlüssel liegt außerhalb des Prefix")
             references.append(
-                self._reference_from_metadata(metadata["key"], metadata, listed=True)
+                self._reference_from_metadata(
+                    key,
+                    {**metadata, "key": key},
+                    listed=True,
+                )
             )
         return tuple(sorted(references, key=lambda reference: reference.artifact_id))
