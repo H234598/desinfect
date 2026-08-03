@@ -289,7 +289,7 @@ Use canonical `stable_json_dumps`; strict load rejects symlinks, unknown files, 
 
 - [ ] **Step 4: Implement staged publication and no-op**
 
-Require exact materialize ledger/temp root. Reauthorize before reading existing output. Return no-op only after sidecar, hash, and ZIP all validate against the expected fingerprint. Otherwise build in `staged_directory(target, allowed_root=temp_root, replace_existing=True)`, validate staged pair, publish, then record two `TEMP_FILE` events. On error restore ledger length and let staging rollback.
+Require exact materialize ledger/temp root. Reauthorize before reading existing output. Return no-op only after sidecar, hash, and ZIP all validate against the expected fingerprint. Otherwise build in `staged_directory(target, allowed_root=temp_root, replace_existing=True)`, validate the staged pair, and record two tentative `TEMP_FILE` events while the staging context remains open. Only successful context exit publishes. On any record or publication error, restore the prior ledger length and let staging preserve the previous bundle.
 
 - [ ] **Step 5: Run focused tests and verify GREEN**
 

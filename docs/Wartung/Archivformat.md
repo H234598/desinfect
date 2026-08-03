@@ -78,10 +78,11 @@ vollständige Validierung bestehen. Dann bleiben mtimes und Ledger unverändert.
 Veraltete oder beschädigte reguläre Bundles werden vollständig neu gebaut.
 
 Neubau erfolgt in einem Generated-Staging-Verzeichnis unter dem expliziten
-`temp_root`. Erst ein vollständig validiertes Paar aus ZIP und Sidecar ersetzt atomar
-das Ziel. Fehler während Aufbau oder Staging entfernen die Stagingdaten, kürzen
-vorläufige Ledger-Ereignisse und bewahren das vorherige veröffentlichte Bundle. Zwei
-`TEMP_FILE`-Ereignisse werden erst nach atomarer Veröffentlichung aufgezeichnet.
+`temp_root`. Nach vollständiger Validierung von ZIP und Sidecar werden zwei
+`TEMP_FILE`-Ereignisse vorläufig aufgezeichnet, solange der Staging-Kontext noch offen
+ist. Erst dessen erfolgreicher Abschluss ersetzt das Ziel atomar. Jeder Fehler beim
+Aufzeichnen oder Veröffentlichen entfernt die Stagingdaten, kürzt die vorläufigen
+Ledger-Ereignisse und bewahrt das vorherige veröffentlichte Bundle.
 
 ## Offline-Smoke
 

@@ -8,6 +8,7 @@ from pathlib import Path
 import stat
 import struct
 import tempfile
+import tracemalloc
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
 
 import pytest
@@ -276,6 +277,38 @@ def _rewrite_archive_with_zip64_member(source: Path, destination: Path, member: 
                 handle.write(payload)
 
 
+def _add_zip64_end_records(source: Path, destination: Path) -> None:
+    payload = source.read_bytes()
+    eocd_offset = payload.rfind(b"PK\x05\x06")
+    assert eocd_offset >= 0
+    (
+        _signature,
+        disk_number,
+        central_disk,
+        disk_entries,
+        total_entries,
+        central_size,
+        central_offset,
+        comment_size,
+    ) = struct.unpack_from("<4s4H2IH", payload, eocd_offset)
+    assert (disk_number, central_disk, comment_size) == (0, 0, 0)
+    zip64_eocd = struct.pack(
+        "<4sQ2H2L4Q",
+        b"PK\x06\x06",
+        44,
+        45,
+        45,
+        0,
+        0,
+        disk_entries,
+        total_entries,
+        central_size,
+        central_offset,
+    )
+    locator = struct.pack("<4sLQL", b"PK\x06\x07", 0, eocd_offset, 1)
+    destination.write_bytes(payload[:eocd_offset] + zip64_eocd + locator + payload[eocd_offset:])
+
+
 def test_deterministic_archive_fingerprint_is_order_independent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -406,6 +439,31 @@ def test_archive_spec_rejects_malformed_archive_id(archive_id: str) -> None:
         _spec((), archive_id=archive_id)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("archive_id", "archive-A"),
+        ("archive_id", "ab"),
+        ("archive_id", "a" * 202),
+        ("period", "W01"),
+        ("period", "p" * 41),
+    ),
+)
+def test_archive_spec_rejects_sidecar_incompatible_identity_fields(
+    field: str, value: str
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        _spec((), **{field: value})
+
+
+def test_archive_entry_rejects_sidecar_incompatible_path_length(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry, _ = _prepared_entries(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="path"):
+        ArchiveEntry(path="P/" + "a" * 499, prepared=entry.prepared)
+
+
 @pytest.mark.parametrize("kind", ("week-epub", "week_pdf", ""))
 def test_archive_spec_rejects_malformed_kind(kind: str) -> None:
     with pytest.raises(ValueError, match="kind"):
@@ -450,6 +508,45 @@ def test_deterministic_builds_are_byte_identical(
     assert first.output_sha256 == second.output_sha256
     assert (tmp_path / "first.zip").read_bytes() == (tmp_path / "second.zip").read_bytes()
     assert first.entries == ("PDF/first.pdf", "PDF/second.pdf")
+
+
+def test_builder_streams_multiple_payloads_with_bounded_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base, _ = _prepared_entries(tmp_path, monkeypatch)
+    payload_size = 2 * 1024 * 1024
+    payload = b"x" * payload_size
+    entries: list[ArchiveEntry] = []
+    for index in range(4):
+        source = base.prepared.temp_root / f"stream-{index}.pdf"
+        source.write_bytes(payload)
+        entries.append(
+            ArchiveEntry(
+                path=f"PDF/stream-{index}.pdf",
+                prepared=replace(
+                    base.prepared,
+                    artifact_id=f"artifact-stream-{index}",
+                    logical_key=f"PDF/stream-{index}.pdf",
+                    path=source,
+                    sha256=hashlib.sha256(payload).hexdigest(),
+                    size=payload_size,
+                ),
+            )
+        )
+    del payload
+
+    tracemalloc.start()
+    try:
+        build_archive(
+            _spec(tuple(entries)),
+            tmp_path / "streamed.zip",
+            authorizer=_authorizer(tmp_path, monkeypatch),
+        )
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 5 * 1024 * 1024
 
 
 def test_deterministic_build_has_sorted_members_and_exact_metadata(
@@ -800,6 +897,25 @@ def test_security_builder_and_validator_enforce_size_limits(
         )
 
 
+@pytest.mark.parametrize("member", tuple(sorted(archive_module.RESERVED_MEMBERS)))
+def test_security_validator_rejects_oversized_internal_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, member: str
+) -> None:
+    entry, _ = _prepared_entries(tmp_path, monkeypatch)
+    source = tmp_path / "archive.zip"
+    build = build_archive(_spec((entry,)), source, authorizer=_authorizer(tmp_path, monkeypatch))
+    tampered = tmp_path / f"oversized-{member}.zip"
+    _rewrite_archive(source, tampered, replacements={member: b"x" * (16 * 1024)})
+
+    with pytest.raises(ArchiveSecurityError, match="Metadaten|metadata|Limit"):
+        validate_archive(
+            tampered,
+            expected_fingerprint=build.input_fingerprint,
+            expected_output_sha256=hashlib.sha256(tampered.read_bytes()).hexdigest(),
+            limits=ArchiveLimits(max_entries=1),
+        )
+
+
 def test_security_validator_rejects_excessive_compression_ratio(tmp_path: Path) -> None:
     archive_path = tmp_path / "ratio.zip"
     with ZipFile(archive_path, "w", compression=ZIP_DEFLATED) as archive:
@@ -825,6 +941,44 @@ def test_security_validator_rejects_zip64_version_fields(
         assert archive.getinfo(entry.path).extract_version == 45
 
     with pytest.raises(ArchiveSecurityError, match="Version|ZIP64"):
+        validate_archive(
+            tampered,
+            expected_fingerprint=build.input_fingerprint,
+            expected_output_sha256=hashlib.sha256(tampered.read_bytes()).hexdigest(),
+        )
+
+
+def test_security_validator_rejects_zip64_end_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry, _ = _prepared_entries(tmp_path, monkeypatch)
+    source = tmp_path / "archive.zip"
+    build = build_archive(_spec((entry,)), source, authorizer=_authorizer(tmp_path, monkeypatch))
+    tampered = tmp_path / "zip64-end.zip"
+    _add_zip64_end_records(source, tampered)
+    with ZipFile(tampered) as archive:
+        assert archive.read(entry.path) == b"first payload"
+
+    with pytest.raises(ArchiveSecurityError, match="ZIP64"):
+        validate_archive(
+            tampered,
+            expected_fingerprint=build.input_fingerprint,
+            expected_output_sha256=hashlib.sha256(tampered.read_bytes()).hexdigest(),
+        )
+
+
+def test_security_validator_rejects_prefixed_polyglot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry, _ = _prepared_entries(tmp_path, monkeypatch)
+    source = tmp_path / "archive.zip"
+    build = build_archive(_spec((entry,)), source, authorizer=_authorizer(tmp_path, monkeypatch))
+    tampered = tmp_path / "polyglot.zip"
+    tampered.write_bytes(b"MZ" + source.read_bytes())
+    with ZipFile(tampered) as archive:
+        assert archive.read(entry.path) == b"first payload"
+
+    with pytest.raises(ArchiveSecurityError, match="Präfix|Container"):
         validate_archive(
             tampered,
             expected_fingerprint=build.input_fingerprint,
@@ -1010,6 +1164,38 @@ def test_materialization_noop_preserves_mtimes_and_events(
     assert {
         path.name: path.stat().st_mtime_ns for path in second.root.iterdir() if path.is_file()
     } == before
+
+
+def test_materialization_noop_rejects_bundle_swap_after_inspection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _spec(_prepared_entries(tmp_path, monkeypatch))
+    materialize_archive(
+        spec,
+        tmp_path / "out",
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=_authorizer(tmp_path, monkeypatch),
+    )
+    real_inspect = archive_module._inspect_bundle_fd
+
+    def swap_after_inspection(*args: object, **kwargs: object) -> ArchiveBuild:
+        result = real_inspect(*args, **kwargs)
+        (tmp_path / "out").rename(tmp_path / "validated-out")
+        (tmp_path / "out").mkdir()
+        (tmp_path / "out" / "archive.zip").write_bytes(b"unchecked replacement")
+        return result
+
+    monkeypatch.setattr(archive_module, "_inspect_bundle_fd", swap_after_inspection)
+
+    with pytest.raises(ArchiveSecurityError, match="Identität|ausgetauscht"):
+        materialize_archive(
+            spec,
+            tmp_path / "out",
+            temp_root=tmp_path,
+            ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+            authorizer=_authorizer(tmp_path, monkeypatch),
+        )
 
 
 @pytest.mark.parametrize(
@@ -1245,52 +1431,18 @@ def test_materialization_rejects_unexpected_symlink_without_publication(
     assert not (tmp_path / ".out.backup").exists()
 
 
-def test_materialization_records_events_after_atomic_publication(
+def test_materialization_second_record_failure_preserves_old_bundle_and_ledger(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    spec = _spec(_prepared_entries(tmp_path, monkeypatch))
-    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
-    real_record = EffectLedger.record
-    observations: list[tuple[bool, bool, bool]] = []
-
-    def observe_record(
-        self: EffectLedger,
-        kind: EffectKind,
-        target: str,
-        *,
-        sha256: str | None = None,
-        size: int | None = None,
-    ) -> object:
-        path = Path(target)
-        exists = path.is_file()
-        payload = path.read_bytes() if exists else b""
-        observations.append(
-            (
-                exists,
-                size == len(payload),
-                sha256 == hashlib.sha256(payload).hexdigest(),
-            )
-        )
-        return real_record(self, kind, target, sha256=sha256, size=size)
-
-    monkeypatch.setattr(EffectLedger, "record", observe_record)
-
-    materialize_archive(
-        spec,
+    entries = _prepared_entries(tmp_path, monkeypatch)
+    first = materialize_archive(
+        _spec(entries),
         tmp_path / "out",
         temp_root=tmp_path,
-        ledger=ledger,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
         authorizer=_authorizer(tmp_path, monkeypatch),
     )
-
-    assert observations == [(True, True, True), (True, True, True)]
-    assert len(ledger.events) == 2
-
-
-def test_materialization_record_failure_leaves_no_partial_ledger(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    spec = _spec(_prepared_entries(tmp_path, monkeypatch))
+    before = {path.name: path.read_bytes() for path in first.root.iterdir() if path.is_file()}
     ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
     real_record = EffectLedger.record
     calls = 0
@@ -1314,13 +1466,12 @@ def test_materialization_record_failure_leaves_no_partial_ledger(
 
     with pytest.raises(RuntimeError, match="injected ledger failure"):
         materialize_archive(
-            spec,
+            _spec((_with_payload(entries[0], b"changed payload"), entries[1])),
             tmp_path / "out",
             temp_root=tmp_path,
             ledger=ledger,
             authorizer=_authorizer(tmp_path, monkeypatch),
         )
 
-    assert (tmp_path / "out" / "archive.zip").is_file()
-    assert (tmp_path / "out" / "archive-manifest.json").is_file()
+    assert {path.name: path.read_bytes() for path in first.root.iterdir() if path.is_file()} == before
     assert ledger.events == []

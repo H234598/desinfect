@@ -62,7 +62,7 @@ ARCHIVE_KINDS = frozenset(
     }
 )
 
-_ARCHIVE_ID = re.compile(r"^[a-z][a-z0-9]*(?:-[A-Za-z0-9.]+)*$")
+_ARCHIVE_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{2,200}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _VISIBILITIES = frozenset({"public", "repository_authorized", "internal", "restricted"})
 _ZIP_MIN = 315_532_800
@@ -70,10 +70,15 @@ _ZIP_MAX = 4_354_819_198
 _EXPECTED_MODE = stat.S_IFREG | 0o644
 _READ_FLAGS = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
 _ZIP_VERSION = 20
+_EOCD_SIZE = 22
+_CENTRAL_HEADER_SIZE = 46
 _BUNDLE_ZIP = "archive.zip"
 _BUNDLE_MANIFEST = "archive-manifest.json"
 _BUNDLE_FILES = frozenset({GENERATED_ROOT_SENTINEL, _BUNDLE_ZIP, _BUNDLE_MANIFEST})
 _MAX_SIDECAR_BYTES = 8 * 1024 * 1024
+_MAX_ENTRY_PATH_LENGTH = 500
+_METADATA_FIXED_BYTES = 4 * 1024
+_MAX_UTF8_BYTES_PER_CHARACTER = 4
 _PILOT_SOURCE_ID = "rki:176904/900000001"
 _PILOT_SOURCE_SHA256 = "4665c3b8cfa6de8d9792a8defb977bfd200465b513575419e0a88541000f5b2a"
 _PILOT_PAYLOAD = b"# Synthetic deterministic archive fixture\n"
@@ -122,6 +127,8 @@ class ArchiveEntry:
             raise ValueError("path muss ein String sein")
         if normalize_posix_path(self.path) != self.path:
             raise ValueError("path muss kanonisch sein")
+        if len(self.path) > _MAX_ENTRY_PATH_LENGTH:
+            raise ValueError("path überschreitet die Sidecar-Längengrenze")
         if type(self.prepared) is not PreparedObject:
             raise ValueError("prepared muss ein exaktes PreparedObject sein")
 
@@ -138,8 +145,8 @@ class ArchiveSpec:
     def __post_init__(self) -> None:
         if type(self.archive_id) is not str or _ARCHIVE_ID.fullmatch(self.archive_id) is None:
             raise ValueError("archive_id ist nicht kanonisch")
-        if type(self.period) is not str or not self.period:
-            raise ValueError("period muss ein nichtleerer String sein")
+        if type(self.period) is not str or not 4 <= len(self.period) <= 40:
+            raise ValueError("period muss 4 bis 40 Zeichen lang sein")
         if type(self.kind) is not str or self.kind not in ARCHIVE_KINDS:
             raise ValueError("kind ist unbekannt")
         if type(self.visibility) is not str or self.visibility not in _VISIBILITIES:
@@ -266,11 +273,11 @@ def build_archive(
     if destination.is_symlink():
         raise ArchiveSecurityError("Archivziel darf kein Symlink sein")
 
-    loaded = _load_authorized_entries(spec, authorizer=authorizer, limits=limits)
+    entries = _authorized_entries(spec, authorizer=authorizer, limits=limits)
     fingerprint = archive_input_fingerprint(spec)
     records = tuple(
         {"path": entry.path, "bytes": entry.prepared.size, "sha256": entry.prepared.sha256}
-        for entry, _ in loaded
+        for entry in entries
     )
     manifest = {
         "format_version": ARCHIVE_FORMAT_VERSION,
@@ -287,15 +294,21 @@ def build_archive(
         "README.md": _readme(manifest).encode("utf-8"),
         "SHA256SUMS.txt": _checksums(records).encode("utf-8"),
     }
-    payloads = {entry.path: payload for entry, payload in loaded}
+    entries_by_path = {entry.path: entry for entry in entries}
 
     try:
         with ZipFile(destination, "w", compression=ZIP_STORED, allowZip64=False) as archive:
-            for name in sorted((*metadata, *payloads)):
-                archive.writestr(
-                    _zip_info(name, spec.source_date_epoch),
-                    metadata[name] if name in metadata else payloads[name],
-                )
+            for name in sorted((*metadata, *entries_by_path)):
+                info = _zip_info(name, spec.source_date_epoch)
+                if name in metadata:
+                    archive.writestr(info, metadata[name])
+                    continue
+                entry = entries_by_path[name]
+                info.file_size = entry.prepared.size
+                with archive.open(info, "w", force_zip64=False) as target:
+                    _stream_prepared_payload(entry, write=target.write)
+    except ArchiveError:
+        raise
     except (OSError, BadZipFile, ValueError) as exc:
         raise ArchiveIntegrityError("Archiv konnte nicht geschrieben werden") from exc
 
@@ -314,7 +327,7 @@ def build_archive(
         input_fingerprint=fingerprint,
         output_sha256=output_sha256,
         size=archive_size,
-        entries=tuple(entry.path for entry, _ in loaded),
+        entries=tuple(entry.path for entry in entries),
     )
 
 
@@ -350,6 +363,7 @@ def validate_archive(
             raise ArchiveIntegrityError("Archivgröße änderte sich während der Hash-Prüfung")
         if output_sha256 != expected_output_sha256:
             raise ArchiveIntegrityError("Archiv-SHA-256 stimmt nicht mit dem erwarteten Ergebnis überein")
+        _preflight_zip_container(descriptor, measured_size, limits=limits)
 
         with os.fdopen(os.dup(descriptor), "rb") as archive_handle:
             with ZipFile(archive_handle) as archive:
@@ -411,7 +425,8 @@ def materialize_archive(
     bundle_root = root / Path(relative.as_posix())
 
     # A no-op is output mutation too: prove current rights and source identity first.
-    _load_authorized_entries(spec, authorizer=authorizer, limits=limits)
+    for entry in _authorized_entries(spec, authorizer=authorizer, limits=limits):
+        _stream_prepared_payload(entry)
     expected_fingerprint = archive_input_fingerprint(spec)
     try:
         existing = _load_existing_bundle(
@@ -478,13 +493,13 @@ def materialize_archive(
                     len(sidecar_bytes),
                 ),
             )
-        for event_path, event_sha256, event_size in pending_events:
-            ledger.record(
-                EffectKind.TEMP_FILE,
-                event_path.as_posix(),
-                sha256=event_sha256,
-                size=event_size,
-            )
+            for event_path, event_sha256, event_size in pending_events:
+                ledger.record(
+                    EffectKind.TEMP_FILE,
+                    event_path.as_posix(),
+                    sha256=event_sha256,
+                    size=event_size,
+                )
     except BaseException:
         del ledger.events[event_count:]
         raise
@@ -634,13 +649,29 @@ def _load_existing_bundle(
             except UnsafePathError as exc:
                 raise ArchiveSecurityError("Bestehendes Archiv-Bundle ist ein Symlink") from exc
             try:
-                return _inspect_bundle_fd(
+                inspected = _inspect_bundle_fd(
                     bundle_fd,
                     display_root=display_root,
                     spec=spec,
                     expected_fingerprint=expected_fingerprint,
                     limits=limits,
                 )
+                try:
+                    current = os.stat(relative.name, dir_fd=parent_fd, follow_symlinks=False)
+                    held = os.fstat(bundle_fd)
+                except OSError as exc:
+                    raise ArchiveSecurityError(
+                        "Bestehendes Archiv-Bundle wurde nach der Prüfung ausgetauscht"
+                    ) from exc
+                if (
+                    not stat.S_ISDIR(current.st_mode)
+                    or not stat.S_ISDIR(held.st_mode)
+                    or (current.st_dev, current.st_ino) != (held.st_dev, held.st_ino)
+                ):
+                    raise ArchiveSecurityError(
+                        "Bestehendes Archiv-Bundle änderte seine Identität nach der Prüfung"
+                    )
+                return inspected
             finally:
                 os.close(bundle_fd)
         finally:
@@ -782,17 +813,16 @@ def _write_bundle_file(bundle_fd: int, name: str, payload: bytes) -> None:
             os.close(descriptor)
 
 
-def _load_authorized_entries(
+def _authorized_entries(
     spec: ArchiveSpec,
     *,
     authorizer: RightsStorageAuthorizer,
     limits: ArchiveLimits,
-) -> tuple[tuple[ArchiveEntry, bytes], ...]:
+) -> tuple[ArchiveEntry, ...]:
     entries = tuple(sorted(spec.entries, key=lambda entry: entry.path))
     if len(entries) > limits.max_entries:
         raise ArchiveSecurityError("Anzahl der Archivmitglieder überschreitet das Limit")
     total = 0
-    loaded: list[tuple[ArchiveEntry, bytes]] = []
     for entry in entries:
         if entry.prepared.size > limits.max_member_bytes:
             raise ArchiveSecurityError(f"Mitglied {entry.path!r} überschreitet das Größenlimit")
@@ -803,12 +833,14 @@ def _load_authorized_entries(
             authorize_storage_operation(authorizer, entry.prepared, operation="archive")
         except StorageAuthorizationError as exc:
             raise ArchiveSecurityError(f"Rechteentscheidung für {entry.path!r} ist ungültig") from exc
-        payload = _read_prepared_payload(entry)
-        loaded.append((entry, payload))
-    return tuple(loaded)
+    return entries
 
 
-def _read_prepared_payload(entry: ArchiveEntry) -> bytes:
+def _stream_prepared_payload(
+    entry: ArchiveEntry,
+    *,
+    write: Any | None = None,
+) -> None:
     prepared = entry.prepared
     descriptor: int | None = None
     parent_descriptor: int | None = None
@@ -820,22 +852,33 @@ def _read_prepared_payload(entry: ArchiveEntry) -> bytes:
         with open_root_directory(prepared.temp_root) as root_descriptor:
             parent_descriptor = open_directory_beneath(root_descriptor, relative.parts[:-1])
             descriptor = os.open(relative.name, _READ_FLAGS, dir_fd=parent_descriptor)
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
+        initial = os.fstat(descriptor)
+        if not stat.S_ISREG(initial.st_mode):
             raise ArchiveSecurityError(f"Payloadquelle für {entry.path!r} ist keine reguläre Datei")
-        if metadata.st_size != prepared.size:
+        if initial.st_size != prepared.size:
             raise ArchiveIntegrityError(f"Payload {entry.path!r} hat eine unerwartete Größe")
         digest = hashlib.sha256()
-        chunks: list[bytes] = []
+        size = 0
         while chunk := os.read(descriptor, 1024 * 1024):
-            chunks.append(chunk)
+            size += len(chunk)
+            if size > prepared.size:
+                raise ArchiveIntegrityError(f"Payload {entry.path!r} wuchs während des Streamings")
             digest.update(chunk)
-        payload = b"".join(chunks)
-        if len(payload) != prepared.size or digest.hexdigest() != prepared.sha256:
+            if write is not None and write(chunk) != len(chunk):
+                raise ArchiveIntegrityError(f"Payload {entry.path!r} wurde nicht vollständig geschrieben")
+        final = os.fstat(descriptor)
+        current = os.stat(relative.name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if (
+            (initial.st_dev, initial.st_ino, initial.st_size, initial.st_mtime_ns)
+            != (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns)
+            or not stat.S_ISREG(current.st_mode)
+            or (final.st_dev, final.st_ino) != (current.st_dev, current.st_ino)
+        ):
+            raise ArchiveIntegrityError(f"Payload {entry.path!r} änderte ihre Identität beim Streaming")
+        if size != prepared.size or digest.hexdigest() != prepared.sha256:
             raise ArchiveIntegrityError(
                 f"Payload {entry.path!r} stimmt nicht mit PreparedObject überein"
             )
-        return payload
     except ArchiveError:
         raise
     except (OSError, UnsafePathError) as exc:
@@ -857,6 +900,92 @@ def _hash_descriptor(descriptor: int) -> tuple[int, str]:
         size += len(chunk)
         digest.update(chunk)
     return size, digest.hexdigest()
+
+
+def _read_descriptor_range(descriptor: int, offset: int, size: int) -> bytes:
+    chunks: list[bytes] = []
+    while size:
+        chunk = os.pread(descriptor, size, offset)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        offset += len(chunk)
+        size -= len(chunk)
+    return b"".join(chunks)
+
+
+def _preflight_zip_container(descriptor: int, size: int, *, limits: ArchiveLimits) -> None:
+    if size < _EOCD_SIZE:
+        raise ArchiveIntegrityError("ZIP-Endstruktur fehlt")
+    tail_offset = max(0, size - (_EOCD_SIZE + 0xFFFF))
+    tail = _read_descriptor_range(descriptor, tail_offset, size - tail_offset)
+    eocd_offset: int | None = None
+    eocd = b""
+    position = tail.rfind(b"PK\x05\x06")
+    while position >= 0:
+        candidate = tail[position : position + _EOCD_SIZE]
+        if len(candidate) == _EOCD_SIZE:
+            candidate_comment_size = struct.unpack_from("<H", candidate, 20)[0]
+            candidate_offset = tail_offset + position
+            if candidate_offset + _EOCD_SIZE + candidate_comment_size == size:
+                eocd_offset = candidate_offset
+                eocd = candidate
+                break
+        position = tail.rfind(b"PK\x05\x06", 0, position)
+    if eocd_offset is None:
+        raise ArchiveIntegrityError("ZIP-Endstruktur oder exakte Dateigrenze ist ungültig")
+    (
+        _signature,
+        disk_number,
+        central_disk,
+        disk_entries,
+        total_entries,
+        central_size,
+        central_offset,
+        comment_size,
+    ) = struct.unpack("<4s4H2IH", eocd)
+    if comment_size != 0:
+        raise ArchiveSecurityError("ZIP-Kommentar oder nachgelagerte Containerdaten sind unzulässig")
+    if disk_number != 0 or central_disk != 0 or disk_entries != total_entries:
+        raise ArchiveSecurityError("Mehrteilige ZIP-Container sind unzulässig")
+    if (
+        disk_entries == 0xFFFF
+        or total_entries == 0xFFFF
+        or central_size == 0xFFFFFFFF
+        or central_offset == 0xFFFFFFFF
+    ):
+        raise ArchiveSecurityError("ZIP64-Endstruktur ist unzulässig")
+    if eocd_offset >= 20 and _read_descriptor_range(descriptor, eocd_offset - 20, 4) == b"PK\x06\x07":
+        raise ArchiveSecurityError("ZIP64-EOCD-Locator ist unzulässig")
+    if total_entries > limits.max_entries + len(RESERVED_MEMBERS):
+        raise ArchiveSecurityError("Anzahl der Archivmitglieder überschreitet das Limit")
+
+    central_end = central_offset + central_size
+    if central_end != eocd_offset:
+        raise ArchiveSecurityError("ZIP-Container hat Präfix oder ungültige Central-Directory-Grenzen")
+    position = central_offset
+    first_local_offset: int | None = None
+    for _ in range(total_entries):
+        header = _read_descriptor_range(descriptor, position, _CENTRAL_HEADER_SIZE)
+        if len(header) != _CENTRAL_HEADER_SIZE or not header.startswith(b"PK\x01\x02"):
+            raise ArchiveIntegrityError("ZIP-Central-Directory ist unvollständig oder ungültig")
+        fields = struct.unpack("<4s6H3I5H2I", header)
+        compressed_size, file_size = fields[8], fields[9]
+        name_size, extra_size, member_comment_size, member_disk = fields[10:14]
+        local_offset = fields[16]
+        if member_disk != 0:
+            raise ArchiveSecurityError("Mehrteilige ZIP-Mitglieder sind unzulässig")
+        if compressed_size == 0xFFFFFFFF or file_size == 0xFFFFFFFF or local_offset == 0xFFFFFFFF:
+            raise ArchiveSecurityError("ZIP64-Central-Directory ist unzulässig")
+        position += _CENTRAL_HEADER_SIZE + name_size + extra_size + member_comment_size
+        if position > central_end:
+            raise ArchiveIntegrityError("ZIP-Central-Directory überschreitet seine deklarierte Grenze")
+        if first_local_offset is None or local_offset < first_local_offset:
+            first_local_offset = local_offset
+    if position != central_end:
+        raise ArchiveIntegrityError("ZIP-Central-Directory endet nicht an der deklarierten Grenze")
+    if first_local_offset not in (None, 0):
+        raise ArchiveSecurityError("ZIP-Container-Präfix ist unzulässig")
 
 
 def _verify_archive_identity(
@@ -966,7 +1095,12 @@ def _inspect_open_archive(
         expected_flag = 0 if info.filename.isascii() else 0x800
         if info.flag_bits != expected_flag:
             raise ArchiveSecurityError(f"ZIP-Mitglied {info.filename!r} hat unerwartete Flags")
-        if info.file_size > limits.max_member_bytes:
+        if info.filename in RESERVED_MEMBERS:
+            if info.file_size > _metadata_member_limit(info.filename, limits=limits):
+                raise ArchiveSecurityError(
+                    f"Internes Metadatenmitglied {info.filename!r} überschreitet sein Limit"
+                )
+        elif info.file_size > limits.max_member_bytes:
             raise ArchiveSecurityError(f"Mitglied {info.filename!r} überschreitet das Größenlimit")
         total += info.file_size
         if total > limits.max_total_bytes:
@@ -1102,13 +1236,21 @@ def _validate_local_header(archive: ZipFile, info: ZipInfo) -> None:
 def _read_member_bytes(archive: ZipFile, info: ZipInfo) -> bytes:
     try:
         with archive.open(info) as handle:
-            chunks = tuple(iter(lambda: handle.read(1024 * 1024), b""))
+            payload = handle.read(info.file_size + 1)
     except (BadZipFile, OSError, EOFError, RuntimeError) as exc:
         raise ArchiveIntegrityError(f"CRC oder Inhalt von {info.filename!r} ist beschädigt") from exc
-    payload = b"".join(chunks)
     if len(payload) != info.file_size:
         raise ArchiveIntegrityError(f"Mitglied {info.filename!r} wurde nicht vollständig gelesen")
     return payload
+
+
+def _metadata_member_limit(name: str, *, limits: ArchiveLimits) -> int:
+    maximum_path_bytes = _MAX_ENTRY_PATH_LENGTH * _MAX_UTF8_BYTES_PER_CHARACTER
+    if name == "README.md":
+        return _METADATA_FIXED_BYTES
+    if name == "SHA256SUMS.txt":
+        return _METADATA_FIXED_BYTES + limits.max_entries * (64 + 2 + maximum_path_bytes + 1)
+    return _METADATA_FIXED_BYTES + limits.max_entries * (maximum_path_bytes + 512)
 
 
 def _stream_member_identity(archive: ZipFile, info: ZipInfo) -> tuple[int, str]:
@@ -1173,7 +1315,7 @@ def _validate_manifest_shape(manifest: dict[str, Any]) -> None:
         raise ArchiveIntegrityError("Manifest-Formatversion ist unbekannt")
     if type(manifest["archive_id"]) is not str or _ARCHIVE_ID.fullmatch(manifest["archive_id"]) is None:
         raise ArchiveIntegrityError("Manifest-Archiv-ID ist nicht kanonisch")
-    if type(manifest["period"]) is not str or not manifest["period"]:
+    if type(manifest["period"]) is not str or not 4 <= len(manifest["period"]) <= 40:
         raise ArchiveIntegrityError("Manifest-Periode ist ungültig")
     if manifest["kind"] not in ARCHIVE_KINDS or type(manifest["kind"]) is not str:
         raise ArchiveIntegrityError("Manifest-Art ist unbekannt")
@@ -1203,7 +1345,11 @@ def _validate_manifest_shape(manifest: dict[str, Any]) -> None:
         if type(record) is not dict or set(record) != {"path", "bytes", "sha256"}:
             raise ArchiveIntegrityError("Manifest-Payload-Eintrag ist ungültig")
         name, byte_count, sha256 = record["path"], record["bytes"], record["sha256"]
-        if type(name) is not str or normalize_posix_path(name) != name:
+        if (
+            type(name) is not str
+            or normalize_posix_path(name) != name
+            or len(name) > _MAX_ENTRY_PATH_LENGTH
+        ):
             raise ArchiveIntegrityError("Manifest-Payload-Pfad ist nicht kanonisch")
         if type(byte_count) is not int or byte_count < 0:
             raise ArchiveIntegrityError("Manifest-Payload-Größe ist ungültig")
