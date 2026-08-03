@@ -9,7 +9,7 @@ import pytest
 
 SOURCE_SHA256 = "a" * 64
 OPTIONS_SHA256 = "b" * 64
-FINGERPRINT_SHA256 = "316fea4aac5ed8691386869d43dc2d89a92f658f516232ed89fbb129b528b234"
+FINGERPRINT_SHA256 = "f294e43694711cb2db6dbc71bdf26805ca504131fe6db2ae4b30e894ce3eedab"
 
 
 def _base_module():
@@ -44,6 +44,8 @@ def test_conversion_fingerprint_has_hand_checked_canonical_value() -> None:
 
     actual = base.conversion_fingerprint(
         source_sha256=SOURCE_SHA256,
+        converter="pdftotext-layout",
+        converter_version="25.05.0",
         options_sha256=OPTIONS_SHA256,
         toolchain=(tool,),
         runtime=runtime,
@@ -57,6 +59,8 @@ def test_conversion_fingerprint_changes_for_every_reproducibility_input() -> Non
     tool, runtime = _evidence()
     baseline = base.conversion_fingerprint(
         source_sha256=SOURCE_SHA256,
+        converter="pdftotext-layout",
+        converter_version="25.05.0",
         options_sha256=OPTIONS_SHA256,
         toolchain=(tool,),
         runtime=runtime,
@@ -64,6 +68,8 @@ def test_conversion_fingerprint_changes_for_every_reproducibility_input() -> Non
     second_tool = replace(tool, name="pdfinfo")
     variants = (
         {"source_sha256": "0" * 64},
+        {"converter": "pdftotext-plain"},
+        {"converter_version": "25.05.1"},
         {"options_sha256": "1" * 64},
         {"toolchain": (replace(tool, executable_sha256="2" * 64),)},
         {"toolchain": (tool, second_tool)},
@@ -86,6 +92,8 @@ def test_conversion_fingerprint_changes_for_every_reproducibility_input() -> Non
     for changed in variants:
         values = {
             "source_sha256": SOURCE_SHA256,
+            "converter": "pdftotext-layout",
+            "converter_version": "25.05.0",
             "options_sha256": OPTIONS_SHA256,
             "toolchain": (tool,),
             "runtime": runtime,
@@ -101,7 +109,7 @@ def test_conversion_identity_binds_document_bitstream_and_fingerprint() -> None:
         "rki-176904-12345-v2",
         "rki-bitstream-" + "1" * 64,
         FINGERPRINT_SHA256,
-    ) == "conv-41ed0e27745b85bd988ee5fba26182fada5f9c8eacdfd919b2085275eea33637"
+    ) == "conv-a7632e1e638770f8420f94dca8d7e842bd4ab0845a78a5ad9e05d73090f0980b"
 
 
 def test_evidence_is_immutable_sorted_and_contains_no_machine_paths() -> None:
@@ -124,6 +132,38 @@ def test_evidence_is_immutable_sorted_and_contains_no_machine_paths() -> None:
                 base.NamedDigest("a.ttf", "2" * 64),
             ),
         )
+
+
+@pytest.mark.parametrize(
+    "argument",
+    (
+        "--input=/tmp/input.pdf",
+        '-I/usr/include',
+        "file:///tmp/input.pdf",
+    ),
+)
+def test_evidence_rejects_embedded_machine_paths(argument: str) -> None:
+    base = _base_module()
+    tool, _runtime = _evidence()
+
+    with pytest.raises(base.EvidenceError, match="Maschinenpfad"):
+        replace(tool, argv=("pdftotext", argument))
+
+
+def test_evidence_allows_https_urls_but_only_fixed_public_environment() -> None:
+    base = _base_module()
+    tool, _runtime = _evidence()
+
+    assert replace(
+        tool,
+        version_output="documentation https://poppler.freedesktop.org/releases.html",
+    ).version_output.endswith("releases.html")
+    assert base.EnvironmentVariable("TZ", "UTC").to_dict() == {"name": "TZ", "value": "UTC"}
+
+    with pytest.raises(base.EvidenceError, match="Umgebungsvariable"):
+        base.EnvironmentVariable("GH_TOKEN", "secret")
+    with pytest.raises(base.EvidenceError, match="Umgebungsvariable"):
+        base.EnvironmentVariable("LANG", "de_DE.UTF-8")
 
 
 def test_ocr_evidence_captures_all_fingerprint_inputs() -> None:
@@ -162,6 +202,16 @@ def test_quality_accepts_boundary_and_reports_metrics() -> None:
     assert result.character_count == 80
     assert result.replacement_ratio == 0.0
     assert result.empty_pages == ()
+    assert result.reasons == ()
+
+
+def test_quality_accepts_exact_replacement_ratio_boundary() -> None:
+    quality = import_module("scripts.rki_pipeline.conversion.quality")
+
+    result = quality.assess_quality(("a" * 99 + "\ufffd",), expected_page_count=1)
+
+    assert result.quality == "good"
+    assert result.replacement_ratio == 0.01
     assert result.reasons == ()
 
 

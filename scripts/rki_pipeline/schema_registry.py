@@ -84,6 +84,8 @@ def validate_document(name: str, payload: dict[str, Any]) -> None:
             runtime = RuntimeEvidence.from_dict(payload["runtime"])
             expected_fingerprint = conversion_fingerprint(
                 source_sha256=payload["source_sha256"],
+                converter=payload["converter"],
+                converter_version=payload["converter_version"],
                 options_sha256=payload["options_sha256"],
                 toolchain=toolchain,
                 runtime=runtime,

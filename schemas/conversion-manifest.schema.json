@@ -2,12 +2,49 @@
   "$defs": {
     "environmentVariable": {
       "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "name": {
+              "const": "LANG"
+            },
+            "value": {
+              "const": "C.UTF-8"
+            }
+          }
+        },
+        {
+          "properties": {
+            "name": {
+              "const": "LC_ALL"
+            },
+            "value": {
+              "const": "C.UTF-8"
+            }
+          }
+        },
+        {
+          "properties": {
+            "name": {
+              "const": "TZ"
+            },
+            "value": {
+              "const": "UTC"
+            }
+          }
+        }
+      ],
       "properties": {
         "name": {
-          "pattern": "^[A-Z_][A-Z0-9_]*$",
+          "enum": [
+            "LANG",
+            "LC_ALL",
+            "TZ"
+          ],
           "type": "string"
         },
         "value": {
+          "maxLength": 7,
           "minLength": 1,
           "type": "string"
         }
@@ -138,6 +175,7 @@
           "items": {
             "$ref": "#/$defs/environmentVariable"
           },
+          "maxItems": 3,
           "type": "array"
         },
         "executable_sha256": {
@@ -252,6 +290,7 @@
           "state": {
             "enum": [
               "converted",
+              "needs_review",
               "skipped_unchanged"
             ]
           }
@@ -265,9 +304,124 @@
         "properties": {
           "output_sha256": {
             "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance_state": {
+            "const": "current"
           },
-          "storage_reference": {
-            "type": "string"
+          "state": {
+            "const": "converted"
+          }
+        },
+        "required": [
+          "provenance_state",
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "quality": {
+            "const": "good"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance_state": {
+            "const": "current"
+          },
+          "state": {
+            "const": "needs_review"
+          }
+        },
+        "required": [
+          "provenance_state",
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "quality": {
+            "const": "needs_review"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance_state": {
+            "const": "current"
+          },
+          "state": {
+            "const": "failed"
+          }
+        },
+        "required": [
+          "provenance_state",
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "quality": {
+            "const": "failed"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance_state": {
+            "const": "current"
+          },
+          "state": {
+            "const": "not_materialized"
+          }
+        },
+        "required": [
+          "provenance_state",
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "quality": {
+            "const": "not_assessed"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance_state": {
+            "const": "current"
+          },
+          "state": {
+            "const": "skipped_unchanged"
+          }
+        },
+        "required": [
+          "provenance_state",
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "quality": {
+            "enum": [
+              "good",
+              "needs_review"
+            ]
           }
         }
       }

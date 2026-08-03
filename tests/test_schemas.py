@@ -38,7 +38,7 @@ def _storage_reference_payload() -> dict[str, object]:
 def _conversion_manifest_payload() -> dict[str, object]:
     return {
         "schema_version": "1.1.0",
-        "conversion_id": "conv-41ed0e27745b85bd988ee5fba26182fada5f9c8eacdfd919b2085275eea33637",
+        "conversion_id": "conv-a7632e1e638770f8420f94dca8d7e842bd4ab0845a78a5ad9e05d73090f0980b",
         "document_id": "rki-176904-12345-v2",
         "bitstream_id": "rki-bitstream-" + "1" * 64,
         "source_sha256": "a" * 64,
@@ -65,7 +65,7 @@ def _conversion_manifest_payload() -> dict[str, object]:
             "shared_libraries": [{"name": "libpoppler.so.140", "sha256": "e" * 64}],
             "fonts": [{"name": "DejaVuSans.ttf", "sha256": "f" * 64}],
         },
-        "fingerprint_sha256": "316fea4aac5ed8691386869d43dc2d89a92f658f516232ed89fbb129b528b234",
+        "fingerprint_sha256": "f294e43694711cb2db6dbc71bdf26805ca504131fe6db2ae4b30e894ce3eedab",
         "output_sha256": "c" * 64,
         "storage_reference": "markdown-rki-176904-12345-v2",
         "state": "converted",
@@ -308,13 +308,27 @@ def test_conversion_manifest_rejects_tampered_derived_identity(field: str) -> No
         validate_document("conversion-manifest", payload)
 
 
-@pytest.mark.parametrize("state", ["converted", "skipped_unchanged"])
-def test_materialized_conversion_requires_output_and_storage_reference(state: str) -> None:
+@pytest.mark.parametrize(
+    ("state", "quality"),
+    [
+        ("converted", "good"),
+        ("skipped_unchanged", "good"),
+        ("skipped_unchanged", "needs_review"),
+        ("needs_review", "needs_review"),
+    ],
+)
+def test_materialized_conversion_requires_output_but_accepts_no_storage_reference(
+    state: str,
+    quality: str,
+) -> None:
     payload = _conversion_manifest_payload()
     payload["state"] = state
-    payload["output_sha256"] = None
+    payload["quality"] = quality
     payload["storage_reference"] = None
 
+    validate_document("conversion-manifest", payload)
+
+    payload["output_sha256"] = None
     with pytest.raises(SchemaContractError):
         validate_document("conversion-manifest", payload)
 
@@ -324,6 +338,53 @@ def test_unmaterialized_conversion_rejects_output_and_storage_reference(state: s
     payload = _conversion_manifest_payload()
     payload["state"] = state
     payload["quality"] = "failed" if state == "failed" else "not_assessed"
+
+    with pytest.raises(SchemaContractError):
+        validate_document("conversion-manifest", payload)
+
+
+@pytest.mark.parametrize(
+    ("state", "quality", "output_sha256", "storage_reference"),
+    [
+        ("converted", "needs_review", "c" * 64, None),
+        ("needs_review", "good", "c" * 64, None),
+        ("failed", "good", None, None),
+        ("not_materialized", "good", None, None),
+        ("skipped_unchanged", "failed", "c" * 64, None),
+    ],
+)
+def test_conversion_manifest_rejects_state_quality_drift(
+    state: str,
+    quality: str,
+    output_sha256: str | None,
+    storage_reference: str | None,
+) -> None:
+    payload = _conversion_manifest_payload()
+    payload.update(
+        state=state,
+        quality=quality,
+        output_sha256=output_sha256,
+        storage_reference=storage_reference,
+    )
+
+    with pytest.raises(SchemaContractError):
+        validate_document("conversion-manifest", payload)
+
+
+@pytest.mark.parametrize("field", ["converter", "converter_version"])
+def test_conversion_manifest_binds_converter_identity_into_fingerprint(field: str) -> None:
+    payload = _conversion_manifest_payload()
+    payload[field] = "tampered"
+
+    with pytest.raises(SchemaContractError, match="Fingerprint"):
+        validate_document("conversion-manifest", payload)
+
+
+def test_conversion_manifest_rejects_nonfixed_environment_evidence() -> None:
+    payload = _conversion_manifest_payload()
+    payload["toolchain"][0]["environment"] = [  # type: ignore[index]
+        {"name": "GH_TOKEN", "value": "secret"}
+    ]
 
     with pytest.raises(SchemaContractError):
         validate_document("conversion-manifest", payload)

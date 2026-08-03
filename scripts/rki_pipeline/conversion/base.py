@@ -11,9 +11,13 @@ from scripts.rki_pipeline.io_utils import sha256_bytes, stable_json_dumps
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _DOCUMENT_ID = re.compile(r"^rki-176904-[0-9]+-v[1-9][0-9]*$")
 _BITSTREAM_ID = re.compile(r"^rki-bitstream-[0-9a-f]{64}$")
-_ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 _LANGUAGE = re.compile(r"^[a-z]{3}$")
-_ABSOLUTE_PATH = re.compile(r"(?:^|[\s=])(?:/|[A-Za-z]:[\\/])")
+_HTTPS_URL = re.compile(r"https://[^\s\"'<>]+")
+_FIXED_ENVIRONMENT = {
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "TZ": "UTC",
+}
 
 
 class EvidenceError(ValueError):
@@ -33,7 +37,8 @@ def _sha256(value: object, field: str) -> str:
 
 
 def _without_machine_path(value: str, field: str) -> None:
-    if "\\" in value or _ABSOLUTE_PATH.search(value):
+    without_https_urls = _HTTPS_URL.sub("", value)
+    if "/" in without_https_urls or "\\" in without_https_urls:
         raise EvidenceError(f"{field} enthält einen Maschinenpfad")
 
 
@@ -75,10 +80,9 @@ class EnvironmentVariable:
     value: str
 
     def __post_init__(self) -> None:
-        if type(self.name) is not str or _ENV_NAME.fullmatch(self.name) is None:
-            raise EvidenceError("Umgebungsvariablenname ist ungültig")
         _text(self.value, f"environment.{self.name}")
-        _without_machine_path(self.value, f"environment.{self.name}")
+        if type(self.name) is not str or _FIXED_ENVIRONMENT.get(self.name) != self.value:
+            raise EvidenceError("Umgebungsvariable ist nicht Teil der festen Laufzeitumgebung")
 
     def to_dict(self) -> dict[str, str]:
         return {"name": self.name, "value": self.value}
@@ -233,6 +237,8 @@ class RuntimeEvidence:
 def conversion_fingerprint(
     *,
     source_sha256: str,
+    converter: str,
+    converter_version: str,
     options_sha256: str,
     toolchain: tuple[ToolEvidence, ...],
     runtime: RuntimeEvidence,
@@ -240,6 +246,10 @@ def conversion_fingerprint(
     """Hash every input that can change deterministic conversion output."""
 
     _sha256(source_sha256, "source_sha256")
+    _text(converter, "converter")
+    _without_machine_path(converter, "converter")
+    _text(converter_version, "converter_version")
+    _without_machine_path(converter_version, "converter_version")
     _sha256(options_sha256, "options_sha256")
     tools = _tuple(toolchain, "toolchain")
     if not tools or not all(isinstance(item, ToolEvidence) for item in tools):
@@ -248,6 +258,8 @@ def conversion_fingerprint(
         raise EvidenceError("runtime muss RuntimeEvidence sein")
     payload = {
         "source_sha256": source_sha256,
+        "converter": converter,
+        "converter_version": converter_version,
         "options_sha256": options_sha256,
         "toolchain": [item.to_dict() for item in tools],
         "runtime": runtime.to_dict(),
