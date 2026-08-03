@@ -157,6 +157,8 @@ def test_prepared_object_provenance_roundtrips_without_loss(tmp_path: Path) -> N
         source_id="rki:176904/12345.2",
         source_sha256="b" * 64,
         decision_sha256="c" * 64,
+        document_id="rki-176904-12345-v2",
+        conversion_id="conv-" + "d" * 64,
         visibility="repository_authorized",
         rights_state="approved",
     )
@@ -166,6 +168,8 @@ def test_prepared_object_provenance_roundtrips_without_loss(tmp_path: Path) -> N
     assert payload["source_id"] == "rki:176904/12345.2"
     assert payload["source_sha256"] == "b" * 64
     assert payload["decision_sha256"] == "c" * 64
+    assert payload["document_id"] == "rki-176904-12345-v2"
+    assert payload["conversion_id"] == "conv-" + "d" * 64
     assert _prepared_objects({"objects": [payload]}) == (prepared,)
 
 

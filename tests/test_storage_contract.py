@@ -20,6 +20,8 @@ from scripts.rki_pipeline.storage.factory import build_storage_adapter
 SOURCE_ID = "rki:176904/12345.2"
 SOURCE_SHA256 = "b" * 64
 DECISION_SHA256 = "c" * 64
+DOCUMENT_ID = "rki-176904-12345-v2"
+CONVERSION_ID = "conv-" + "d" * 64
 
 
 def write_config(tmp_path: Path, text: str) -> Path:
@@ -65,11 +67,15 @@ def test_storage_intent_hashes_without_writing(tmp_path: Path) -> None:
         source_id=SOURCE_ID,
         source_sha256=SOURCE_SHA256,
         decision_sha256=DECISION_SHA256,
+        document_id=DOCUMENT_ID,
+        conversion_id=CONVERSION_ID,
         visibility="repository_authorized",
         rights_state="approved",
     )
     assert intent.sha256 == hashlib.sha256(b"payload").hexdigest()
     assert intent.size == 7
+    assert intent.document_id == DOCUMENT_ID
+    assert intent.conversion_id == CONVERSION_ID
     assert sorted(path.name for path in tmp_path.iterdir()) == before
 
 
@@ -149,10 +155,14 @@ def test_prepared_object_must_be_beneath_temp_root(tmp_path: Path) -> None:
         source_id=SOURCE_ID,
         source_sha256=SOURCE_SHA256,
         decision_sha256=DECISION_SHA256,
+        document_id=None,
+        conversion_id=None,
         visibility="repository_authorized",
         rights_state="approved",
     )
     assert prepared.path == prepared_path
+    assert prepared.document_id is None
+    assert prepared.conversion_id is None
     with pytest.raises(ValueError, match="temp_root"):
         PreparedObject(
             artifact_id="artifact-1",

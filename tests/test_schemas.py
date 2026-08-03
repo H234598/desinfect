@@ -9,6 +9,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from scripts.rki_pipeline.schema_registry import SchemaContractError, load_registry, load_schema, validate_document
+from scripts import validate_schemas
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -120,6 +121,33 @@ def test_current_storage_reference_accepts_nullable_document_and_conversion_link
     payload["conversion_id"] = None
 
     validate_document("storage-reference", payload)
+
+
+def test_schema_validator_checks_storage_reference_predecessor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Removing the storage 1.0 migration check must expose a corrupt predecessor."""
+
+    fixture_root = tmp_path / "tests" / "fixtures" / "schemas"
+    fixture_root.mkdir(parents=True)
+    (tmp_path / "status.json").write_bytes((ROOT / "status.json").read_bytes())
+    for name in (
+        "status-v2.json",
+        "source-manifest-v1.0.json",
+        "document-manifest-v1.0.json",
+    ):
+        (fixture_root / name).write_bytes(
+            (ROOT / "tests" / "fixtures" / "schemas" / name).read_bytes()
+        )
+    (fixture_root / "storage-reference-v1.0.json").write_text(
+        '{"schema_version":"0.9.0"}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(validate_schemas, "ROOT", tmp_path)
+
+    with pytest.raises(SchemaContractError, match="weder aktuell noch"):
+        validate_schemas.validate()
 
 
 @pytest.mark.parametrize(

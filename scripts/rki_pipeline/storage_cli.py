@@ -164,6 +164,8 @@ def _prepared_objects(payload: dict[str, object]) -> tuple[PreparedObject, ...]:
                 source_id=_string(item, "source_id"),
                 source_sha256=_string(item, "source_sha256"),
                 decision_sha256=_string(item, "decision_sha256"),
+                document_id=_nullable_string(item, "document_id"),
+                conversion_id=_nullable_string(item, "conversion_id"),
                 visibility=_string(item, "visibility"),
                 rights_state=_string(item, "rights_state"),
             )
@@ -182,6 +184,8 @@ def _prepared_object_payload(item: PreparedObject) -> dict[str, object]:
         "source_id": item.source_id,
         "source_sha256": item.source_sha256,
         "decision_sha256": item.decision_sha256,
+        "document_id": item.document_id,
+        "conversion_id": item.conversion_id,
         "visibility": item.visibility,
         "rights_state": item.rights_state,
     }

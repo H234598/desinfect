@@ -117,6 +117,8 @@ class StorageIntent:
     decision_sha256: str
     visibility: str
     rights_state: str
+    document_id: str | None = None
+    conversion_id: str | None = None
 
     def __post_init__(self) -> None:
         _validate_common(
@@ -133,6 +135,8 @@ class StorageIntent:
             decision_sha256=self.decision_sha256,
             required=True,
         )
+        _validate_nullable_id(self.document_id, name="document_id", pattern=_DOCUMENT_ID)
+        _validate_nullable_id(self.conversion_id, name="conversion_id", pattern=_CONVERSION_ID)
         if not isinstance(self.source_path, Path):
             raise ValueError("source_path muss ein pathlib.Path sein")
 
@@ -141,6 +145,7 @@ class StorageIntent:
         cls, source_path: Path, *, artifact_id: str, logical_key: str,
         source_id: str, source_sha256: str, decision_sha256: str,
         visibility: str, rights_state: str,
+        document_id: str | None = None, conversion_id: str | None = None,
     ) -> StorageIntent:
         size, sha256 = hash_file(source_path)
         return cls(
@@ -154,6 +159,8 @@ class StorageIntent:
             decision_sha256=decision_sha256,
             visibility=visibility,
             rights_state=rights_state,
+            document_id=document_id,
+            conversion_id=conversion_id,
         )
 
 
@@ -172,6 +179,8 @@ class PreparedObject:
     decision_sha256: str
     visibility: str
     rights_state: str
+    document_id: str | None = None
+    conversion_id: str | None = None
 
     def __post_init__(self) -> None:
         _validate_common(
@@ -188,6 +197,8 @@ class PreparedObject:
             decision_sha256=self.decision_sha256,
             required=True,
         )
+        _validate_nullable_id(self.document_id, name="document_id", pattern=_DOCUMENT_ID)
+        _validate_nullable_id(self.conversion_id, name="conversion_id", pattern=_CONVERSION_ID)
         root = Path(os.path.abspath(self.temp_root))
         path = Path(os.path.abspath(self.path))
         try:

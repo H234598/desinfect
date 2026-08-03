@@ -39,6 +39,7 @@ def validate() -> None:
         "status": "status-v2.json",
         "source-manifest": "source-manifest-v1.0.json",
         "document-manifest": "document-manifest-v1.0.json",
+        "storage-reference": "storage-reference-v1.0.json",
     }
     for name, fixture_name in predecessors.items():
         predecessor = json.loads(
@@ -67,5 +68,5 @@ if __name__ == "__main__":
     print(
         "schema family: ok; 12 contracts; Draft 2020-12; "
         "status 2.0.0 -> 3.0.0; source-manifest 1.0.0 -> 1.1.0; "
-        "document-manifest 1.0.0 -> 1.1.0"
+        "document-manifest 1.0.0 -> 1.1.0; storage-reference 1.0.0 -> 1.1.0"
     )
