@@ -1,8 +1,37 @@
 {
-  "$id": "https://h234598.github.io/desinfect/schemas/source-manifest-1.0.0.json",
+  "$id": "https://h234598.github.io/desinfect/schemas/source-manifest-1.1.0.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "bitstream_id": {
+      "pattern": "^rki-bitstream-[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "bitstream_url": {
+      "format": "uri",
+      "pattern": "^https://edoc\\.rki\\.de/bitstream/handle/176904/[0-9]+(?:\\.[0-9]+)?/[A-Za-z0-9._~%/-]+\\.pdf(?:\\?sequence=[1-9][0-9]*)?$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "bitstream_version": {
+      "minimum": 1,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "decision_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "etag": {
       "maxLength": 500,
       "type": [
@@ -25,6 +54,12 @@
     "publication_date": {
       "format": "date",
       "type": "string"
+    },
+    "provenance_state": {
+      "enum": [
+        "current",
+        "legacy_needs_review"
+      ]
     },
     "rights": {
       "additionalProperties": false,
@@ -71,12 +106,57 @@
       ],
       "type": "object"
     },
+    "rights_evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "copyright_notice": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "license_url": {
+          "format": "uri",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "open_access": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "label",
+        "license_url",
+        "copyright_notice",
+        "open_access"
+      ],
+      "type": "object"
+    },
     "schema_version": {
-      "const": "1.0.0"
+      "const": "1.1.0"
     },
     "sha256": {
       "pattern": "^[0-9a-f]{64}$",
       "type": "string"
+    },
+    "same_content_as": {
+      "items": {
+        "pattern": "^rki-bitstream-[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
     },
     "source_id": {
       "pattern": "^rki:[A-Za-z0-9./_-]{3,160}$",
@@ -108,7 +188,14 @@
     "etag",
     "last_modified",
     "sha256",
-    "rights"
+    "rights",
+    "provenance_state",
+    "bitstream_id",
+    "bitstream_url",
+    "bitstream_version",
+    "rights_evidence",
+    "decision_sha256",
+    "same_content_as"
   ],
   "title": "Desinfect source manifest",
   "type": "object"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import date
 import json
 from pathlib import Path
 from typing import Any, Callable
@@ -136,8 +137,66 @@ def migrate_status_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def migrate_source_manifest_v1_0_to_v1_1(payload: dict[str, Any]) -> dict[str, Any]:
+    """Migrate exactly source-manifest 1.0.0 without inventing missing evidence."""
+
+    if payload.get("schema_version") != "1.0.0":
+        raise SchemaContractError(f"Nicht unterstützte Source-Manifest-Migration: {payload.get('schema_version')!r}")
+    result = deepcopy(payload)
+    result.update(
+        {
+            "schema_version": "1.1.0",
+            "provenance_state": "legacy_needs_review",
+            "bitstream_id": None,
+            "bitstream_url": None,
+            "bitstream_version": None,
+            "rights_evidence": {
+                "label": None,
+                "license_url": None,
+                "copyright_notice": None,
+                "open_access": None,
+            },
+            "decision_sha256": None,
+            "same_content_as": [],
+        }
+    )
+    validate_document("source-manifest", result)
+    return result
+
+
+def migrate_document_manifest_v1_0_to_v1_1(payload: dict[str, Any]) -> dict[str, Any]:
+    """Migrate exactly document-manifest 1.0.0 and derive calendar periods."""
+
+    if payload.get("schema_version") != "1.0.0":
+        raise SchemaContractError(f"Nicht unterstützte Document-Manifest-Migration: {payload.get('schema_version')!r}")
+    result = deepcopy(payload)
+    try:
+        published = date.fromisoformat(result["publication_date"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SchemaContractError("Document-Manifest braucht ein ISO-Publikationsdatum") from exc
+    iso_year, iso_week, _ = published.isocalendar()
+    result.update(
+        {
+            "schema_version": "1.1.0",
+            "provenance_state": "legacy_needs_review",
+            "bitstream_id": None,
+            "bitstream_version": None,
+            "canonical_periods": {
+                "week": f"{iso_year:04d}-W{iso_week:02d}",
+                "month": f"{published.year:04d}-{published.month:02d}",
+                "year": published.year,
+            },
+            "superseded_by": None,
+        }
+    )
+    validate_document("document-manifest", result)
+    return result
+
+
 MIGRATIONS: dict[tuple[str, str, str], Callable[[dict[str, Any]], dict[str, Any]]] = {
     ("status", "2.0.0", "3.0.0"): migrate_status_v2_to_v3,
+    ("source-manifest", "1.0.0", "1.1.0"): migrate_source_manifest_v1_0_to_v1_1,
+    ("document-manifest", "1.0.0", "1.1.0"): migrate_document_manifest_v1_0_to_v1_1,
 }
 
 

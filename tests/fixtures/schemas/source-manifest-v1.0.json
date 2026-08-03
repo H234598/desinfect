@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0.0",
+  "source_id": "rki:176904/12345.2",
+  "handle": "176904/12345.2",
+  "version": 2,
+  "source_url": "https://edoc.rki.de/handle/176904/12345.2",
+  "title": "Synthetic bulletin",
+  "publication_date": "1996-03-22",
+  "etag": null,
+  "last_modified": null,
+  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "rights": {
+    "state": "unknown",
+    "basis": "unreviewed",
+    "reviewed_at": null,
+    "reviewed_by": null
+  }
+}
