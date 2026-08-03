@@ -798,8 +798,11 @@ def _materialize_locked(
     rendered = render_manifest_catalog(graph)
     target = root / "rki" / "Bulletins" / "Manifeste"
     if target.exists():
-        loaded = load_manifest_catalog(target, authorizer=authorizer)
-        if loaded.rendered == rendered:
+        try:
+            loaded = load_manifest_catalog(target, authorizer=authorizer)
+        except ManifestCatalogError:
+            loaded = None
+        if loaded is not None and loaded.rendered == rendered:
             return ManifestCatalogResult(root=target, rendered=rendered, changed=False)
 
     event_count = len(ledger.events)

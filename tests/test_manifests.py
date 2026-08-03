@@ -699,6 +699,31 @@ def test_catalog_materialization_is_atomic_and_noop_preserves_mtimes(
     assert {path: (first.root / path).read_bytes() for path, _ in first.rendered.files} == original
 
 
+def test_catalog_materialization_replaces_corrupt_snapshot(tmp_path: Path) -> None:
+    from scripts.rki_pipeline import manifests
+
+    first = manifests.materialize_manifest_catalog(
+        _build(),
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=_authorizer(),
+    )
+    (first.root / "Quellen/manifest.jsonl").write_bytes(b"corrupt\n")
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+
+    repaired = manifests.materialize_manifest_catalog(
+        _build(),
+        temp_root=tmp_path,
+        ledger=ledger,
+        authorizer=_authorizer(),
+    )
+
+    assert repaired.changed is True
+    assert repaired.rendered == first.rendered
+    assert len(ledger.events) == 5
+    assert manifests.load_manifest_catalog(repaired.root, authorizer=_authorizer()).rendered == first.rendered
+
+
 def test_concurrent_catalog_materializers_are_serialized(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
