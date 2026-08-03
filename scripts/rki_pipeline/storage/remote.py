@@ -42,7 +42,12 @@ _REMOTE_METADATA_FIELDS = frozenset(
 
 @runtime_checkable
 class RemoteClient(Protocol):
-    """Minimal client port implemented by release and object integrations."""
+    """Minimal client port implemented by release and object integrations.
+
+    ``put`` atomically persists supplied metadata plus ``public_reference`` set
+    to its return value. The stored object is owned by ``rollback_token`` until
+    the adapter completes verification.
+    """
 
     def head(self, key: str) -> dict[str, Any] | None: ...
     def put(
@@ -181,7 +186,6 @@ class RemoteStorageAdapter:
             "provenance_state": "current",
             "visibility": subject.visibility,
             "rights_state": subject.rights_state,
-            "public_reference": None,
         }
 
     def _expected_reference(
