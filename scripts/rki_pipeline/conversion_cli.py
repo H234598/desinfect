@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 from pathlib import Path
 import tempfile
 
@@ -24,7 +23,12 @@ from scripts.rki_pipeline.rights import (
     resolve_rights,
 )
 from scripts.rki_pipeline.run_modes import EffectLedger, RunMode
-from scripts.rki_pipeline.storage.base import RightsStorageAuthorizer, StorageIntent
+from scripts.rki_pipeline.storage.base import (
+    RightsStorageAuthorizer,
+    StorageError,
+    StorageIntent,
+    hash_file,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -59,8 +63,11 @@ def _fixture_intent(
         raise ValueError("P06-Konvertierungsfixture ist nicht lesbar") from exc
     if resolved != TEXT_FIXTURE.resolve(strict=True):
         raise ValueError("Nur registrierte P06-Textfixture ist zulässig")
-    payload = resolved.read_bytes()
-    if (len(payload), hashlib.sha256(payload).hexdigest()) != (
+    try:
+        measured = hash_file(resolved)
+    except StorageError as exc:
+        raise ValueError("P06-Konvertierungsfixture ist nicht sicher lesbar") from exc
+    if measured != (
         FIXTURE_BYTES,
         FIXTURE_SHA256,
     ):
