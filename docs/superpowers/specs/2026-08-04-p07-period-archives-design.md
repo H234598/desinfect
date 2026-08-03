@@ -39,7 +39,7 @@ This avoids a module but couples period policy, manifest joins, Markdown renderi
 
 - aware `as_of` instant;
 - P05 `DueTask` values for `week`, `month`, and `year`;
-- grabber `affected_periods` mapping;
+- exact grabber `AffectedPeriods` value;
 - validated P06 `ManifestGraph`;
 - exact mapping of canonical logical path to P04 `PreparedObject`.
 
@@ -57,7 +57,7 @@ No repository file is opened by an untrusted manifest path. Callers materialize 
 
 Every period derives an inclusive local start date, inclusive local end date, and end-exclusive midnight in `Europe/Berlin`. ZIP `source_date_epoch` is the UTC epoch of that end-exclusive instant. It therefore stays stable across reruns and handles DST without using run time.
 
-The planner validates that every due or affected period is fully closed at `as_of`. It unions due tasks with `affected_periods.weeks`, `.months`, and `.years`, deduplicates, and sorts by kind then chronological start. Future, malformed, unknown, boolean-year, or nonclosed periods fail before archive selection.
+The planner validates that every due or affected period is fully closed at `as_of`. It unions due tasks with `AffectedPeriods.weeks`, `.months`, and `.years`, deduplicates, and sorts by kind then chronological start. Future, malformed, unknown, boolean-year, or nonclosed periods fail before archive selection.
 
 P05 remains responsible for catch-up and watermarks. P07.2 does not independently invent missed periods; it consumes P05 due tasks. Late-arrival periods are an additional explicit union.
 
