@@ -43,7 +43,7 @@
 - Existing `ItemMetadata.source_id`, `.document_id`, `.version` delegate to `document_identity`.
 - Existing `PdfCandidate` gains read-only `.bitstream_id` and `.bitstream_version` properties; serialized P03 result shape remains unchanged.
 
-- [ ] **Step 1: Write failing identity tests**
+- [x] **Step 1: Write failing identity tests**
 
 Add literal expectations to `tests/test_document_identity.py`:
 
@@ -86,7 +86,7 @@ Before implementation, independently verify the SHA literal once with `printf %s
 
 Add parametrized rejection cases for `http`, foreign host, port, credentials, fragment, duplicate/zero/noninteger `sequence`, unknown query, and non-PDF path. Each expects `DocumentIdentityError`.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -96,7 +96,7 @@ Run:
 
 Expected: collection failure because `scripts.rki_pipeline.documents` does not exist.
 
-- [ ] **Step 3: Implement minimal pure identity module**
+- [x] **Step 3: Implement minimal pure identity module**
 
 Use these exact public shapes:
 
@@ -123,7 +123,7 @@ class BitstreamIdentity:
 
 Canonicalize only query keys `sequence` and `isAllowed`; require at most one each. `isAllowed` must be `y` when present and is excluded from identity URL. Normalize path by `unquote` then `quote(..., safe="/-._~")`. Validate path with the existing numeric-handle PDF shape. Sort retained identity query pairs with `urlencode`.
 
-- [ ] **Step 4: Verify GREEN and mutation boundaries**
+- [x] **Step 4: Verify GREEN and mutation boundaries**
 
 Run:
 
@@ -133,7 +133,7 @@ Run:
 
 Expected: all identity tests pass. Mentally mutate host check, sequence validation, and handle version; named tests must fail.
 
-- [ ] **Step 5: Write failing grabber-delegation and candidate-preservation tests**
+- [x] **Step 5: Write failing grabber-delegation and candidate-preservation tests**
 
 Change the P03 fixture assertion from one overwritten candidate to two retained candidates:
 
@@ -147,7 +147,7 @@ assert {candidate.expected_md5 for candidate in metadata.pdfs} == {
 
 Add an inline HTML case containing the exact same canonical URL twice; assert one candidate remains. Add a conflicting-MD5 duplicate case; assert `ValueError` instead of last-write-wins.
 
-- [ ] **Step 6: Verify RED**
+- [x] **Step 6: Verify RED**
 
 Run:
 
@@ -157,11 +157,11 @@ Run:
 
 Expected: existing parser returns one candidate for sequence 1/2 and fails the new preservation assertion.
 
-- [ ] **Step 7: Delegate grabber properties and fix parser deduplication**
+- [x] **Step 7: Delegate grabber properties and fix parser deduplication**
 
 Replace duplicated handle parsing in `ItemMetadata` with `document_identity(self.item_handle)`. Add `PdfCandidate` properties that call `bitstream_identity(self.url)`. In `_pdf_candidates`, construct candidate first and key `found` by `candidate.bitstream_id`; an exact duplicate with a different non-null MD5 raises `ValueError`. Return candidates sorted by `(bitstream_version is None, bitstream_version or 0, bitstream_id)`: positive RKI sequences ascend first, sequence-less candidates follow, and the ID breaks ties.
 
-- [ ] **Step 8: Verify Task 1 and commit**
+- [x] **Step 8: Verify Task 1 and commit**
 
 Run:
 
