@@ -3,29 +3,33 @@
 ## Auslöser
 
 Dieses Runbook gilt bei Rechtewiderruf, belastbarer Beschwerde, fehlerhafter
-Freigabe oder einer Entscheidung mit Zustand `takedown`. Bis zur Klärung bleibt
-jede Payload-Veröffentlichung blockiert.
+Freigabe oder einer Entscheidung mit Zustand `takedown`. Das technische Gate
+blockiert erst, nachdem die aktuelle `takedown`-Entscheidung gemergt wurde. Bis
+dahin müssen Betreiber die betroffenen Pipeline- und Publikationsläufe sofort
+pausieren.
 
 ## Sofortmaßnahmen
 
-1. Vorfall, betroffene `source_id`, `source_sha256`, `decision_sha256`,
+1. Betroffene geplante und manuelle Publikationsläufe sofort pausieren und den
+   Freeze mit Zeitpunkt und Verantwortlichen protokollieren.
+2. Vorfall, betroffene `source_id`, `source_sha256`, `decision_sha256`,
    Storage-Referenzen, URLs und Zeitpunkt protokollieren. Keine Evidenz löschen.
-2. Manuelle rechtliche Prüfung einleiten. Nur ein menschlich reviewter PR darf
+3. Manuelle rechtliche Prüfung einleiten. Nur ein menschlich reviewter PR darf
    `research/rights-register.yml` auf `takedown` setzen.
-3. Register und Tests prüfen:
+4. Register und Tests prüfen:
 
    ```bash
    python3 scripts/validate_rights_register.py
    python3 -m pytest -q tests/test_rights_policy.py tests/test_storage_contract.py
    ```
 
-4. Im nächsten Site-Build alle betroffenen Artefakt- und Downloadreferenzen
+5. Im nächsten Site-Build alle betroffenen Artefakt- und Downloadreferenzen
    deaktivieren. RKI-Originallink, Quellmetadaten, Hashes und
    Provenienzinformationen bleiben im Inventar erhalten.
-5. GitHub Pages neu bauen und veröffentlichen. Danach öffentlich prüfen, dass
+6. GitHub Pages neu bauen und veröffentlichen. Danach öffentlich prüfen, dass
    weder Downloadlink noch Backend-URL oder eingebetteter Volltext erreichbar
    ist; Cache-/Deploy-Ergebnis und Commit-SHA dokumentieren.
-6. Reconciliation ausführen und betroffene Manifeste, öffentliche
+7. Reconciliation ausführen und betroffene Manifeste, öffentliche
    Spiegelvollständigkeit und Statusprojektion prüfen.
 
 ## LFS und Backendhistorie

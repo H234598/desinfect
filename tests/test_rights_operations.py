@@ -26,6 +26,8 @@ def test_rights_register_changes_trigger_and_block_both_workflows() -> None:
 
     assert "research/**" in triggers["pull_request"]["paths"]
     assert "research/**" in triggers["push"]["paths"]
+    assert "runbooks/**" in triggers["pull_request"]["paths"]
+    assert "runbooks/**" in triggers["push"]["paths"]
     command = "python3 scripts/validate_rights_register.py"
     baseline_job = baseline["jobs"]["baseline"]
     pipeline_job = pipeline["jobs"]["pipeline"]
@@ -83,6 +85,7 @@ def test_takedown_runbook_preserves_evidence_and_separates_lfs_history() -> None
 
     for required in (
         "takedown",
+        "sofort pausieren",
         "nächsten Site-Build",
         "RKI-Originallink",
         "Quellmetadaten",
