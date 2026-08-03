@@ -28,7 +28,7 @@ from scripts.rki_pipeline.io_utils import (
 )
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 from scripts.rki_pipeline.schema_registry import SchemaContractError, validate_document
-from scripts.rki_pipeline.staging import StagingState, staged_directory
+from scripts.rki_pipeline.staging import staged_directory
 from scripts.rki_pipeline.storage.base import (
     PreparedObject,
     RightsStorageAuthorizer,
@@ -422,7 +422,6 @@ def materialize_archive(
         )
 
     event_count = len(ledger.events)
-    staging_state = StagingState()
     zip_path = bundle_root / _BUNDLE_ZIP
     manifest_path = bundle_root / _BUNDLE_MANIFEST
     try:
@@ -430,7 +429,6 @@ def materialize_archive(
             bundle_root,
             allowed_root=root,
             replace_existing=True,
-            state=staging_state,
         ) as stage:
             staged_build = build_archive(
                 spec,
@@ -456,21 +454,27 @@ def materialize_archive(
                 fsync_directory_fd(stage_fd)
             finally:
                 os.close(stage_fd)
-            ledger.record(
-                EffectKind.TEMP_FILE,
-                zip_path.as_posix(),
-                sha256=staged_result.output_sha256,
-                size=staged_result.size,
+            pending_events = (
+                (
+                    zip_path,
+                    staged_result.output_sha256,
+                    staged_result.size,
+                ),
+                (
+                    manifest_path,
+                    hashlib.sha256(sidecar_bytes).hexdigest(),
+                    len(sidecar_bytes),
+                ),
             )
+        for event_path, event_sha256, event_size in pending_events:
             ledger.record(
                 EffectKind.TEMP_FILE,
-                manifest_path.as_posix(),
-                sha256=hashlib.sha256(sidecar_bytes).hexdigest(),
-                size=len(sidecar_bytes),
+                event_path.as_posix(),
+                sha256=event_sha256,
+                size=event_size,
             )
     except BaseException:
-        if not staging_state.published:
-            del ledger.events[event_count:]
+        del ledger.events[event_count:]
         raise
     return ArchiveMaterialization(
         root=bundle_root,
@@ -547,17 +551,16 @@ def _inspect_bundle_fd(
     limits: ArchiveLimits,
 ) -> ArchiveBuild:
     names = frozenset(os.listdir(bundle_fd))
+    for name in names:
+        metadata = os.stat(name, dir_fd=bundle_fd, follow_symlinks=False)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ArchiveSecurityError(f"Archiv-Bundle-Eintrag {name!r} ist keine reguläre Datei")
     if names != _BUNDLE_FILES:
         raise ArchiveIntegrityError("Archiv-Bundle enthält unbekannte oder fehlende Dateien")
     try:
         assert_generated_root_fd(bundle_fd)
     except UnsafePathError as exc:
         raise ArchiveSecurityError("Archiv-Bundle-Sentinel ist unsicher") from exc
-    for name in (_BUNDLE_ZIP, _BUNDLE_MANIFEST):
-        metadata = os.stat(name, dir_fd=bundle_fd, follow_symlinks=False)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ArchiveSecurityError(f"Archiv-Bundle-Datei {name!r} ist keine reguläre Datei")
-
     sidecar = _strict_sidecar(
         _read_bundle_file(bundle_fd, _BUNDLE_MANIFEST, maximum=_MAX_SIDECAR_BYTES)
     )

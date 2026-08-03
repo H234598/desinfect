@@ -1133,3 +1133,118 @@ def test_materialization_rejects_symlinked_existing_sidecar(
             ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
             authorizer=_authorizer(tmp_path, monkeypatch),
         )
+
+
+def test_materialization_rejects_unexpected_symlink_without_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _spec(_prepared_entries(tmp_path, monkeypatch))
+    first = materialize_archive(
+        spec,
+        tmp_path / "out",
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=_authorizer(tmp_path, monkeypatch),
+    )
+    before = {path.name: path.read_bytes() for path in first.root.iterdir() if path.is_file()}
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    unexpected = first.root / "unexpected"
+    unexpected.symlink_to(outside)
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+
+    with pytest.raises(ArchiveSecurityError, match="Symlink|reguläre Datei"):
+        materialize_archive(
+            spec,
+            tmp_path / "out",
+            temp_root=tmp_path,
+            ledger=ledger,
+            authorizer=_authorizer(tmp_path, monkeypatch),
+        )
+
+    assert {name: (first.root / name).read_bytes() for name in before} == before
+    assert unexpected.is_symlink()
+    assert unexpected.readlink() == outside
+    assert ledger.events == []
+    assert not (tmp_path / ".out.backup").exists()
+
+
+def test_materialization_records_events_after_atomic_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _spec(_prepared_entries(tmp_path, monkeypatch))
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+    real_record = EffectLedger.record
+    observations: list[tuple[bool, bool, bool]] = []
+
+    def observe_record(
+        self: EffectLedger,
+        kind: EffectKind,
+        target: str,
+        *,
+        sha256: str | None = None,
+        size: int | None = None,
+    ) -> object:
+        path = Path(target)
+        exists = path.is_file()
+        payload = path.read_bytes() if exists else b""
+        observations.append(
+            (
+                exists,
+                size == len(payload),
+                sha256 == hashlib.sha256(payload).hexdigest(),
+            )
+        )
+        return real_record(self, kind, target, sha256=sha256, size=size)
+
+    monkeypatch.setattr(EffectLedger, "record", observe_record)
+
+    materialize_archive(
+        spec,
+        tmp_path / "out",
+        temp_root=tmp_path,
+        ledger=ledger,
+        authorizer=_authorizer(tmp_path, monkeypatch),
+    )
+
+    assert observations == [(True, True, True), (True, True, True)]
+    assert len(ledger.events) == 2
+
+
+def test_materialization_record_failure_leaves_no_partial_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _spec(_prepared_entries(tmp_path, monkeypatch))
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+    real_record = EffectLedger.record
+    calls = 0
+
+    def fail_second_record(
+        self: EffectLedger,
+        kind: EffectKind,
+        target: str,
+        *,
+        sha256: str | None = None,
+        size: int | None = None,
+    ) -> object:
+        nonlocal calls
+        calls += 1
+        event = real_record(self, kind, target, sha256=sha256, size=size)
+        if calls == 2:
+            raise RuntimeError("injected ledger failure")
+        return event
+
+    monkeypatch.setattr(EffectLedger, "record", fail_second_record)
+
+    with pytest.raises(RuntimeError, match="injected ledger failure"):
+        materialize_archive(
+            spec,
+            tmp_path / "out",
+            temp_root=tmp_path,
+            ledger=ledger,
+            authorizer=_authorizer(tmp_path, monkeypatch),
+        )
+
+    assert (tmp_path / "out" / "archive.zip").is_file()
+    assert (tmp_path / "out" / "archive-manifest.json").is_file()
+    assert ledger.events == []
