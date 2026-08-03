@@ -35,6 +35,17 @@ def test_unversioned_handle_is_explicit_version_one() -> None:
     assert identity.supersedes is None
 
 
+@pytest.mark.parametrize(
+    "handle",
+    ("176904/12345.0", "176904/12345.00", "176904/12345.01"),
+)
+def test_document_identity_rejects_noncanonical_explicit_versions(handle: str) -> None:
+    """Explicit zero and leading-zero suffixes must not collide with version one."""
+
+    with pytest.raises(DocumentIdentityError):
+        document_identity(handle)
+
+
 def test_bitstream_identity_canonicalizes_access_flag_without_losing_sequence() -> None:
     """Access-only query flag must not affect bitstream identity."""
 

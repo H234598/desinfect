@@ -8,7 +8,7 @@ from urllib.parse import parse_qsl, quote, urlencode, unquote, urlsplit, urlunsp
 
 
 _HANDLE_RE = re.compile(
-    r"^(?P<prefix>[0-9]+)/(?P<number>[0-9]+)(?:\.(?P<version>[0-9]+))?$"
+    r"^(?P<prefix>[0-9]+)/(?P<number>[0-9]+)(?:\.(?P<version>[1-9][0-9]*))?$"
 )
 _PDF_PATH_RE = re.compile(
     r"^/bitstream/handle/(?P<handle>176904/[0-9]+(?:\.[0-9]+)?)/.+\.pdf$",
@@ -54,7 +54,7 @@ def document_identity(handle: str) -> DocumentIdentity:
     """Return stable document identity derived only from its RKI handle."""
 
     prefix, number, handle_version = _handle_parts(handle)
-    version = handle_version or 1
+    version = 1 if handle_version is None else handle_version
     document_id = f"rki-{prefix}-{number}-v{version}"
     return DocumentIdentity(
         handle=handle,
