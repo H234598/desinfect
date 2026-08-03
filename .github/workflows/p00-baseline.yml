@@ -219,6 +219,11 @@ jobs:
             tests/test_manifests.py \
             tests/test_cli_entrypoints.py
 
+      - name: Validate deterministic archive contracts
+        run: |
+          python -m pytest -q tests/test_archives.py
+          python -m scripts.rki_pipeline.cli build-archive --fixture pilot --mode materialize
+
       - name: Run focused P05 contracts
         shell: bash
         run: |
