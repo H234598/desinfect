@@ -483,7 +483,7 @@ def test_archive_entry_rejects_line_separators(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, separator: str
 ) -> None:
     entry, _ = _prepared_entries(tmp_path, monkeypatch)
-    with pytest.raises(ValueError, match="path|kanonisch"):
+    with pytest.raises(ValueError, match=r"path|kanonisch"):
         ArchiveEntry(path=f"PDF/first.pdf{separator}injected", prepared=entry.prepared)
 
 
