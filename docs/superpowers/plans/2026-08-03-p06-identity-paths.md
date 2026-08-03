@@ -420,7 +420,7 @@ git commit -m "feat(p06): evolve source and document contracts"
 - Produces: `build_source_manifests(records: Iterable[ArtifactRecord]) -> tuple[dict[str, object], ...]` with explicit content-alias relations.
 - Produces: `write_manifest(path: Path, payload: dict[str, object], *, contract_name: str, allowed_root: Path) -> None`.
 
-- [ ] **Step 1: Write failing builder tests with real ArtifactRecord values**
+- [x] **Step 1: Write failing builder tests with real ArtifactRecord values**
 
 Create one downloaded issue record with full publication date, PDF URL sequence 2, SHA `a*64`, MD5, HTTP provenance, and raw rights metadata. Assert Source output contains:
 
@@ -443,7 +443,7 @@ Add negative tests: planned/no-PDF/error record, missing SHA, missing publicatio
 
 Add alias test with three records: two distinct bitstream URLs share SHA `a*64`; one uses SHA `b*64`. Sorted lower bitstream ID is canonical; other same-content manifest has `same_content_as=[canonical_id]`; canonical and unrelated entries have empty arrays.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -453,11 +453,11 @@ Run:
 
 Expected: collection failure because `source_manifest.py` does not exist.
 
-- [ ] **Step 3: Implement minimal pure builders**
+- [x] **Step 3: Implement minimal pure builders**
 
 Require `RecordState` in `{EXISTING, DOWNLOADED, RESUMED}` and complete fields. Use `bitstream_identity(record.pdf_url)`, `document_identity(record.item_handle)`, and Task 2 path builder. Map Scope only to the two concrete Document types. Run `validate_document("source-manifest", payload)` and `validate_document("document-manifest", payload)` before return. Sort records/aliases by bitstream ID; duplicate identity with conflicting record data raises `ManifestBuildError`.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run:
 
@@ -467,11 +467,11 @@ Run:
 
 Expected: all builder/identity/path tests pass.
 
-- [ ] **Step 5: Write failing atomic-write behavior test**
+- [x] **Step 5: Write failing atomic-write behavior test**
 
 Write a valid manifest below `tmp_path/root`, then mutate payload invalidly and call again. Assert first bytes remain unchanged and no `.part` sibling remains. Add escape/symlink target tests. Assert written bytes equal `stable_json_dumps(payload).encode("utf-8")` exactly.
 
-- [ ] **Step 6: Verify RED, implement atomic validated writer, verify GREEN**
+- [x] **Step 6: Verify RED, implement atomic validated writer, verify GREEN**
 
 Run RED before writer exists. Implement `write_manifest` as `validate_document` followed by existing `atomic_write_text(..., allowed_root=...)`; no directory-wide delete or append path. Run:
 
@@ -481,11 +481,11 @@ Run RED before writer exists. Implement `write_manifest` as `validate_document` 
 
 Expected: all tests pass.
 
-- [ ] **Step 7: Document contracts and operational rollback**
+- [x] **Step 7: Document contracts and operational rollback**
 
 `rki/Bulletins/README.md` documents canonical roots, full-ID-in-manifest rule, filename shortening, normal-Git manifests versus LFS artifacts, and no public rights implication. `Dokumentidentitaet.md` documents identity algorithms, URL/query rules, date/period source, sequence null semantics, alias relation, schema migrations, validation commands, and rollback: discard new manifest draft; never delete old document version.
 
-- [ ] **Step 8: Run P06.1 verification matrix and commit**
+- [x] **Step 8: Run P06.1 verification matrix and commit**
 
 Run:
 
