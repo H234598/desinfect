@@ -478,6 +478,15 @@ def test_archive_entry_rejects_sidecar_incompatible_path_length(
         ArchiveEntry(path="P/" + "a" * 499, prepared=entry.prepared)
 
 
+@pytest.mark.parametrize("separator", ("\n", "\r"))
+def test_archive_entry_rejects_line_separators(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, separator: str
+) -> None:
+    entry, _ = _prepared_entries(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="path|kanonisch"):
+        ArchiveEntry(path=f"PDF/first.pdf{separator}injected", prepared=entry.prepared)
+
+
 @pytest.mark.parametrize("kind", ("week-epub", "week_pdf", ""))
 def test_archive_spec_rejects_malformed_kind(kind: str) -> None:
     with pytest.raises(ValueError, match="kind"):
@@ -1082,25 +1091,34 @@ def test_security_validator_rejects_malformed_or_noncanonical_manifest(
         )
 
 
-@pytest.mark.parametrize("mutation", ("wrong-kind-type", "unsafe-entry-path"))
+@pytest.mark.parametrize(
+    ("mutation", "field", "expected_error"),
+    (
+        ("wrong-kind-type", "kind", "Manifest-Art"),
+        ("wrong-visibility-type", "visibility", "Manifest-Sichtbarkeit"),
+        ("unsafe-entry-path", None, "Manifest"),
+    ),
+)
 def test_security_validator_wraps_semantically_invalid_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mutation: str,
+    field: str | None,
+    expected_error: str,
 ) -> None:
     entry, _ = _prepared_entries(tmp_path, monkeypatch)
     source = tmp_path / "archive.zip"
     build = build_archive(_spec((entry,)), source, authorizer=_authorizer(tmp_path, monkeypatch))
     with ZipFile(source) as archive:
         manifest = json.loads(archive.read("MANIFEST.json"))
-    if mutation == "wrong-kind-type":
-        manifest["kind"] = []
+    if field is not None:
+        manifest[field] = []
     else:
         manifest["entries"][0]["path"] = "../escape.pdf"
     tampered = tmp_path / "semantic.zip"
     _rewrite_archive(source, tampered, replacements={"MANIFEST.json": _canonical_json(manifest)})
 
-    with pytest.raises(ArchiveIntegrityError, match="Manifest"):
+    with pytest.raises(ArchiveIntegrityError, match=expected_error):
         validate_archive(
             tampered,
             expected_fingerprint=build.input_fingerprint,

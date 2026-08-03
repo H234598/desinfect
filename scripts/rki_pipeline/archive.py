@@ -125,6 +125,8 @@ class ArchiveEntry:
     def __post_init__(self) -> None:
         if type(self.path) is not str:
             raise ValueError("path muss ein String sein")
+        if "\n" in self.path or "\r" in self.path:
+            raise ValueError("path darf keine Zeilentrenner enthalten")
         if normalize_posix_path(self.path) != self.path:
             raise ValueError("path muss kanonisch sein")
         if len(self.path) > _MAX_ENTRY_PATH_LENGTH:
@@ -1388,9 +1390,9 @@ def _validate_manifest_shape(manifest: dict[str, Any]) -> None:
         raise ArchiveIntegrityError("Manifest-Archiv-ID ist nicht kanonisch")
     if type(manifest["period"]) is not str or not 4 <= len(manifest["period"]) <= 40:
         raise ArchiveIntegrityError("Manifest-Periode ist ungültig")
-    if manifest["kind"] not in ARCHIVE_KINDS or type(manifest["kind"]) is not str:
+    if type(manifest["kind"]) is not str or manifest["kind"] not in ARCHIVE_KINDS:
         raise ArchiveIntegrityError("Manifest-Art ist unbekannt")
-    if manifest["visibility"] not in _VISIBILITIES or type(manifest["visibility"]) is not str:
+    if type(manifest["visibility"]) is not str or manifest["visibility"] not in _VISIBILITIES:
         raise ArchiveIntegrityError("Manifest-Sichtbarkeit ist unbekannt")
     zip_datetime = manifest["zip_datetime"]
     if (
