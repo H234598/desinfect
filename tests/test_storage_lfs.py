@@ -25,7 +25,7 @@ from scripts.rki_pipeline.storage.lfs import (
 ROOT = Path(__file__).resolve().parents[1]
 _TRACKING = (
     "rki/Bulletins/**/*.pdf filter=lfs diff=lfs merge=lfs -text\n"
-    "rki/Bulletins/Quellen/**/*.md filter=lfs diff=lfs merge=lfs -text\n"
+    "rki/Bulletins/**/Markdown/**/*.md filter=lfs diff=lfs merge=lfs -text\n"
     "rki/Bulletins/**/*.zip filter=lfs diff=lfs merge=lfs -text\n"
 )
 
@@ -78,7 +78,7 @@ def test_gitattributes_tracks_only_canonical_archive_classes() -> None:
     rules = validate_lfs_tracking(ROOT / ".gitattributes")
     assert rules == (
         "rki/Bulletins/**/*.pdf filter=lfs diff=lfs merge=lfs -text",
-        "rki/Bulletins/Quellen/**/*.md filter=lfs diff=lfs merge=lfs -text",
+        "rki/Bulletins/**/Markdown/**/*.md filter=lfs diff=lfs merge=lfs -text",
         "rki/Bulletins/**/*.zip filter=lfs diff=lfs merge=lfs -text",
     )
 

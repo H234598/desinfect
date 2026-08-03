@@ -1,6 +1,7 @@
 """Pure parser regressions for the modular RKI grabber."""
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from scripts.rki_grabber.parser import (
     parse_listing_bounds,
     target_relative_path,
 )
+from scripts.rki_pipeline.paths import DocumentPathError
 
 FIXTURES = Path(__file__).parent / "fixtures" / "rki-html"
 BASE_URL = "https://edoc.rki.de"
@@ -66,8 +68,11 @@ def test_item_parser_preserves_version_date_rights_and_deduplicates_bitstream() 
         "397039b5b63ce567c48e787bbb3e18ae"
     }
     path = target_relative_path(metadata, metadata.pdfs[0])
-    assert path.startswith("issues/1996/")
-    assert path.endswith("minimal__seq-1.pdf")
+    assert path == (
+        "Jahre/1996/PDF/1996-03-22_gesamtausgabe_"
+        "rki-176904-12345-v2_"
+        "rki-bitstream-423fd381b99c455851cf7ce9b6a25788db6d8cc7ee70c56007a93b2f4c856275.pdf"
+    )
 
 
 def test_item_parser_collapses_exact_duplicate_bitstream_urls() -> None:
@@ -86,6 +91,19 @@ def test_item_parser_collapses_exact_duplicate_bitstream_urls() -> None:
     )
 
     assert len(metadata.pdfs) == 1
+
+
+def test_target_relative_path_rejects_unscoped_all_documents() -> None:
+    metadata = parse_item_metadata(
+        read("p03-item.html"),
+        scope=Scope.ISSUES,
+        item_handle="176904/12345.2",
+        item_url="https://edoc.rki.de/handle/176904/12345.2",
+        fallback_year=1996,
+        base_url=BASE_URL,
+    )
+    with pytest.raises(DocumentPathError, match="Scope.ALL"):
+        target_relative_path(replace(metadata, scope=Scope.ALL), metadata.pdfs[0])
 
 
 def test_item_parser_rejects_conflicting_md5_for_duplicate_bitstream() -> None:

@@ -16,6 +16,7 @@ from scripts.rki_grabber.models import (
     RightsMetadata,
     Scope,
 )
+from scripts.rki_pipeline.paths import DocumentPathError, DocumentType, canonical_document_paths
 
 HANDLE_PATH_RE = re.compile(
     r"^/handle/(?P<handle>176904/[0-9]+(?:\.[0-9]+)?)/?$"
@@ -364,16 +365,17 @@ def safe_component(value: str, *, max_length: int = 100) -> str:
 
 
 def target_relative_path(metadata: ItemMetadata, candidate: PdfCandidate) -> str:
-    """Return the P03-compatible relative output path beneath a caller-owned root."""
+    """Return canonical PDF path beneath the caller-owned output root."""
 
-    year_dir = str(metadata.year) if metadata.year is not None else "unbekanntes-jahr"
-    handle_suffix = metadata.item_handle.split("/", 1)[1].replace(".", "-")
-    filename = (
-        f"{safe_component(metadata.title)}__{handle_suffix}__"
-        f"{safe_component(candidate.source_name)}"
-    )
-    if not filename.lower().endswith(".pdf"):
-        filename += ".pdf"
-    if candidate.bitstream_version is not None:
-        filename = f"{filename[:-4]}__seq-{candidate.bitstream_version}.pdf"
-    return PurePosixPath(metadata.scope.value, year_dir, filename).as_posix()
+    document_type = {
+        Scope.ISSUES: DocumentType.ISSUE,
+        Scope.ARTICLES: DocumentType.ARTICLE,
+    }.get(metadata.scope)
+    if document_type is None:
+        raise DocumentPathError("Scope.ALL besitzt keinen kanonischen Dokumentpfad")
+    return canonical_document_paths(
+        document_id=metadata.document_id,
+        bitstream_id=candidate.bitstream_id,
+        document_type=document_type,
+        publication_date=metadata.publication_date,
+    ).pdf

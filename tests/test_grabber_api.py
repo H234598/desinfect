@@ -139,10 +139,20 @@ def test_materializing_api_downloads_to_relative_path_and_validates_schema(tmp_p
     assert {record.state for record in result.records} == {RecordState.DOWNLOADED}
     assert {record.pdf_url for record in result.records} == set(PDF_URLS)
     assert len({record.relative_path for record in result.records}) == 2
+    assert {record.relative_path for record in result.records} == {
+        "Jahre/1996/PDF/1996-03-22_gesamtausgabe_"
+        "rki-176904-12345-v2_"
+        "rki-bitstream-423fd381b99c455851cf7ce9b6a25788db6d8cc7ee70c56007a93b2f4c856275.pdf",
+        "Jahre/1996/PDF/1996-03-22_gesamtausgabe_"
+        "rki-176904-12345-v2_"
+        "rki-bitstream-1a09c00506d9ad46283b3c75bcfedf8f1e26a95406e202ee8cc65f1c9162f0c3.pdf",
+    }
     for record in result.records:
         assert record.relative_path is not None
         assert not Path(record.relative_path).is_absolute()
-        assert (tmp_path / record.relative_path).is_file()
+        target = tmp_path / record.relative_path
+        assert target.is_relative_to(tmp_path / "Jahre")
+        assert target.is_file()
     validate_result(result.to_dict())
 
 

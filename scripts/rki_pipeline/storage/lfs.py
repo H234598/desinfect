@@ -22,7 +22,7 @@ from scripts.rki_pipeline.storage.config import LfsConfig
 
 _REQUIRED_TRACKING = (
     "rki/Bulletins/**/*.pdf filter=lfs diff=lfs merge=lfs -text",
-    "rki/Bulletins/Quellen/**/*.md filter=lfs diff=lfs merge=lfs -text",
+    "rki/Bulletins/**/Markdown/**/*.md filter=lfs diff=lfs merge=lfs -text",
     "rki/Bulletins/**/*.zip filter=lfs diff=lfs merge=lfs -text",
 )
 _POINTER_RE = re.compile(
