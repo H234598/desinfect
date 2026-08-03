@@ -103,6 +103,16 @@ def test_gitattributes_tracks_only_canonical_archive_classes() -> None:
     )
 
 
+def test_gitattributes_allows_binary_pdf_fixture_rule(tmp_path: Path) -> None:
+    attributes = tmp_path / ".gitattributes"
+    attributes.write_text(
+        _TRACKING + "tests/fixtures/**/*.pdf -diff -text\n",
+        encoding="utf-8",
+    )
+
+    assert validate_lfs_tracking(attributes) == tuple(_TRACKING.splitlines())
+
+
 def test_lfs_pointer_parser_is_exact() -> None:
     oid = "a" * 64
     pointer = parse_lfs_pointer(

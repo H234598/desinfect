@@ -133,6 +133,15 @@ jobs:
           python3 -m pip install --no-deps --no-build-isolation --editable .
           npm ci --ignore-scripts
 
+      - name: Install reviewed Poppler runtime
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes poppler-utils
+          command -v pdfinfo
+          command -v pdftotext
+
       - name: Validate governance baseline
         shell: bash
         run: |
@@ -190,6 +199,18 @@ jobs:
           python3 -m scripts.rki_pipeline.storage_cli --help
           python3 -m scripts.rki_pipeline.dispatcher --help
           python3 -m scripts.rki_pipeline.pipeline_cli --help
+          python3 -m scripts.rki_pipeline.cli convert --help
+
+      - name: Run focused P06 conversion contracts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m pytest -q \
+            tests/test_pdf_validation.py \
+            tests/test_conversion.py \
+            tests/test_conversion_service.py \
+            tests/test_conversion_ocr.py \
+            tests/test_cli_entrypoints.py
 
       - name: Run focused P05 contracts
         shell: bash

@@ -12,7 +12,7 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _DOCUMENT_ID = re.compile(r"^rki-176904-[0-9]+-v[1-9][0-9]*$")
 _BITSTREAM_ID = re.compile(r"^rki-bitstream-[0-9a-f]{64}$")
 _LANGUAGE = re.compile(r"^[a-z]{3}$")
-_HTTPS_URL = re.compile(r"https://[^\s\"'<>]+")
+_URL = re.compile(r"https?://[^\s\"'<>]+")
 _FIXED_ENVIRONMENT = {
     "LANG": "C.UTF-8",
     "LC_ALL": "C.UTF-8",
@@ -37,8 +37,8 @@ def _sha256(value: object, field: str) -> str:
 
 
 def _without_machine_path(value: str, field: str) -> None:
-    without_https_urls = _HTTPS_URL.sub("", value)
-    if "/" in without_https_urls or "\\" in without_https_urls:
+    without_urls = _URL.sub("", value)
+    if "/" in without_urls or "\\" in without_urls:
         raise EvidenceError(f"{field} enthält einen Maschinenpfad")
 
 

@@ -150,13 +150,14 @@ def test_evidence_rejects_embedded_machine_paths(argument: str) -> None:
         replace(tool, argv=("pdftotext", argument))
 
 
-def test_evidence_allows_https_urls_but_only_fixed_public_environment() -> None:
+@pytest.mark.parametrize("scheme", ("http", "https"))
+def test_evidence_allows_web_urls_but_only_fixed_public_environment(scheme: str) -> None:
     base = _base_module()
     tool, _runtime = _evidence()
 
     assert replace(
         tool,
-        version_output="documentation https://poppler.freedesktop.org/releases.html",
+        version_output=f"documentation {scheme}://poppler.freedesktop.org/releases.html",
     ).version_output.endswith("releases.html")
     assert base.EnvironmentVariable("TZ", "UTC").to_dict() == {"name": "TZ", "value": "UTC"}
 
