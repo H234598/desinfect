@@ -5,6 +5,7 @@ from datetime import date
 from pathlib import Path
 import re
 from typing import Iterable
+from urllib.parse import urlsplit
 
 from scripts.rki_grabber.models import ArtifactRecord, RecordState, Scope
 from scripts.rki_pipeline.documents import DocumentIdentityError, bitstream_identity, document_identity
@@ -31,6 +32,7 @@ def _document_type(scope: Scope) -> DocumentType:
 
 
 def _record_identities(record: ArtifactRecord) -> tuple[object, object]:
+    _document_type(record.scope)
     if record.state not in _COMPLETE_STATES:
         raise ManifestBuildError("Nur materialisierte PDF-Records erhalten Manifeste")
     if not record.pdf_url or not record.sha256 or not record.publication_date:
@@ -49,6 +51,17 @@ def _record_identities(record: ArtifactRecord) -> tuple[object, object]:
         or record.version != document.version
     ):
         raise ManifestBuildError("Record-Identität stimmt nicht mit dem RKI-Handle überein")
+    item_url = urlsplit(record.item_url)
+    bitstream_path = urlsplit(bitstream.canonical_url).path
+    if (
+        item_url.scheme != "https"
+        or item_url.netloc != "edoc.rki.de"
+        or item_url.path != f"/handle/{document.handle}"
+        or item_url.query
+        or item_url.fragment
+        or not bitstream_path.startswith(f"/bitstream/handle/{document.handle}/")
+    ):
+        raise ManifestBuildError("Record-URLs stimmen nicht mit dem RKI-Handle überein")
     return document, bitstream
 
 
@@ -169,14 +182,15 @@ def build_document_manifest(
 def build_source_manifests(records: Iterable[ArtifactRecord]) -> tuple[dict[str, object], ...]:
     """Build sorted source manifests with explicit same-content aliases."""
 
-    by_id: dict[str, ArtifactRecord] = {}
+    by_id: dict[str, tuple[ArtifactRecord, dict[str, object]]] = {}
     hashes: dict[str, list[str]] = {}
     for record in records:
         _, bitstream = _record_identities(record)
+        payload = build_source_manifest(record)
         previous = by_id.get(bitstream.bitstream_id)
-        if previous is not None and previous != record:
+        if previous is not None and previous[1] != payload:
             raise ManifestBuildError("Gleiche Bitstream-Identität hat widersprüchliche Record-Daten")
-        by_id[bitstream.bitstream_id] = record
+        by_id[bitstream.bitstream_id] = (record, payload)
         hashes.setdefault(record.sha256, []).append(bitstream.bitstream_id)
 
     aliases: dict[str, tuple[str, ...]] = {bitstream_id: () for bitstream_id in by_id}
@@ -187,7 +201,7 @@ def build_source_manifests(records: Iterable[ArtifactRecord]) -> tuple[dict[str,
             for bitstream_id in unique_ids[1:]:
                 aliases[bitstream_id] = (canonical,)
     return tuple(
-        build_source_manifest(by_id[bitstream_id], same_content_as=aliases[bitstream_id])
+        build_source_manifest(by_id[bitstream_id][0], same_content_as=aliases[bitstream_id])
         for bitstream_id in sorted(by_id)
     )
 

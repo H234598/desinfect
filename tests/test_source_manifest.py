@@ -26,6 +26,7 @@ from scripts.rki_pipeline.io_utils import UnsafePathError, stable_json_dumps
 def _record(
     *,
     item_handle: str = "176904/12345.2",
+    item_url: str = "https://edoc.rki.de/handle/176904/12345.2",
     pdf_url: str = (
         "https://edoc.rki.de/bitstream/handle/176904/12345.2/"
         "issue.pdf?sequence=2"
@@ -38,7 +39,7 @@ def _record(
         source_id="rki:176904/12345.2",
         version=2,
         item_handle=item_handle,
-        item_url="https://edoc.rki.de/handle/176904/12345.2",
+        item_url=item_url,
         title="Synthetic RKI bulletin",
         publication_date="1996-03-22",
         year=1996,
@@ -191,6 +192,56 @@ def test_source_manifests_link_same_content_to_sorted_canonical_bitstream() -> N
     assert by_id[shared[0]]["same_content_as"] == []
     assert by_id[shared[1]]["same_content_as"] == [shared[0]]
     assert next(manifest for manifest in manifests if manifest["sha256"] == "b" * 64)["same_content_as"] == []
+
+
+@pytest.mark.parametrize("builder", (build_source_manifest, build_document_manifest))
+def test_builders_reject_nonconcrete_scope(builder: object) -> None:
+    """Allowing Scope.ALL would produce a source manifest without document type."""
+
+    with pytest.raises(ManifestBuildError):
+        builder(replace(_record(), scope=Scope.ALL))  # type: ignore[operator]
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        _record(
+            pdf_url=(
+                "https://edoc.rki.de/bitstream/handle/176904/99999.1/"
+                "issue.pdf?sequence=2"
+            )
+        ),
+        _record(item_url="https://edoc.rki.de/handle/176904/99999.1"),
+    ],
+)
+def test_builders_reject_urls_for_different_handle(record: ArtifactRecord) -> None:
+    """URL handle mismatch could attach evidence from a different RKI document."""
+
+    with pytest.raises(ManifestBuildError):
+        build_source_manifest(record)
+    with pytest.raises(ManifestBuildError):
+        build_document_manifest(record)
+
+
+def test_source_manifests_deduplicate_canonically_equivalent_bitstream_urls() -> None:
+    """isAllowed=y must not create duplicate output for same canonical bitstream."""
+
+    canonical = _record()
+    equivalent = replace(canonical, pdf_url=canonical.pdf_url + "&isAllowed=y")
+
+    manifests = build_source_manifests((equivalent, canonical))
+
+    assert manifests == (build_source_manifest(canonical),)
+
+
+def test_source_manifests_reject_conflicting_canonical_duplicate() -> None:
+    """Deduplication must not discard differing manifest-relevant source data."""
+
+    canonical = _record()
+    conflict = replace(canonical, pdf_url=canonical.pdf_url + "&isAllowed=y", title="Other title")
+
+    with pytest.raises(ManifestBuildError):
+        build_source_manifests((canonical, conflict))
 
 
 def test_writer_validates_before_atomic_replacement(tmp_path: Path) -> None:
