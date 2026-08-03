@@ -77,7 +77,7 @@ def _conversion_manifest_payload() -> dict[str, object]:
 
 def test_all_registered_schemas_are_strict_draft_2020_12() -> None:
     registry = load_registry()
-    assert len(registry["contracts"]) == 12
+    assert len(registry["contracts"]) == 13
     for entry in registry["contracts"]:
         schema = load_schema(entry["name"], registry)
         Draft202012Validator.check_schema(schema)
@@ -117,6 +117,19 @@ def test_public_status_validates_and_unknown_field_fails_closed() -> None:
     changed["unexpected"] = True
     with pytest.raises(SchemaContractError, match="Additional properties"):
         validate_document("status", changed)
+
+
+def test_period_archive_manifest_validates_and_unknown_field_fails_closed() -> None:
+    fixture = json.loads(
+        (ROOT / "tests" / "fixtures" / "schemas" / "period-archive-manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    validate_document("period-archive-manifest", fixture)
+    changed = deepcopy(fixture)
+    changed["unexpected"] = True
+    with pytest.raises(SchemaContractError, match="Additional properties"):
+        validate_document("period-archive-manifest", changed)
 
 
 def test_storage_reference_rejects_non_sha256() -> None:
@@ -209,6 +222,7 @@ def test_schema_validator_checks_every_p06_predecessor(
         "document-manifest-v1.0.json",
         "storage-reference-v1.0.json",
         "conversion-manifest-v1.0.json",
+        "period-archive-manifest.json",
     ):
         target = fixture_root / name
         if name == corrupt_fixture:

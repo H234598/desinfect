@@ -93,6 +93,13 @@
       "name": "taxonomy",
       "path": "schemas/taxonomy.schema.json",
       "previous_versions": []
+    },
+    {
+      "current_version": "1.0.0",
+      "migration": null,
+      "name": "period-archive-manifest",
+      "path": "schemas/period-archive-manifest.schema.json",
+      "previous_versions": []
     }
   ],
   "schema_version": "1.0.0"

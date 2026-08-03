@@ -1,0 +1,177 @@
+{
+  "$id": "https://h234598.github.io/desinfect/schemas/period-archive-manifest-1.0.0.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "$defs": {
+    "artifactId": {
+      "pattern": "^[a-z0-9][a-z0-9._-]{2,200}$",
+      "type": ["string", "null"]
+    },
+    "sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": ["string", "null"]
+    },
+    "document": {
+      "additionalProperties": false,
+      "properties": {
+        "document_id": {
+          "pattern": "^rki-176904-[0-9]+-v[1-9][0-9]*$",
+          "type": "string"
+        },
+        "markdown_artifact_id": {"$ref": "#/$defs/artifactId"},
+        "markdown_sha256": {"$ref": "#/$defs/sha256"},
+        "pdf_artifact_id": {"$ref": "#/$defs/artifactId"},
+        "pdf_sha256": {"$ref": "#/$defs/sha256"},
+        "publication_date": {
+          "format": "date",
+          "type": "string"
+        },
+        "source_id": {
+          "pattern": "^rki:176904/[0-9]+(?:\\.(?:[2-9]|[1-9][0-9]+))?$",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "document_id",
+        "version",
+        "source_id",
+        "publication_date",
+        "pdf_artifact_id",
+        "pdf_sha256",
+        "markdown_artifact_id",
+        "markdown_sha256"
+      ],
+      "type": "object"
+    },
+    "archive": {
+      "additionalProperties": false,
+      "properties": {
+        "archive_id": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{2,200}$",
+          "type": "string"
+        },
+        "bytes": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "input_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "week-pdf",
+            "week-markdown",
+            "month-pdf",
+            "month-markdown",
+            "year-pdf",
+            "year-markdown"
+          ]
+        },
+        "output_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "relative_bundle": {
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).{1,500}$",
+          "type": "string"
+        },
+        "storage_reference": {
+          "maxLength": 200,
+          "type": ["string", "null"]
+        }
+      },
+      "required": [
+        "archive_id",
+        "kind",
+        "relative_bundle",
+        "input_fingerprint",
+        "output_sha256",
+        "bytes",
+        "storage_reference"
+      ],
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"kind": {"const": "week"}}, "required": ["kind"]},
+      "then": {"properties": {"period": {"pattern": "^[0-9]{4}-W(?:0[1-9]|[1-4][0-9]|5[0-3])$"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "month"}}, "required": ["kind"]},
+      "then": {"properties": {"period": {"pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])$"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "year"}}, "required": ["kind"]},
+      "then": {"properties": {"period": {"pattern": "^[0-9]{4}$"}}}
+    }
+  ],
+  "properties": {
+    "archives": {
+      "items": {"$ref": "#/$defs/archive"},
+      "type": "array",
+      "uniqueItems": true
+    },
+    "documents": {
+      "items": {"$ref": "#/$defs/document"},
+      "type": "array",
+      "uniqueItems": true
+    },
+    "end_date": {
+      "format": "date",
+      "type": "string"
+    },
+    "input_fingerprint": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "kind": {
+      "enum": ["week", "month", "year"]
+    },
+    "month_manifests": {
+      "items": {
+        "pattern": "^rki/Bulletins/Manifeste/Archive/month/[0-9]{4}-(?:0[1-9]|1[0-2])\\.json$",
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "period": {
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "source_date_epoch": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "start_date": {
+      "format": "date",
+      "type": "string"
+    },
+    "timezone": {
+      "const": "Europe/Berlin"
+    }
+  },
+  "required": [
+    "schema_version",
+    "kind",
+    "period",
+    "timezone",
+    "start_date",
+    "end_date",
+    "source_date_epoch",
+    "input_fingerprint",
+    "documents",
+    "archives",
+    "month_manifests"
+  ],
+  "title": "Desinfect period archive manifest",
+  "type": "object"
+}

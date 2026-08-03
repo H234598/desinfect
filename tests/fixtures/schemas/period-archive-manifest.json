@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0.0",
+  "kind": "month",
+  "period": "2026-07",
+  "timezone": "Europe/Berlin",
+  "start_date": "2026-07-01",
+  "end_date": "2026-07-31",
+  "source_date_epoch": 1785535200,
+  "input_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "documents": [],
+  "archives": [],
+  "month_manifests": []
+}
