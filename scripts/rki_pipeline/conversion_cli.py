@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import date
 from pathlib import Path
 import tempfile
 
@@ -10,12 +11,14 @@ from scripts.rki_pipeline.conversion.runtime import (
     RuntimeEvidenceError,
     collect_runtime_evidence,
 )
+from scripts.rki_pipeline.conversion.frontmatter import MarkdownMetadata
 from scripts.rki_pipeline.conversion.service import (
     ConversionError,
     ConversionNeedsReview,
     materialize_conversion,
 )
 from scripts.rki_pipeline.io_utils import stable_json_dumps
+from scripts.rki_pipeline.paths import DocumentType
 from scripts.rki_pipeline.rights import (
     RightsPolicyError,
     load_rights_authority,
@@ -146,6 +149,13 @@ def main(argv: list[str] | None = None) -> int:
             temp_root=temp_root,
             ledger=ledger,
             authorizer=authorizer,
+            metadata=MarkdownMetadata(
+                title="Synthetische P06-Konvertierungsfixture",
+                document_type=DocumentType.ISSUE,
+                publication_date=date(2026, 8, 3),
+                bulletin_number=None,
+                doi=None,
+            ),
             runtime=collect_runtime_evidence(),
         )
         print(stable_json_dumps(_result_payload(result, ledger, temp_root)), end="")

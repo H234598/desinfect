@@ -7,6 +7,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from pathlib import PurePosixPath
+import posixpath
 import stat
 
 from scripts.rki_pipeline.conversion.base import (
@@ -20,6 +22,10 @@ from scripts.rki_pipeline.conversion.ocr import (
     OcrError,
     OcrUnavailableError,
     extract_text as extract_ocr,
+)
+from scripts.rki_pipeline.conversion.frontmatter import (
+    MarkdownMetadata,
+    render_frontmatter,
 )
 from scripts.rki_pipeline.conversion.pdftotext import (
     TextExtractionError,
@@ -50,7 +56,6 @@ from scripts.rki_pipeline.pdf_validation import (
 )
 from scripts.rki_pipeline.paths import (
     DocumentPathError,
-    DocumentType,
     canonical_document_paths,
 )
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
@@ -108,18 +113,16 @@ _OPTIONS = {
         "oem": 1,
     },
 }
-def _options_sha256(limits: PdfLimits) -> str:
+def _options_sha256(limits: PdfLimits, *, frontmatter_sha256: str) -> str:
     options = {
         **_OPTIONS,
+        "frontmatter": {"schema_version": 1, "sha256": frontmatter_sha256},
         "limits": {
             name: getattr(limits, name)
             for name in limits.__dataclass_fields__
         },
     }
     return sha256_bytes(stable_json_dumps(options).encode("utf-8"))
-
-
-OPTIONS_SHA256 = _options_sha256(DEFAULT_PDF_LIMITS)
 
 
 def _authorize(
@@ -406,31 +409,30 @@ def _manifest(
     return payload
 
 
-def _validate_markdown_key(intent: StorageIntent, bitstream_id: str) -> None:
-    parts = intent.logical_key.split("/")
-    if len(parts) == 4 and parts[0] == "Jahre" and parts[2] == "Markdown":
-        document_type = DocumentType.ISSUE
-    elif (
-        len(parts) == 5
-        and parts[0] == "Einzelartikel"
-        and parts[3] == "Markdown"
-    ):
-        document_type = DocumentType.ARTICLE
-    else:
-        raise ConversionIntegrityError("StorageIntent besitzt keinen kanonischen Markdown-Pfad")
+def _source_pdf_path(
+    intent: StorageIntent,
+    bitstream_id: str,
+    metadata: MarkdownMetadata,
+) -> str:
+    if type(metadata) is not MarkdownMetadata:
+        raise TypeError("metadata muss ein exaktes MarkdownMetadata sein")
     try:
-        expected = canonical_document_paths(
+        paths = canonical_document_paths(
             document_id=intent.document_id or "",
             bitstream_id=bitstream_id,
-            document_type=document_type,
-            publication_date=parts[-1][:10],
-        ).markdown
-    except DocumentPathError as exc:
+            document_type=metadata.document_type,
+            publication_date=metadata.publication_date.isoformat(),
+        )
+    except (DocumentPathError, ValueError) as exc:
         raise ConversionIntegrityError(
-            "StorageIntent besitzt keinen kanonischen Markdown-Pfad"
+            "Metadaten erzeugen keinen kanonischen Dokumentpfad"
         ) from exc
-    if intent.logical_key != expected:
+    if intent.logical_key != paths.markdown:
         raise ConversionIntegrityError("StorageIntent besitzt keinen kanonischen Markdown-Pfad")
+    return posixpath.relpath(
+        paths.pdf,
+        start=PurePosixPath(paths.markdown).parent.as_posix(),
+    )
 
 
 def _pdfinfo_evidence(parser, runner: Runner, *, cwd: Path, limits: PdfLimits) -> ToolEvidence:
@@ -470,6 +472,7 @@ def _materialize_conversion(
     temp_root: Path,
     ledger: EffectLedger,
     authorizer: RightsStorageAuthorizer,
+    metadata: MarkdownMetadata,
     runtime: RuntimeEvidence,
     runner: Runner | None = None,
     limits: PdfLimits = DEFAULT_PDF_LIMITS,
@@ -487,7 +490,19 @@ def _materialize_conversion(
         raise ConversionIntegrityError("Bitstream-ID stimmt nicht mit StorageIntent überein")
     if intent.sha256 != intent.source_sha256:
         raise ConversionIntegrityError("Payload-SHA stimmt nicht mit autorisierter Rechte-SHA überein")
-    _validate_markdown_key(intent, bitstream_id)
+    source_pdf = _source_pdf_path(intent, bitstream_id, metadata)
+    try:
+        render_frontmatter(
+            metadata,
+            document_id=intent.document_id,
+            source_id=intent.source_id,
+            source_pdf=source_pdf,
+            source_sha256=intent.source_sha256,
+            conversion_quality="good",
+            ocr_used=False,
+        )
+    except ValueError as exc:
+        raise ConversionIntegrityError(f"Frontmatter-Metadaten sind ungültig: {exc}") from exc
     root = Path(temp_root).resolve()
     if ledger.mode is not RunMode.MATERIALIZE or ledger.temp_root != root.resolve():
         raise ConversionIntegrityError("Conversion benötigt passendes Materialize-Ledger")
@@ -559,7 +574,23 @@ def _materialize_conversion(
             )
 
         converter, converter_version = _converter_identity(toolchain)
-        options_sha256 = _options_sha256(limits)
+        try:
+            frontmatter = render_frontmatter(
+                metadata,
+                document_id=intent.document_id,
+                source_id=intent.source_id,
+                source_pdf=source_pdf,
+                source_sha256=intent.source_sha256,
+                conversion_quality=quality,
+                ocr_used=ocr_used,
+            )
+        except ValueError as exc:
+            raise ConversionIntegrityError(f"Frontmatter-Metadaten sind ungültig: {exc}") from exc
+        frontmatter_sha256 = hashlib.sha256(frontmatter.encode("utf-8")).hexdigest()
+        options_sha256 = _options_sha256(
+            limits,
+            frontmatter_sha256=frontmatter_sha256,
+        )
         fingerprint = conversion_fingerprint(
             source_sha256=intent.source_sha256,
             converter=converter,
@@ -570,7 +601,7 @@ def _materialize_conversion(
         )
         identity = conversion_id(intent.document_id, bitstream_id, fingerprint)
         target = root / "conversions" / identity
-        output = markdown.encode("utf-8")
+        output = (frontmatter + markdown).encode("utf-8")
         if len(output) > min(limits.generated_file_bytes, limits.total_output_bytes):
             raise ConversionIntegrityError("Conversion-Output überschreitet Dateigrößenlimit")
         output_sha256 = hashlib.sha256(output).hexdigest()
@@ -688,6 +719,7 @@ def materialize_conversion(
     temp_root: Path,
     ledger: EffectLedger,
     authorizer: RightsStorageAuthorizer,
+    metadata: MarkdownMetadata,
     runtime: RuntimeEvidence,
     runner: Runner | None = None,
     limits: PdfLimits = DEFAULT_PDF_LIMITS,
@@ -702,6 +734,7 @@ def materialize_conversion(
             temp_root=temp_root,
             ledger=ledger,
             authorizer=authorizer,
+            metadata=metadata,
             runtime=runtime,
             runner=runner,
             limits=limits,

@@ -78,7 +78,15 @@ def test_conversion_router_real_poppler_materialize_and_skip(tmp_path: Path) -> 
     manifest_mtime = manifest.stat().st_mtime_ns
     assert first_payload["status"] == "converted"
     assert first_payload["quality"] == "good"
-    assert output.read_text(encoding="utf-8").count("<!-- rki-page:") == 2
+    markdown = output.read_text(encoding="utf-8")
+    assert markdown.startswith(
+        "---\n"
+        f'id: "{conversion_cli.DOCUMENT_ID}"\n'
+        'title: "Synthetische P06-Konvertierungsfixture"\n'
+    )
+    assert 'source_pdf: "../PDF/' in markdown
+    assert f'source_sha256: "{conversion_cli.FIXTURE_SHA256}"' in markdown
+    assert markdown.count("<!-- rki-page:") == 2
     assert {effect["kind"] for effect in first_payload["effects"]} == {"temp_file"}
     assert fixture.read_bytes() == source_before
 
