@@ -140,6 +140,26 @@ def test_storage_intent_rejects_missing_or_invalid_authorization_provenance(
         )
 
 
+def test_storage_intent_rejects_document_from_different_source_handle(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"payload")
+
+    with pytest.raises(ValueError, match="Handle und Version"):
+        StorageIntent.from_path(
+            source,
+            artifact_id="artifact-1",
+            logical_key="Jahre/1994/a.pdf",
+            source_id=SOURCE_ID,
+            source_sha256=SOURCE_SHA256,
+            decision_sha256=DECISION_SHA256,
+            document_id="rki-176904-99999-v2",
+            visibility="repository_authorized",
+            rights_state="approved",
+        )
+
+
 def test_prepared_object_must_be_beneath_temp_root(tmp_path: Path) -> None:
     temp_root = tmp_path / "temp"
     temp_root.mkdir()
@@ -174,6 +194,31 @@ def test_prepared_object_must_be_beneath_temp_root(tmp_path: Path) -> None:
             source_id=SOURCE_ID,
             source_sha256=SOURCE_SHA256,
             decision_sha256=DECISION_SHA256,
+            visibility="repository_authorized",
+            rights_state="approved",
+        )
+
+
+def test_prepared_object_rejects_document_from_different_source_version(
+    tmp_path: Path,
+) -> None:
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    prepared_path = temp_root / "a.pdf"
+    prepared_path.write_bytes(b"x")
+
+    with pytest.raises(ValueError, match="Handle und Version"):
+        PreparedObject(
+            artifact_id="artifact-1",
+            logical_key="a.pdf",
+            path=prepared_path,
+            temp_root=temp_root,
+            sha256=hashlib.sha256(b"x").hexdigest(),
+            size=1,
+            source_id=SOURCE_ID,
+            source_sha256=SOURCE_SHA256,
+            decision_sha256=DECISION_SHA256,
+            document_id="rki-176904-12345-v3",
             visibility="repository_authorized",
             rights_state="approved",
         )

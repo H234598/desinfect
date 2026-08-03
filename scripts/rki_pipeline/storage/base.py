@@ -161,6 +161,7 @@ class StorageIntent:
         )
         _validate_nullable_id(self.document_id, name="document_id", pattern=_DOCUMENT_ID)
         _validate_nullable_id(self.conversion_id, name="conversion_id", pattern=_CONVERSION_ID)
+        validate_storage_provenance_relationship(self.source_id, self.document_id)
         if not isinstance(self.source_path, Path):
             raise ValueError("source_path muss ein pathlib.Path sein")
 
@@ -223,6 +224,7 @@ class PreparedObject:
         )
         _validate_nullable_id(self.document_id, name="document_id", pattern=_DOCUMENT_ID)
         _validate_nullable_id(self.conversion_id, name="conversion_id", pattern=_CONVERSION_ID)
+        validate_storage_provenance_relationship(self.source_id, self.document_id)
         root = Path(os.path.abspath(self.temp_root))
         path = Path(os.path.abspath(self.path))
         try:
