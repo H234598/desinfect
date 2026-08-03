@@ -83,10 +83,13 @@ Weekly bundle names include the concrete date interval:
 
 Monthly and yearly bundles use stable period and format names below:
 
+- `rki/Bulletins/Monate/<week-start-YYYY>/<week-start-MM>/ZIP/Wochen/`
 - `rki/Bulletins/Monate/YYYY/MM/ZIP/`
 - `rki/Bulletins/Monate/YYYY/MM/Markdown/index.md`
 - `rki/Bulletins/Jahre/YYYY/ZIP/`
 - `rki/Bulletins/Manifeste/Archive/<period-kind>/<period>.json`
+
+A week is filed under the year and month of its Monday start date, including weeks that cross a month or year boundary. Monthly indexes link every week that overlaps the month, regardless of that storage month.
 
 Each bundle remains the P07.1 directory containing `archive.zip` and `archive-manifest.json`. Archive member names reuse canonical document basenames, preventing absolute paths or repository-layout leakage inside ZIPs.
 
