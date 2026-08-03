@@ -29,6 +29,7 @@ python3 scripts/validate_p02_contracts.py
 python3 scripts/validate_p03_grabber.py
 python3 scripts/validate_p04_storage.py
 python3 scripts/validate_p05_dispatcher.py
+python3 scripts/validate_ci_mutation_safety.py
 python3 -m scripts.rki_pipeline.runtime_status_cli --help
 python3 -m scripts.rki_grabber.rki_epidbull_grabber --help
 python3 -m scripts.rki_pipeline.storage_cli --help
