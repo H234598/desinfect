@@ -126,6 +126,21 @@ def test_materialize_rejects_declared_temp_file_outside_root(tmp_path: Path) -> 
         ledger.record(EffectKind.TEMP_FILE, (tmp_path / "outside.bin").as_posix())
 
 
+def test_materialize_rejects_declared_temp_file_through_symlink(tmp_path: Path) -> None:
+    temp_root = tmp_path / "temp"
+    outside = tmp_path / "outside"
+    temp_root.mkdir()
+    outside.mkdir()
+    (temp_root / "escape").symlink_to(outside, target_is_directory=True)
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root.resolve())
+
+    with pytest.raises(ModeViolation, match="temp_root"):
+        ledger.record(
+            EffectKind.TEMP_FILE,
+            (temp_root.resolve() / "escape" / "artifact.bin").as_posix(),
+        )
+
+
 def test_apply_requires_explicit_effect_registration(tmp_path: Path) -> None:
     repository = tmp_path / "repo"
     repository.mkdir()

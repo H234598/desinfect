@@ -13,6 +13,7 @@ from scripts.rki_pipeline.runtime_status import (
     redact_text,
     update_run,
 )
+from scripts.rki_pipeline.schema_registry import SchemaContractError
 
 ROOT = Path(__file__).resolve().parents[1]
 NOW = "2026-07-28T07:00:00Z"
@@ -43,6 +44,41 @@ def test_revision_conflict_and_invalid_transition_are_blocked() -> None:
         update_run(created, expected_revision=2, status="running", phase="plan", now=NOW)
     with pytest.raises(InvalidTransition):
         update_run(created, expected_revision=1, status="success", phase="complete", now=NOW)
+
+
+@pytest.mark.parametrize("trigger_source", ["schedule", "workflow_dispatch"])
+def test_new_run_preserves_dispatch_trigger_and_canonical_task_ids(trigger_source: str) -> None:
+    run = new_run(
+        workflow="rki-dispatcher", trigger_source=trigger_source, run_mode="apply",
+        storage_backend="lfs", run_id=f"dispatch-{trigger_source}", now=NOW,
+        tasks=[
+            "week:2026-W30",
+            "month:2026-07",
+            "year:2025",
+            "reconciliation:2026-07-31T12:00:00Z",
+        ],
+    )
+
+    assert run["context"]["trigger_source"] == trigger_source
+    assert run["tasks"] == [
+        "month:2026-07",
+        "reconciliation:2026-07-31T12:00:00Z",
+        "week:2026-W30",
+        "year:2025",
+    ]
+
+
+@pytest.mark.parametrize(
+    "task_id",
+    ["year:2025\n", "year:2025\r\n", "year: 2025", "year:\t2025"],
+)
+def test_new_run_rejects_whitespace_in_task_ids(task_id: str) -> None:
+    with pytest.raises(SchemaContractError):
+        new_run(
+            workflow="rki-dispatcher", trigger_source="schedule", run_mode="apply",
+            storage_backend="lfs", run_id="dispatch-invalid-task", now=NOW,
+            tasks=[task_id],
+        )
 
 
 def test_failed_run_does_not_change_success_clocks_and_redacts_secret() -> None:

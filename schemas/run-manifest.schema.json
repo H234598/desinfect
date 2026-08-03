@@ -97,6 +97,8 @@
         "trigger_source": {
           "enum": [
             "github-schedule",
+            "schedule",
+            "workflow_dispatch",
             "manual",
             "cloudflare-watchdog",
             "backfill",
@@ -379,7 +381,10 @@
     },
     "tasks": {
       "items": {
-        "pattern": "^[a-z][a-z0-9_]{0,63}$",
+        "not": {
+          "pattern": "\\s"
+        },
+        "pattern": "^[a-z][a-z0-9_]{0,63}(?::[A-Za-z0-9][A-Za-z0-9:._-]{0,127})?$",
         "type": "string"
       },
       "type": "array",

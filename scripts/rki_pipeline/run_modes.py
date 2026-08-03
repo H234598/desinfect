@@ -12,7 +12,7 @@ import stat
 import subprocess
 from typing import Iterable
 
-from scripts.rki_pipeline.io_utils import normalize_posix_path
+from scripts.rki_pipeline.io_utils import UnsafePathError, ensure_within, normalize_posix_path
 
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 
@@ -73,7 +73,7 @@ class EffectLedger:
         if self.mode is RunMode.MATERIALIZE and self.temp_root is None:
             raise ValueError("materialize benötigt einen expliziten temp_root")
         if self.temp_root is not None:
-            self.temp_root = Path(os.path.abspath(self.temp_root))
+            self.temp_root = Path(self.temp_root).resolve()
 
     def record(
         self,
@@ -105,10 +105,9 @@ class EffectLedger:
         if kind is EffectKind.TEMP_FILE:
             if self.temp_root is None:
                 raise ModeViolation("TEMP_FILE benötigt einen temp_root")
-            candidate = Path(os.path.abspath(target))
             try:
-                candidate.relative_to(self.temp_root)
-            except ValueError as exc:
+                candidate = ensure_within(Path(target), self.temp_root)
+            except (OSError, UnsafePathError) as exc:
                 raise ModeViolation(
                     f"Temporärer Effekt liegt außerhalb temp_root: {target}"
                 ) from exc
@@ -310,12 +309,12 @@ class SideEffectGuard:
     ) -> None:
         if ledger.mode is not mode:
             raise ValueError("Ledger- und Guard-Modus müssen übereinstimmen")
-        self.repository_root = Path(os.path.abspath(repository_root))
+        self.repository_root = Path(repository_root).resolve()
         self.mode = mode
         self.temp_root = (
             None
             if temp_root is None
-            else Path(os.path.abspath(temp_root))
+            else Path(temp_root).resolve()
         )
         self.ledger = ledger
         self.protected_paths = protected_paths

@@ -1,0 +1,105 @@
+name: RKI daily dispatcher
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      run_mode:
+        description: Pipeline run mode
+        required: true
+        default: apply
+        type: choice
+        options:
+          - plan
+          - materialize
+          - apply
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Calculate due tasks from public watermarks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      dispatch_plan_b64: ${{ steps.plan.outputs.dispatch_plan_b64 }}
+      has_tasks: ${{ steps.plan.outputs.has_tasks }}
+    steps:
+      - name: Checkout main read-only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install locked runtime
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m pip install --upgrade "pip==26.1.2"
+          python3 -m pip install "setuptools==83.0.0"
+          python3 -m pip install -r requirements.txt
+          python3 -m pip install --no-deps --no-build-isolation --editable .
+
+      - name: Build canonical dispatch plan
+        id: plan
+        shell: bash
+        env:
+          REQUESTED_MODE: ${{ inputs.run_mode || 'apply' }}
+          TRIGGER_NAME: ${{ github.event_name }}
+        run: |
+          set -Eeuo pipefail
+          now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          base_sha="$(git rev-parse HEAD)"
+          trigger="workflow_dispatch"
+          if [[ "$TRIGGER_NAME" == "schedule" ]]; then
+            trigger="schedule"
+          fi
+          python3 -m scripts.rki_pipeline.dispatcher \
+            --config config/dispatcher.toml \
+            --now "$now" \
+            --base-sha "$base_sha" \
+            --run-mode "$REQUESTED_MODE" \
+            --storage-backend lfs \
+            daily \
+            --status status.json \
+            --trigger "$trigger" \
+            > dispatch-plan.json
+          python3 -m scripts.rki_pipeline.pipeline_cli validate-plan \
+            --plan dispatch-plan.json \
+            > validated-plan.json
+          diff -u dispatch-plan.json validated-plan.json
+          task_count="$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          print(len(json.loads(Path("dispatch-plan.json").read_text())["tasks"]))
+          PY
+          )"
+          if (( task_count > 0 )); then
+            echo "has_tasks=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_tasks=false" >> "$GITHUB_OUTPUT"
+          fi
+          encoded="$(base64 -w0 dispatch-plan.json)"
+          echo "dispatch_plan_b64=$encoded" >> "$GITHUB_OUTPUT"
+
+  pipeline:
+    name: Execute due tasks in one transaction
+    needs: plan
+    if: needs.plan.outputs.has_tasks == 'true'
+    uses: ./.github/workflows/rki-pipeline.yml
+    with:
+      dispatch_plan_b64: ${{ needs.plan.outputs.dispatch_plan_b64 }}
+      confirm_apply: APPLY
+    secrets:
+      WACHHUND_APP_PRIVATE_KEY: ${{ secrets.WACHHUND_APP_PRIVATE_KEY }}

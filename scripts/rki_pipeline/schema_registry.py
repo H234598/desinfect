@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema.exceptions import SchemaError
 
 ROOT = Path(__file__).resolve().parents[2]
 REGISTRY_PATH = ROOT / "config" / "schema-registry.json"
@@ -42,7 +43,10 @@ def load_schema(name: str, registry: dict[str, Any] | None = None) -> dict[str, 
         schema = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise SchemaContractError(f"Schema nicht lesbar: {path}") from exc
-    Draft202012Validator.check_schema(schema)
+    try:
+        Draft202012Validator.check_schema(schema)
+    except SchemaError as exc:
+        raise SchemaContractError(f"{name}: Schema ist ungültig") from exc
     if schema.get("$schema") != "https://json-schema.org/draft/2020-12/schema":
         raise SchemaContractError(f"{name}: ausschließlich Draft 2020-12 ist zulässig")
     version = schema.get("properties", {}).get("schema_version", {}).get("const")
