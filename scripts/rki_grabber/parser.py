@@ -297,7 +297,9 @@ def _pdf_candidates(
             and previous.expected_md5 != candidate.expected_md5
         ):
             raise ValueError("Widersprüchliche MD5-Werte für RKI-Bitstream")
-        if previous is None:
+        if previous is None or (
+            previous.expected_md5 is None and candidate.expected_md5 is not None
+        ):
             found[candidate.bitstream_id] = candidate
     return tuple(
         sorted(

@@ -93,6 +93,37 @@ def test_item_parser_collapses_exact_duplicate_bitstream_urls() -> None:
     assert len(metadata.pdfs) == 1
 
 
+@pytest.mark.parametrize(
+    "html",
+    (
+        """
+        <div><a href="/bitstream/handle/176904/12345/minimal.pdf?sequence=1">one.pdf</a></div>
+        <div><a href="/bitstream/handle/176904/12345/minimal.pdf?sequence=1">two.pdf</a>
+        MD5: 397039b5b63ce567c48e787bbb3e18ae</div>
+        """,
+        """
+        <div><a href="/bitstream/handle/176904/12345/minimal.pdf?sequence=1">one.pdf</a>
+        MD5: 397039b5b63ce567c48e787bbb3e18ae</div>
+        <div><a href="/bitstream/handle/176904/12345/minimal.pdf?sequence=1">two.pdf</a></div>
+        """,
+    ),
+)
+def test_item_parser_retains_md5_when_duplicate_anchor_lacks_it(html: str) -> None:
+    """A duplicate without checksum must not erase canonical MD5 evidence."""
+
+    metadata = parse_item_metadata(
+        html,
+        scope=Scope.ISSUES,
+        item_handle="176904/12345",
+        item_url="https://edoc.rki.de/handle/176904/12345",
+        fallback_year=1996,
+        base_url=BASE_URL,
+    )
+
+    assert len(metadata.pdfs) == 1
+    assert metadata.pdfs[0].expected_md5 == "397039b5b63ce567c48e787bbb3e18ae"
+
+
 def test_target_relative_path_rejects_unscoped_all_documents() -> None:
     metadata = parse_item_metadata(
         read("p03-item.html"),
