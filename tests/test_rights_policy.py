@@ -245,14 +245,13 @@ def test_publication_policy_uses_fixed_visibility_matrix(
             ),
         )
     )
-    decision = rights.evaluate_rights(
+    result = rights.publication_policy(
         SOURCE_ID,
         SOURCE_SHA256,
         register=register,
+        visibility=visibility,
         policy=policy,
     )
-
-    result = rights.publication_policy(decision, visibility=visibility, policy=policy)
 
     assert result.payload_allowed is payload_allowed
     assert result.artifact_reference_allowed is payload_allowed
@@ -269,14 +268,13 @@ def test_takedown_filters_mirror_references_but_keeps_origin_metadata(
     register = rights.load_rights_register(
         write_register(tmp_path, decision_yaml("takedown"))
     )
-    decision = rights.evaluate_rights(
+    result = rights.publication_policy(
         SOURCE_ID,
         SOURCE_SHA256,
         register=register,
+        visibility="public",
         policy=policy,
     )
-
-    result = rights.publication_policy(decision, visibility="public", policy=policy)
 
     assert result == rights.PublicationPolicy(
         payload_allowed=False,
@@ -296,18 +294,54 @@ def test_publication_policy_rejects_forged_visibility_matrix(tmp_path: Path) -> 
         approved_visibilities=policy.approved_visibilities,
         internal_only_visibilities=("public", "internal", "restricted"),
     )
-    decision = rights.RightsDecision(
+    register = rights.load_rights_register(
+        write_register(tmp_path, decision_yaml("internal_only"))
+    )
+
+    with pytest.raises(rights.RightsPolicyError, match="Matrix"):
+        rights.publication_policy(
+            SOURCE_ID,
+            SOURCE_SHA256,
+            register=register,
+            visibility="public",
+            policy=forged,
+        )
+
+
+def test_publication_policy_cannot_accept_caller_forged_decision(
+    tmp_path: Path,
+) -> None:
+    """Only register lookup for the exact source tuple may authorize payloads."""
+
+    policy = rights.load_rights_policy(write_policy(tmp_path))
+    register = rights.load_rights_register(write_register(tmp_path))
+    forged = rights.RightsDecision(
         source_id=SOURCE_ID,
         source_sha256=SOURCE_SHA256,
-        state=rights.RightsState.INTERNAL_ONLY,
-        basis="Reviewed restriction",
-        reviewed_by="Legal Reviewer",
+        state=rights.RightsState.APPROVED,
+        basis="caller assertion",
+        reviewed_by="Caller",
         reviewed_at="2026-08-03T08:00:00Z",
         decision_sha256="f" * 64,
     )
 
-    with pytest.raises(rights.RightsPolicyError, match="Matrix"):
-        rights.publication_policy(decision, visibility="public", policy=forged)
+    with pytest.raises(TypeError):
+        rights.publication_policy(
+            forged,
+            register=register,
+            visibility="public",
+            policy=policy,
+        )
+
+    result = rights.publication_policy(
+        forged.source_id,
+        forged.source_sha256,
+        register=register,
+        visibility="public",
+        policy=policy,
+    )
+    assert result.payload_allowed is False
+    assert result.artifact_reference_allowed is False
 
 
 @pytest.mark.parametrize(

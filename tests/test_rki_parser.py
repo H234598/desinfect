@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.rki_grabber.models import AffectedPeriods, Scope
+from scripts.rki_grabber.models import AffectedPeriods, RightsMetadata, Scope
 from scripts.rki_grabber.parser import (
     extract_submission_item_links,
     extract_year_collections,
@@ -61,6 +61,7 @@ def test_item_parser_preserves_version_date_rights_and_deduplicates_bitstream() 
     assert metadata.year == 1996
     assert metadata.doi == "10.25646/12345.2"
     assert metadata.rights.label == "Synthetic fixture — no publication decision"
+    assert metadata.rights.open_access is True
     assert metadata.etag == '"item-v2"'
     assert [candidate.bitstream_version for candidate in metadata.pdfs] == [1, 2]
     assert len({candidate.bitstream_id for candidate in metadata.pdfs}) == 2
@@ -73,6 +74,41 @@ def test_item_parser_preserves_version_date_rights_and_deduplicates_bitstream() 
         "rki-176904-12345-v2_"
         "rki-bitstream-423fd381b99c455851cf7ce9b6a25788db6d8cc7ee70c56007a93b2f4c856275.pdf"
     )
+
+
+@pytest.mark.parametrize(
+    ("meta_name", "content", "expected"),
+    (
+        ("dc.rights.accessRights", "openAccess", True),
+        ("dcterms.accessRights", "restrictedAccess", False),
+        ("citation_open_access", "yes", True),
+        ("eprints.accessRights", "unknown", None),
+    ),
+)
+def test_item_parser_maps_open_access_metadata_to_tristate(
+    meta_name: str,
+    content: str,
+    expected: bool | None,
+) -> None:
+    """Known RKI rights metadata becomes bool; absent/unknown stays unknown."""
+
+    metadata = parse_item_metadata(
+        f'<meta name="{meta_name}" content="{content}" />',
+        scope=Scope.ISSUES,
+        item_handle="176904/12345",
+        item_url="https://edoc.rki.de/handle/176904/12345",
+        fallback_year=1996,
+        base_url=BASE_URL,
+    )
+
+    assert metadata.rights.open_access is expected
+
+
+def test_rights_metadata_rejects_string_open_access() -> None:
+    """Serialized OA evidence must remain bool or null."""
+
+    with pytest.raises(ValueError, match="open_access"):
+        RightsMetadata(open_access="true")  # type: ignore[arg-type]
 
 
 def test_item_parser_collapses_exact_duplicate_bitstream_urls() -> None:

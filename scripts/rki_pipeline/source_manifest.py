@@ -144,7 +144,7 @@ def build_source_manifest(
             "label": record.rights.label,
             "license_url": record.rights.uri,
             "copyright_notice": record.rights.copyright_notice,
-            "open_access": None,
+            "open_access": record.rights.open_access,
         },
         "decision_sha256": rights_decision.decision_sha256,
         "same_content_as": _aliases(bitstream.bitstream_id, same_content_as),

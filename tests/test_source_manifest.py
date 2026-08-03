@@ -49,6 +49,7 @@ def _record(
             label="Synthetic fixture — no publication decision",
             uri="https://example.invalid/synthetic-license",
             copyright_notice="Synthetic RKI fixture",
+            open_access=True,
         ),
         pdf_url=pdf_url,
         source_filename="issue.pdf",
@@ -117,6 +118,7 @@ def test_builders_produce_fail_closed_valid_manifests() -> None:
     }
     assert source["decision_sha256"] is None
     assert source["rights_evidence"]["label"] == "Synthetic fixture — no publication decision"
+    assert source["rights_evidence"]["open_access"] is True
     assert document == {
         "schema_version": "1.1.0",
         "document_id": "rki-176904-12345-v2",
@@ -196,6 +198,54 @@ def test_source_manifest_rejects_authorization_without_review_hash() -> None:
 
     with pytest.raises(ManifestBuildError, match="Rechteentscheidung"):
         build_source_manifest(record, rights_decision=decision)
+
+
+@pytest.mark.parametrize(
+    "decision",
+    (
+        replace(_decision(_record()), state=RightsState.UNKNOWN),
+        replace(_decision(_record()), basis=""),
+        replace(_decision(_record()), decision_sha256="not-a-sha256"),
+    ),
+)
+def test_source_manifest_rejects_noncanonical_decision_fields(
+    decision: RightsDecision,
+) -> None:
+    """Unknown state, empty basis, and malformed hashes never reach manifests."""
+
+    with pytest.raises(ManifestBuildError, match="Rechteentscheidung"):
+        build_source_manifest(_record(), rights_decision=decision)
+
+
+@pytest.mark.parametrize(
+    "state",
+    (RightsState.INTERNAL_ONLY, RightsState.TAKEDOWN),
+)
+@pytest.mark.parametrize(
+    "missing_field",
+    ("reviewed_by", "reviewed_at", "decision_sha256"),
+)
+def test_source_manifest_requires_complete_review_for_restrictive_decisions(
+    state: RightsState,
+    missing_field: str,
+) -> None:
+    """Restrictive reviewed states still require full canonical provenance."""
+
+    record = _record()
+    decision = _decision(
+        record,
+        state=state,
+        basis="Reviewed restriction",
+        reviewed_by="Legal Reviewer",
+        reviewed_at="2026-08-03T08:00:00Z",
+        decision_sha256="f" * 64,
+    )
+
+    with pytest.raises(ManifestBuildError, match="Rechteentscheidung"):
+        build_source_manifest(
+            record,
+            rights_decision=replace(decision, **{missing_field: None}),
+        )
 
 
 @pytest.mark.parametrize(

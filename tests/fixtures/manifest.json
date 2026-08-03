@@ -91,13 +91,13 @@
       "synthetic": true
     },
     {
-      "bytes": 920,
+      "bytes": 982,
       "license_status": "synthetic",
       "media_type": "text/html",
       "path": "rki-html/p03-item.html",
       "provenance": "H234598/desinfect P03 synthetic grabber fixture policy",
       "purpose": "synthetic RKI item metadata, rights, version, and PDF parser regression",
-      "sha256": "f4db8371a6dd11408e88321067dd74d1f39964482f972c8e3c738bc91a595994",
+      "sha256": "1431e058d4a202cd91a56f55a8ab9999c5c62fc9c463e41bbe5b535d91fe94f2",
       "synthetic": true
     },
     {

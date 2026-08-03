@@ -369,16 +369,24 @@ def _validate_policy_instance(policy: RightsPolicy) -> None:
 
 
 def publication_policy(
-    decision: RightsDecision,
+    source_id: str,
+    source_sha256: str,
     *,
+    register: RightsRegister,
     visibility: str,
     policy: RightsPolicy,
 ) -> PublicationPolicy:
-    """Map one resolved decision to safe publication effects."""
+    """Resolve one exact source tuple and map it to safe publication effects."""
 
     _validate_policy_instance(policy)
     if visibility not in _VISIBILITIES:
         raise RightsPolicyError(f"Unbekannte Sichtbarkeit: {visibility!r}")
+    decision = evaluate_rights(
+        source_id,
+        source_sha256,
+        register=register,
+        policy=policy,
+    )
     allowed = (
         decision.state is RightsState.APPROVED
         and visibility in policy.approved_visibilities
