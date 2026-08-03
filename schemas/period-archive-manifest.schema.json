@@ -127,8 +127,7 @@
           "type": "string"
         },
         "storage_reference": {
-          "maxLength": 200,
-          "type": ["string", "null"]
+          "$ref": "#/$defs/artifactId"
         }
       },
       "required": [

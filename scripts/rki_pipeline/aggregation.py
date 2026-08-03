@@ -10,12 +10,20 @@ import posixpath
 import re
 from pathlib import PurePosixPath
 from typing import Any, Iterable, Mapping
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from scripts.rki_grabber.models import AffectedPeriods
-from scripts.rki_pipeline.archive import ArchiveBuild, ArchiveEntry, ArchiveSpec, archive_input_fingerprint
+from scripts.rki_pipeline.archive import (
+    ArchiveBuild,
+    ArchiveEntry,
+    ArchiveError,
+    ArchiveSpec,
+    archive_input_fingerprint,
+    validate_archive,
+)
 from scripts.rki_pipeline.due_tasks import DueTask, TaskKind
-from scripts.rki_pipeline.io_utils import normalize_posix_path, sha256_file, stable_json_dumps
+from scripts.rki_pipeline.io_utils import normalize_posix_path, stable_json_dumps
 from scripts.rki_pipeline.manifests import ManifestGraph
 from scripts.rki_pipeline.schema_registry import SchemaContractError, validate_document
 from scripts.rki_pipeline.storage.base import PreparedObject
@@ -614,7 +622,7 @@ def _canonical_path(value: str, *, label: str) -> str:
 def _relative_link(source_path: str, target_path: str) -> str:
     source = _canonical_path(source_path, label="Indexpfad")
     target = _canonical_path(target_path, label="Linkziel")
-    return posixpath.relpath(target, PurePosixPath(source).parent.as_posix())
+    return quote(posixpath.relpath(target, PurePosixPath(source).parent.as_posix()), safe="/")
 
 
 def _table_cell(value: str) -> str:
@@ -626,19 +634,27 @@ def _table_cell(value: str) -> str:
         value.replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
-        .replace("|", "\\|")
+        .replace("|", "&#124;")
         .replace("\r", " ")
         .replace("\n", " ")
     )
 
 
-def _week_archive_links(period: PeriodRef, index_path: str) -> str:
+def _week_archive_links(
+    period: PeriodRef, index_path: str, documents: tuple[PeriodDocument, ...]
+) -> str:
     monday = date.fromordinal(period.start.toordinal() - period.start.weekday())
+    formats = tuple(
+        format_name
+        for format_name, payload_name in (("pdf", "pdf"), ("markdown", "markdown"))
+        if any(getattr(document, payload_name) is not None for document in documents)
+    )
     links: list[str] = []
     while monday <= period.end:
         iso = monday.isocalendar()
         week = period_ref(TaskKind.WEEK, f"{iso.year:04d}-W{iso.week:02d}")
-        for format_name, label in (("pdf", "PDF"), ("markdown", "Markdown")):
+        for format_name in formats:
+            label = "PDF" if format_name == "pdf" else "Markdown"
             target = f"{_bundle_path(week, format_name)}/archive.zip"
             links.append(f"[{label}]({_relative_link(index_path, target)})")
         monday = date.fromordinal(monday.toordinal() + 7)
@@ -667,7 +683,7 @@ def render_month_index(period_plan: PeriodPlan) -> bytes:
         "| Datum | Titel | RKI-Handle | DOI | PDF | Markdown | Konvertierung | PDF SHA-256 | Markdown SHA-256 | Wochenarchive |",
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
-    weekly_links = _week_archive_links(period_plan.period, index_path)
+    weekly_links = _week_archive_links(period_plan.period, index_path, documents)
     for document in documents:
         if type(document) is not PeriodDocument:
             raise AggregationError("Monatsindex enthält kein exaktes PeriodDocument")
@@ -722,20 +738,27 @@ def _archive_manifest(period: PeriodRef, archive: PlannedArchive, build: Archive
     expected_fingerprint = archive_input_fingerprint(archive.spec)
     if build.input_fingerprint != expected_fingerprint:
         raise PeriodManifestError("input_fingerprint stimmt nicht mit Archiv-Spezifikation überein")
-    if build.path.is_symlink() or not build.path.is_file():
-        raise PeriodManifestError("Archiv-Build-Pfad ist keine reguläre Datei")
-    before = build.path.stat()
-    if before.st_size != build.size:
-        raise PeriodManifestError("size stimmt nicht mit Archivdatei überein")
-    if sha256_file(build.path) != build.output_sha256:
-        raise PeriodManifestError("output_sha256 stimmt nicht mit Archivdatei überein")
-    after = build.path.stat()
-    if (before.st_ino, before.st_size, before.st_mtime_ns) != (
-        after.st_ino,
-        after.st_size,
-        after.st_mtime_ns,
-    ):
-        raise PeriodManifestError("Archivdatei änderte sich während der Prüfung")
+    try:
+        inspection = validate_archive(
+            build.path,
+            expected_fingerprint=build.input_fingerprint,
+            expected_output_sha256=build.output_sha256,
+        )
+    except ArchiveError as exc:
+        message = str(exc)
+        if "SHA-256" in message:
+            raise PeriodManifestError("output_sha256 stimmt nicht mit Archivdatei überein") from exc
+        if "größe" in message:
+            raise PeriodManifestError("size stimmt nicht mit Archivdatei überein") from exc
+        raise PeriodManifestError("Archiv-Build ist ungültig") from exc
+    if inspection.entries != expected_entries:
+        raise PeriodManifestError("entries stimmen nicht mit Archiv-Spezifikation überein")
+    if inspection.input_fingerprint != build.input_fingerprint:
+        raise PeriodManifestError("input_fingerprint stimmt nicht mit Archiv-Build überein")
+    if inspection.output_sha256 != build.output_sha256:
+        raise PeriodManifestError("output_sha256 stimmt nicht mit Archiv-Build überein")
+    if inspection.size != build.size:
+        raise PeriodManifestError("size stimmt nicht mit Archiv-Build überein")
     return {
         "archive_id": archive.spec.archive_id,
         "kind": archive.spec.kind,
@@ -810,6 +833,17 @@ def _validate_manifest_order(value: dict[str, object], period: PeriodRef) -> Non
         key=lambda item: (item["publication_date"], item["document_id"], item["source_id"]),
     ):
         raise PeriodManifestError("Dokumente sind nicht kanonisch sortiert")
+    document_ids: set[str] = set()
+    source_ids: set[str] = set()
+    for document in documents:
+        document_id = document["document_id"]
+        source_id = document["source_id"]
+        if document_id in document_ids:
+            raise PeriodManifestError("document_id ist mehrfach vorhanden")
+        if source_id in source_ids:
+            raise PeriodManifestError("source_id ist mehrfach vorhanden")
+        document_ids.add(document_id)
+        source_ids.add(source_id)
     if archives != sorted(archives, key=lambda item: item["archive_id"]):
         raise PeriodManifestError("Archive sind nicht kanonisch sortiert")
     archive_ids: set[str] = set()
@@ -876,12 +910,20 @@ def render_period_manifest(period_plan: PeriodPlan, builds: Mapping[str, Archive
     if not isinstance(builds, Mapping):
         raise PeriodManifestError("builds muss ein Mapping sein")
     expected = {archive.spec.archive_id: archive for archive in period_plan.archives}
-    if len(expected) != len(period_plan.archives) or set(builds) != set(expected):
+    try:
+        build_items = tuple(builds.items())
+        actual = {archive_id: build for archive_id, build in build_items}
+    except (TypeError, ValueError) as exc:
+        raise PeriodManifestError("Archiv-ID-Mapping ist ungültig") from exc
+    if (
+        len(expected) != len(period_plan.archives)
+        or len(build_items) != len(actual)
+        or set(actual) != set(expected)
+    ):
         raise PeriodManifestError("Archiv-ID-Mapping stimmt nicht exakt überein")
     archive_rows = [
         _archive_manifest(period_plan.period, expected[archive_id], build)
-        for archive_id, build in builds.items()
-        if archive_id in expected
+        for archive_id, build in build_items
     ]
     documents = sorted(
         (_document_manifest(document) for document in period_plan.documents),

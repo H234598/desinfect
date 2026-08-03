@@ -3,10 +3,12 @@ from datetime import date, datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+from typing import Iterator, Mapping
 
 import pytest
 
 from scripts.rki_grabber.models import AffectedPeriods
+from scripts.rki_pipeline import rights
 from scripts.rki_pipeline.aggregation import (
     AggregationError,
     PeriodManifestError,
@@ -18,11 +20,12 @@ from scripts.rki_pipeline.aggregation import (
     select_periods,
     validate_period_manifest,
 )
-from scripts.rki_pipeline.archive import ArchiveBuild, archive_input_fingerprint
+from scripts.rki_pipeline.archive import ArchiveBuild, build_archive
 from scripts.rki_pipeline.due_tasks import DueTask, TaskKind
 from scripts.rki_pipeline.io_utils import stable_json_dumps
 from scripts.rki_pipeline.manifests import ManifestGraph
-from scripts.rki_pipeline.storage.base import PreparedObject
+from scripts.rki_pipeline.rights import resolve_rights
+from scripts.rki_pipeline.storage.base import PreparedObject, RightsStorageAuthorizer
 from tests.test_manifests import _build as build_p06_graph
 from tests.test_manifests import _document as p06_document
 from tests.test_manifests import _second_bitstream as p06_second_bitstream
@@ -598,19 +601,63 @@ def test_plan_rejects_ambiguous_nonpersisted_conversions(tmp_path: Path) -> None
         plan_period_archives(**inputs)
 
 
-def _period_builds(tmp_path: Path, period) -> dict[str, ArchiveBuild]:
+def _period_builds(
+    tmp_path: Path, period, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, ArchiveBuild]:
+    prepared = tuple(
+        entry.prepared for archive in period.archives for entry in archive.spec.entries
+    )
+    register = tmp_path / "rights-register.yml"
+    register.write_text(
+        "\n".join(
+            (
+                "schema_version: 1",
+                "decisions:",
+                *(
+                    line
+                    for item in {
+                        (entry.source_id, entry.source_sha256) for entry in prepared
+                    }
+                    for line in (
+                        f"  - source_id: {item[0]}",
+                        f"    source_sha256: {item[1]}",
+                        "    state: approved",
+                        "    basis: Reviewed RKI reuse terms",
+                        "    reviewed_by: Legal Reviewer",
+                        '    reviewed_at: "2026-08-03T08:00:00Z"',
+                    )
+                ),
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(rights, "DEFAULT_REGISTER_PATH", register)
+    authorizer = RightsStorageAuthorizer(
+        authority=rights.load_rights_authority(),
+        policy=rights.load_rights_policy(),
+    )
     builds: dict[str, ArchiveBuild] = {}
     for archive in period.archives:
-        path = tmp_path / f"{archive.spec.archive_id}.zip"
-        payload = f"archive:{archive.spec.archive_id}".encode("ascii")
-        path.write_bytes(payload)
-        builds[archive.spec.archive_id] = ArchiveBuild(
-            path=path,
-            input_fingerprint=archive_input_fingerprint(archive.spec),
-            output_sha256=hashlib.sha256(payload).hexdigest(),
-            size=len(payload),
-            entries=tuple(entry.path for entry in archive.spec.entries),
+        entries = tuple(
+            replace(
+                entry,
+                prepared=replace(
+                    entry.prepared,
+                    decision_sha256=resolve_rights(
+                        entry.prepared.source_id,
+                        entry.prepared.source_sha256,
+                        authority=authorizer.authority,
+                        policy=authorizer.policy,
+                    ).decision_sha256,
+                ),
+            )
+            for entry in archive.spec.entries
         )
+        spec = replace(archive.spec, entries=entries)
+        path = tmp_path / "built" / archive.spec.archive_id / "archive.zip"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        builds[archive.spec.archive_id] = build_archive(spec, path, authorizer=authorizer)
     return builds
 
 
@@ -630,7 +677,7 @@ def test_month_index_is_canonical_complete_and_escaped(tmp_path: Path) -> None:
     rendered = render_month_index(period)
 
     assert rendered.endswith(b"\n")
-    assert b"A \\| B &lt;script&gt; &amp; C  D" in rendered
+    assert b"A &#124; B &lt;script&gt; &amp; C  D" in rendered
     assert b"176904/900000001.2" in rendered
     assert b"10.1000/example" in rendered
     assert b"converted" in rendered
@@ -655,7 +702,7 @@ def test_month_index_links_cross_boundary_week_and_allows_missing_optional_value
 
 
 def test_period_manifest_is_canonical_backend_neutral_and_order_independent(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     base = _month_period(tmp_path)
     second = replace(
@@ -665,7 +712,7 @@ def test_period_manifest_is_canonical_backend_neutral_and_order_independent(
         publication_date="2026-07-11",
     )
     period = replace(base, documents=(base.documents[0], second))
-    builds = _period_builds(tmp_path, period)
+    builds = _period_builds(tmp_path, period, monkeypatch)
 
     payload = render_period_manifest(period, builds)
     value = validate_period_manifest(payload)
@@ -708,9 +755,11 @@ def test_year_manifest_lists_only_selected_document_months(tmp_path: Path) -> No
     ]
 
 
-def test_period_manifest_rejects_archive_build_drift(tmp_path: Path) -> None:
+def test_period_manifest_rejects_archive_build_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     period = _month_period(tmp_path)
-    builds = _period_builds(tmp_path, period)
+    builds = _period_builds(tmp_path, period, monkeypatch)
     duplicate = {**builds, "duplicate": next(iter(builds.values()))}
 
     with pytest.raises(PeriodManifestError, match="Archiv-ID"):
@@ -730,22 +779,165 @@ def test_period_manifest_rejects_archive_build_drift(tmp_path: Path) -> None:
             render_period_manifest(period, drifted)
 
 
-def test_manifest_validation_rejects_unknown_and_noncanonical_values(tmp_path: Path) -> None:
+def test_manifest_validation_rejects_unknown_and_noncanonical_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     period = _month_period(tmp_path)
-    value = json.loads(render_period_manifest(period, _period_builds(tmp_path, period)))
+    value = json.loads(
+        render_period_manifest(period, _period_builds(tmp_path, period, monkeypatch))
+    )
     value["unknown"] = True
     with pytest.raises(PeriodManifestError):
         validate_period_manifest(stable_json_dumps(value).encode("utf-8"))
 
-    payload = render_period_manifest(period, _period_builds(tmp_path, period))
+    payload = render_period_manifest(period, _period_builds(tmp_path, period, monkeypatch))
     with pytest.raises(PeriodManifestError, match="kanonisch"):
         validate_period_manifest(payload.replace(b"\n", b"\r\n"))
 
 
-def test_manifest_fingerprint_binds_document_evidence(tmp_path: Path) -> None:
+def test_manifest_fingerprint_binds_document_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     period = _month_period(tmp_path)
-    value = json.loads(render_period_manifest(period, _period_builds(tmp_path, period)))
+    value = json.loads(
+        render_period_manifest(period, _period_builds(tmp_path, period, monkeypatch))
+    )
     value["documents"][0]["pdf_sha256"] = "e" * 64
 
     with pytest.raises(PeriodManifestError, match="input_fingerprint"):
         validate_period_manifest(stable_json_dumps(value).encode("utf-8"))
+
+
+def _manifest_fingerprint_for_test(value: dict[str, object]) -> str:
+    normalized = {
+        key: (
+            [{**archive, "storage_reference": None} for archive in content]
+            if key == "archives"
+            else content
+        )
+        for key, content in value.items()
+        if key != "input_fingerprint"
+    }
+    return hashlib.sha256(stable_json_dumps(normalized).encode("utf-8")).hexdigest()
+
+
+def test_period_manifest_rejects_non_zip_archive_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    period = _month_period(tmp_path)
+    builds = _period_builds(tmp_path, period, monkeypatch)
+    archive_id, build = next(iter(builds.items()))
+    payload = b"not a zip"
+    build.path.write_bytes(payload)
+    builds[archive_id] = replace(
+        build,
+        output_sha256=hashlib.sha256(payload).hexdigest(),
+        size=len(payload),
+    )
+
+    with pytest.raises(PeriodManifestError, match="Archiv"):
+        render_period_manifest(period, builds)
+
+
+def test_period_manifest_snapshots_adversarial_build_mapping_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    period = _month_period(tmp_path)
+    builds = _period_builds(tmp_path, period, monkeypatch)
+
+    class SwitchAfterIteration(Mapping[str, ArchiveBuild]):
+        def __init__(self) -> None:
+            self.changed = False
+
+        def __iter__(self) -> Iterator[str]:
+            self.changed = True
+            return iter(builds)
+
+        def __len__(self) -> int:
+            return len(builds)
+
+        def __getitem__(self, key: str) -> ArchiveBuild:
+            return builds[key]
+
+        def items(self):
+            if self.changed:
+                return ((key, object()) for key in builds)
+            return builds.items()
+
+    assert validate_period_manifest(render_period_manifest(period, SwitchAfterIteration()))
+
+
+@pytest.mark.parametrize("field", ["document_id", "source_id"])
+def test_manifest_validation_rejects_duplicate_document_identity(
+    tmp_path: Path, field: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    period = _month_period(tmp_path)
+    value = json.loads(
+        render_period_manifest(period, _period_builds(tmp_path, period, monkeypatch))
+    )
+    second = dict(value["documents"][0])
+    second["publication_date"] = "2026-07-11"
+    second["pdf_sha256"] = "e" * 64
+    if field == "document_id":
+        second["source_id"] = "rki:176904/900000002"
+    else:
+        second["document_id"] = "rki-176904-900000002-v1"
+    value["documents"].append(second)
+    value["documents"] = sorted(
+        value["documents"],
+        key=lambda item: (item["publication_date"], item["document_id"], item["source_id"]),
+    )
+    value["input_fingerprint"] = _manifest_fingerprint_for_test(value)
+
+    with pytest.raises(PeriodManifestError, match=field):
+        validate_period_manifest(stable_json_dumps(value).encode("utf-8"))
+
+
+def test_manifest_validation_rejects_url_storage_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    period = _month_period(tmp_path)
+    value = json.loads(
+        render_period_manifest(period, _period_builds(tmp_path, period, monkeypatch))
+    )
+    value["archives"][0]["storage_reference"] = "https://backend.example/object-key"
+    value["input_fingerprint"] = _manifest_fingerprint_for_test(value)
+
+    with pytest.raises(PeriodManifestError):
+        validate_period_manifest(stable_json_dumps(value).encode("utf-8"))
+
+
+def test_month_index_omits_missing_weekly_format_links(tmp_path: Path) -> None:
+    period = _month_period(tmp_path, markdown=False)
+
+    payload = render_month_index(period)
+
+    assert b"RKI-Einzelartikel-2026-07-27_bis_2026-08-02-PDF" in payload
+    assert b"RKI-Einzelartikel-2026-07-27_bis_2026-08-02-Markdown" not in payload
+
+
+def test_month_index_percent_encodes_relative_link_targets(tmp_path: Path) -> None:
+    base = _month_period(tmp_path)
+    assert base.documents[0].pdf is not None
+    unsafe_pdf = replace(
+        base.documents[0].pdf,
+        logical_key="rki/Bulletins/Jahre/2026/PDF/A [x])\n.pdf",
+    )
+    period = replace(base, documents=(replace(base.documents[0], pdf=unsafe_pdf),))
+
+    payload = render_month_index(period)
+
+    assert b"A%20%5Bx%5D%29%0A.pdf" in payload
+    assert b"A [x])\n.pdf" not in payload
+
+
+def test_month_index_escapes_backslash_and_pipe_without_markdown_ambiguity(
+    tmp_path: Path,
+) -> None:
+    base = _month_period(tmp_path)
+    period = replace(base, documents=(replace(base.documents[0], title=r"A\B | C"),))
+
+    payload = render_month_index(period)
+
+    assert b"A\\B &#124; C" in payload
+    assert b"A\\B \\| C" not in payload
