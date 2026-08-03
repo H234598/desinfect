@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 import re
 from typing import Any, Iterable, Mapping
 
+from scripts.rki_pipeline.documents import bitstream_identity, document_identity
 from scripts.rki_pipeline.io_utils import normalize_posix_path
 
 SCHEMA_VERSION = "1.0.0"
@@ -176,6 +177,18 @@ class PdfCandidate:
             "expected_md5": self.expected_md5,
         }
 
+    @property
+    def bitstream_id(self) -> str:
+        """Return stable canonical identity for this PDF bitstream."""
+
+        return bitstream_identity(self.url).bitstream_id
+
+    @property
+    def bitstream_version(self) -> int | None:
+        """Return optional DSpace bitstream sequence number."""
+
+        return bitstream_identity(self.url).version
+
 
 @dataclass(frozen=True, slots=True)
 class ItemMetadata:
@@ -197,28 +210,19 @@ class ItemMetadata:
     def source_id(self) -> str:
         """Return the stable source identifier including the handle version."""
 
-        return f"rki:{self.item_handle}"
+        return document_identity(self.item_handle).source_id
 
     @property
     def document_id(self) -> str:
         """Return a portable versioned document identifier."""
 
-        match = _HANDLE_RE.fullmatch(self.item_handle)
-        if match is None:
-            raise ValueError(f"Ungültiger RKI-Handle: {self.item_handle}")
-        version = int(match.group("version") or "1")
-        return (
-            f"rki-{match.group('prefix')}-{match.group('number')}-v{version}"
-        )
+        return document_identity(self.item_handle).document_id
 
     @property
     def version(self) -> int:
         """Return the numeric version suffix, defaulting unversioned handles to one."""
 
-        match = _HANDLE_RE.fullmatch(self.item_handle)
-        if match is None:
-            raise ValueError(f"Ungültiger RKI-Handle: {self.item_handle}")
-        return int(match.group("version") or "1")
+        return document_identity(self.item_handle).version
 
 
 @dataclass(frozen=True, slots=True)

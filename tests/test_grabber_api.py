@@ -19,7 +19,11 @@ ROBOTS = f"{BASE}/robots.txt"
 ISSUES_ROOT = f"{BASE}/handle/176904/10"
 LISTING = f"{BASE}/handle/176904/1996/recent-submissions"
 ITEM = f"{BASE}/handle/176904/12345.2"
-PDF_URL = f"{BASE}/bitstream/handle/176904/12345.2/minimal.pdf?sequence=2"
+PDF_URLS = (
+    f"{BASE}/bitstream/handle/176904/12345.2/minimal.pdf?sequence=1",
+    f"{BASE}/bitstream/handle/176904/12345.2/minimal.pdf?sequence=2",
+)
+PDF_URL = PDF_URLS[1]
 
 
 def html(name: str) -> bytes:
@@ -58,12 +62,13 @@ def responses(*, include_pdf: bool) -> dict[str, FakeResponse]:
     }
     if include_pdf:
         pdf = (FIXTURES / "pdf" / "minimal.pdf").read_bytes()
-        result[PDF_URL] = FakeResponse(
-            200,
-            PDF_URL,
-            pdf,
-            {"content-type": "application/pdf", "etag": '"pdf-v2"'},
-        )
+        for pdf_url in PDF_URLS:
+            result[pdf_url] = FakeResponse(
+                200,
+                pdf_url,
+                pdf,
+                {"content-type": "application/pdf", "etag": '"pdf-v2"'},
+            )
     return result
 
 
@@ -99,8 +104,10 @@ def test_dry_run_is_importable_structured_and_does_not_create_output(tmp_path: P
     )
     assert result.outcome is Outcome.SUCCESS
     assert result.exit_code == 0
-    assert len(result.records) == 1
-    assert result.records[0].state is RecordState.PLANNED
+    assert len(result.records) == 2
+    assert {record.state for record in result.records} == {RecordState.PLANNED}
+    assert {record.pdf_url for record in result.records} == set(PDF_URLS)
+    assert len({record.relative_path for record in result.records}) == 2
     assert not output.exists()
     payload = result.to_dict()
     validate_result(payload)
@@ -128,11 +135,14 @@ def test_materializing_api_downloads_to_relative_path_and_validates_schema(tmp_p
         now=clock(),
     )
     assert result.outcome is Outcome.SUCCESS
-    record = result.records[0]
-    assert record.state is RecordState.DOWNLOADED
-    assert record.relative_path is not None
-    assert not Path(record.relative_path).is_absolute()
-    assert (tmp_path / record.relative_path).is_file()
+    assert len(result.records) == 2
+    assert {record.state for record in result.records} == {RecordState.DOWNLOADED}
+    assert {record.pdf_url for record in result.records} == set(PDF_URLS)
+    assert len({record.relative_path for record in result.records}) == 2
+    for record in result.records:
+        assert record.relative_path is not None
+        assert not Path(record.relative_path).is_absolute()
+        assert (tmp_path / record.relative_path).is_file()
     validate_result(result.to_dict())
 
 

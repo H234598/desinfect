@@ -283,13 +283,31 @@ def _pdf_candidates(
             match = MD5_RE.search(parent.get_text(" ", strip=True))
             if match is not None:
                 expected_md5 = match.group(1).lower()
-        key = f"{parsed.path}|{expected_md5 or parsed.query}"
-        found[key] = PdfCandidate(
+        candidate = PdfCandidate(
             url=urlunsplit(("https", parsed.netloc, parsed.path, parsed.query, "")),
             source_name=unquote(source_name),
             expected_md5=expected_md5,
         )
-    return tuple(found[key] for key in sorted(found))
+        previous = found.get(candidate.bitstream_id)
+        if (
+            previous is not None
+            and previous.expected_md5 is not None
+            and candidate.expected_md5 is not None
+            and previous.expected_md5 != candidate.expected_md5
+        ):
+            raise ValueError("Widersprüchliche MD5-Werte für RKI-Bitstream")
+        if previous is None:
+            found[candidate.bitstream_id] = candidate
+    return tuple(
+        sorted(
+            found.values(),
+            key=lambda candidate: (
+                candidate.bitstream_version is None,
+                candidate.bitstream_version or 0,
+                candidate.bitstream_id,
+            ),
+        )
+    )
 
 
 def parse_item_metadata(
@@ -356,4 +374,6 @@ def target_relative_path(metadata: ItemMetadata, candidate: PdfCandidate) -> str
     )
     if not filename.lower().endswith(".pdf"):
         filename += ".pdf"
+    if candidate.bitstream_version is not None:
+        filename = f"{filename[:-4]}__seq-{candidate.bitstream_version}.pdf"
     return PurePosixPath(metadata.scope.value, year_dir, filename).as_posix()

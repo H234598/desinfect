@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from scripts.rki_grabber.models import AffectedPeriods, Scope
 from scripts.rki_grabber.parser import (
     extract_submission_item_links,
@@ -58,13 +60,53 @@ def test_item_parser_preserves_version_date_rights_and_deduplicates_bitstream() 
     assert metadata.doi == "10.25646/12345.2"
     assert metadata.rights.label == "Synthetic fixture — no publication decision"
     assert metadata.etag == '"item-v2"'
-    assert len(metadata.pdfs) == 1
-    candidate = metadata.pdfs[0]
-    assert candidate.expected_md5 == "397039b5b63ce567c48e787bbb3e18ae"
-    assert candidate.url.endswith("minimal.pdf?sequence=2")
-    path = target_relative_path(metadata, candidate)
+    assert [candidate.bitstream_version for candidate in metadata.pdfs] == [1, 2]
+    assert len({candidate.bitstream_id for candidate in metadata.pdfs}) == 2
+    assert {candidate.expected_md5 for candidate in metadata.pdfs} == {
+        "397039b5b63ce567c48e787bbb3e18ae"
+    }
+    path = target_relative_path(metadata, metadata.pdfs[0])
     assert path.startswith("issues/1996/")
-    assert path.endswith("minimal.pdf")
+    assert path.endswith("minimal__seq-1.pdf")
+
+
+def test_item_parser_collapses_exact_duplicate_bitstream_urls() -> None:
+    """Repeated anchor for one canonical bitstream must produce one candidate."""
+
+    metadata = parse_item_metadata(
+        """
+        <a href="/bitstream/handle/176904/12345/minimal.pdf?sequence=1">one.pdf</a>
+        <a href="/bitstream/handle/176904/12345/minimal.pdf?sequence=1">two.pdf</a>
+        """,
+        scope=Scope.ISSUES,
+        item_handle="176904/12345",
+        item_url="https://edoc.rki.de/handle/176904/12345",
+        fallback_year=1996,
+        base_url=BASE_URL,
+    )
+
+    assert len(metadata.pdfs) == 1
+
+
+def test_item_parser_rejects_conflicting_md5_for_duplicate_bitstream() -> None:
+    """Same canonical bitstream cannot silently choose one conflicting checksum."""
+
+    html = """
+    <div><a href="/bitstream/handle/176904/12345/minimal.pdf?sequence=1">one.pdf</a>
+    MD5: 397039b5b63ce567c48e787bbb3e18ae</div>
+    <div><a href="/bitstream/handle/176904/12345/minimal.pdf?sequence=1">two.pdf</a>
+    MD5: 0123456789abcdef0123456789abcdef</div>
+    """
+
+    with pytest.raises(ValueError):
+        parse_item_metadata(
+            html,
+            scope=Scope.ISSUES,
+            item_handle="176904/12345",
+            item_url="https://edoc.rki.de/handle/176904/12345",
+            fallback_year=1996,
+            base_url=BASE_URL,
+        )
 
 
 def test_affected_periods_use_source_publication_date() -> None:
