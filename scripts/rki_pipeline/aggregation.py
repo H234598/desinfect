@@ -641,31 +641,34 @@ def _table_cell(value: str) -> str:
 
 
 def _week_archive_links(
-    period: PeriodRef, index_path: str, documents: tuple[PeriodDocument, ...]
+    period: PeriodRef, index_path: str, aggregation_plan: AggregationPlan
 ) -> str:
-    monday = date.fromordinal(period.start.toordinal() - period.start.weekday())
-    formats = tuple(
-        format_name
-        for format_name, payload_name in (("pdf", "pdf"), ("markdown", "markdown"))
-        if any(getattr(document, payload_name) is not None for document in documents)
+    planned: list[tuple[date, int, str, str]] = []
+    for candidate in aggregation_plan.periods:
+        if candidate.period.kind is not TaskKind.WEEK:
+            continue
+        if candidate.period.start > period.end or candidate.period.end < period.start:
+            continue
+        for archive in candidate.archives:
+            if archive.spec.kind == "week-pdf":
+                planned.append((candidate.period.start, 0, "PDF", archive.relative_bundle))
+            elif archive.spec.kind == "week-markdown":
+                planned.append((candidate.period.start, 1, "Markdown", archive.relative_bundle))
+    return " ".join(
+        f"[{label}]({_relative_link(index_path, f'{bundle}/archive.zip')})"
+        for _start, _format_order, label, bundle in sorted(planned)
     )
-    links: list[str] = []
-    while monday <= period.end:
-        iso = monday.isocalendar()
-        week = period_ref(TaskKind.WEEK, f"{iso.year:04d}-W{iso.week:02d}")
-        for format_name in formats:
-            label = "PDF" if format_name == "pdf" else "Markdown"
-            target = f"{_bundle_path(week, format_name)}/archive.zip"
-            links.append(f"[{label}]({_relative_link(index_path, target)})")
-        monday = date.fromordinal(monday.toordinal() + 7)
-    return " ".join(links)
 
 
-def render_month_index(period_plan: PeriodPlan) -> bytes:
+def render_month_index(period_plan: PeriodPlan, aggregation_plan: AggregationPlan) -> bytes:
     """Render one deterministic Markdown index for a monthly period."""
 
     if type(period_plan) is not PeriodPlan:
         raise AggregationError("period_plan muss ein exakter PeriodPlan sein")
+    if type(aggregation_plan) is not AggregationPlan:
+        raise AggregationError("aggregation_plan muss ein exakter AggregationPlan sein")
+    if not any(plan is period_plan for plan in aggregation_plan.periods):
+        raise AggregationError("period_plan gehört nicht zum AggregationPlan")
     if period_plan.period.kind is not TaskKind.MONTH or period_plan.index_path is None:
         raise AggregationError("Monatsindex benötigt eine Monatsperiode mit Indexpfad")
     index_path = _canonical_path(period_plan.index_path, label="Indexpfad")
@@ -683,7 +686,7 @@ def render_month_index(period_plan: PeriodPlan) -> bytes:
         "| Datum | Titel | RKI-Handle | DOI | PDF | Markdown | Konvertierung | PDF SHA-256 | Markdown SHA-256 | Wochenarchive |",
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
-    weekly_links = _week_archive_links(period_plan.period, index_path, documents)
+    weekly_links = _week_archive_links(period_plan.period, index_path, aggregation_plan)
     for document in documents:
         if type(document) is not PeriodDocument:
             raise AggregationError("Monatsindex enthält kein exaktes PeriodDocument")
@@ -711,6 +714,7 @@ def render_month_index(period_plan: PeriodPlan) -> bytes:
             )
             + " |"
         )
+    lines.extend(("", "## Wochenarchive", "", weekly_links or "—"))
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 

@@ -665,8 +665,31 @@ def _month_period(tmp_path: Path, *, markdown: bool = True):
     return plan_period_archives(**_plan_inputs(tmp_path, markdown=markdown)).periods[0]
 
 
+def _month_aggregation(
+    tmp_path: Path, *, markdown: bool = True, weeks: tuple[str, ...] = ()
+):
+    inputs = _plan_inputs(tmp_path, markdown=markdown)
+    inputs["due_tasks"] = (
+        due(TaskKind.MONTH, "2026-07"),
+        *(due(TaskKind.WEEK, week) for week in weeks),
+    )
+    return plan_period_archives(**inputs)
+
+
+def _month_from(aggregation):
+    return next(plan for plan in aggregation.periods if plan.period.kind is TaskKind.MONTH)
+
+
+def _with_month(aggregation, month):
+    return replace(
+        aggregation,
+        periods=tuple(month if plan.period.kind is TaskKind.MONTH else plan for plan in aggregation.periods),
+    )
+
+
 def test_month_index_is_canonical_complete_and_escaped(tmp_path: Path) -> None:
-    base = _month_period(tmp_path)
+    aggregation = _month_aggregation(tmp_path, weeks=("2026-W28",))
+    base = _month_from(aggregation)
     document = replace(
         base.documents[0],
         title="A | B <script> & C\r\nD",
@@ -674,7 +697,7 @@ def test_month_index_is_canonical_complete_and_escaped(tmp_path: Path) -> None:
     )
     period = replace(base, documents=(document,))
 
-    rendered = render_month_index(period)
+    rendered = render_month_index(period, _with_month(aggregation, period))
 
     assert rendered.endswith(b"\n")
     assert b"A &#124; B &lt;script&gt; &amp; C  D" in rendered
@@ -685,20 +708,68 @@ def test_month_index_is_canonical_complete_and_escaped(tmp_path: Path) -> None:
     assert document.pdf is not None
     assert document.pdf.sha256.encode("ascii") in rendered
     assert b"RKI-Einzelartikel-2026-07-06_bis_2026-07-12-PDF" in rendered
-    assert b"RKI-Einzelartikel-2026-07-27_bis_2026-08-02-PDF" in rendered
+    assert b"RKI-Einzelartikel-2026-07-27_bis_2026-08-02-PDF" not in rendered
 
 
 def test_month_index_links_cross_boundary_week_and_allows_missing_optional_values(
     tmp_path: Path,
 ) -> None:
-    base = _month_period(tmp_path, markdown=False)
+    aggregation = _month_aggregation(tmp_path, markdown=False, weeks=("2026-W28",))
+    base = _month_from(aggregation)
     period = replace(base, documents=(replace(base.documents[0], doi=None),))
 
-    payload = render_month_index(period)
+    payload = render_month_index(period, _with_month(aggregation, period))
 
-    assert b"2026-07-27_bis_2026-08-02-PDF" in payload
+    assert b"2026-07-06_bis_2026-07-12-PDF" in payload
+    assert b"2026-07-06_bis_2026-07-12-Markdown" not in payload
     assert b"| \xe2\x80\x94 |" in payload
     assert b"not_materialized" in payload
+
+
+def test_month_index_links_only_planned_overlapping_weeks(tmp_path: Path) -> None:
+    aggregation = _month_aggregation(tmp_path, weeks=("2026-W28",))
+    month = _month_from(aggregation)
+
+    payload = render_month_index(month, aggregation)
+
+    assert b"2026-07-06_bis_2026-07-12-PDF" in payload
+    assert b"2026-06-29_bis_2026-07-05-PDF" not in payload
+    assert b"2026-07-13_bis_2026-07-19-PDF" not in payload
+
+
+def test_month_index_links_planned_cross_boundary_week_from_neighbor_month(
+    tmp_path: Path,
+) -> None:
+    inputs = _plan_inputs(tmp_path, markdown=False)
+    graph = inputs["graph"]
+    assert isinstance(graph, ManifestGraph)
+    source = {**graph.sources[-1], "publication_date": "2026-08-01"}
+    document = {
+        **graph.documents[-1],
+        "publication_date": "2026-08-01",
+        "canonical_periods": {"week": "2026-W31", "month": "2026-08", "year": 2026},
+    }
+    inputs["graph"] = ManifestGraph(
+        sources=(*graph.sources[:-1], source),
+        documents=(*graph.documents[:-1], document),
+        conversions=graph.conversions,
+        storage_references=graph.storage_references,
+    )
+    inputs["due_tasks"] = (due(TaskKind.MONTH, "2026-07"), due(TaskKind.WEEK, "2026-W31"))
+    aggregation = plan_period_archives(**inputs)
+
+    payload = render_month_index(_month_from(aggregation), aggregation)
+
+    assert b"2026-07-27_bis_2026-08-02-PDF" in payload
+    assert b"2026-07-27_bis_2026-08-02-Markdown" not in payload
+
+
+def test_month_index_requires_its_complete_aggregation_plan(tmp_path: Path) -> None:
+    aggregation = _month_aggregation(tmp_path)
+    month = _month_from(aggregation)
+
+    with pytest.raises(AggregationError, match="AggregationPlan"):
+        render_month_index(replace(month), aggregation)
 
 
 def test_period_manifest_is_canonical_backend_neutral_and_order_independent(
@@ -848,6 +919,7 @@ def test_period_manifest_snapshots_adversarial_build_mapping_once(
     class SwitchAfterIteration(Mapping[str, ArchiveBuild]):
         def __init__(self) -> None:
             self.changed = False
+            self.items_calls = 0
 
         def __iter__(self) -> Iterator[str]:
             self.changed = True
@@ -860,11 +932,14 @@ def test_period_manifest_snapshots_adversarial_build_mapping_once(
             return builds[key]
 
         def items(self):
+            self.items_calls += 1
             if self.changed:
                 return ((key, object()) for key in builds)
             return builds.items()
 
-    assert validate_period_manifest(render_period_manifest(period, SwitchAfterIteration()))
+    mapping = SwitchAfterIteration()
+    assert validate_period_manifest(render_period_manifest(period, mapping))
+    assert mapping.items_calls == 1
 
 
 @pytest.mark.parametrize("field", ["document_id", "source_id"])
@@ -908,16 +983,18 @@ def test_manifest_validation_rejects_url_storage_reference(
 
 
 def test_month_index_omits_missing_weekly_format_links(tmp_path: Path) -> None:
-    period = _month_period(tmp_path, markdown=False)
+    aggregation = _month_aggregation(tmp_path, markdown=False, weeks=("2026-W28",))
+    period = _month_from(aggregation)
 
-    payload = render_month_index(period)
+    payload = render_month_index(period, aggregation)
 
-    assert b"RKI-Einzelartikel-2026-07-27_bis_2026-08-02-PDF" in payload
-    assert b"RKI-Einzelartikel-2026-07-27_bis_2026-08-02-Markdown" not in payload
+    assert b"RKI-Einzelartikel-2026-07-06_bis_2026-07-12-PDF" in payload
+    assert b"RKI-Einzelartikel-2026-07-06_bis_2026-07-12-Markdown" not in payload
 
 
 def test_month_index_percent_encodes_relative_link_targets(tmp_path: Path) -> None:
-    base = _month_period(tmp_path)
+    aggregation = _month_aggregation(tmp_path)
+    base = _month_from(aggregation)
     assert base.documents[0].pdf is not None
     unsafe_pdf = replace(
         base.documents[0].pdf,
@@ -925,7 +1002,7 @@ def test_month_index_percent_encodes_relative_link_targets(tmp_path: Path) -> No
     )
     period = replace(base, documents=(replace(base.documents[0], pdf=unsafe_pdf),))
 
-    payload = render_month_index(period)
+    payload = render_month_index(period, _with_month(aggregation, period))
 
     assert b"A%20%5Bx%5D%29%0A.pdf" in payload
     assert b"A [x])\n.pdf" not in payload
@@ -934,10 +1011,11 @@ def test_month_index_percent_encodes_relative_link_targets(tmp_path: Path) -> No
 def test_month_index_escapes_backslash_and_pipe_without_markdown_ambiguity(
     tmp_path: Path,
 ) -> None:
-    base = _month_period(tmp_path)
+    aggregation = _month_aggregation(tmp_path)
+    base = _month_from(aggregation)
     period = replace(base, documents=(replace(base.documents[0], title=r"A\B | C"),))
 
-    payload = render_month_index(period)
+    payload = render_month_index(period, _with_month(aggregation, period))
 
     assert b"A\\B &#124; C" in payload
     assert b"A\\B \\| C" not in payload
