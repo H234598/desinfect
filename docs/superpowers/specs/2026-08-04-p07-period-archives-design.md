@@ -8,7 +8,7 @@
 
 Build deterministic weekly, monthly, and yearly PDF/Markdown archive products for every explicitly due or affected closed period. A late document rebuilds exactly its historical week, month, and year. Monthly indexes and period manifests remain canonical, backend-neutral, and idempotent.
 
-P07.3 reconciliation remains out of scope. P07.2 does not publish commits, push storage objects, mutate canonical source files, or change scheduler semantics.
+P07.3 reconciliation remains out of scope. P07.2 satisfies its `MUSS-21` contribution by producing deterministic document/archive/checksum evidence; quarterly comparison of that evidence belongs to P07.3. P07.2 does not publish commits, push storage objects, mutate canonical source files, or change scheduler semantics.
 
 ## Considered approaches
 
@@ -117,7 +117,7 @@ Add registered JSON Schema contract `period-archive-manifest` version `1.0.0`. O
 - ordered current document versions with source ID, publication date, and PDF/Markdown artifact IDs/checksums;
 - ordered archive references with archive ID, kind, relative bundle path, input fingerprint, output SHA-256, byte count, and nullable storage-reference ID;
 - for year periods, ordered references to available month manifests;
-- canonical input fingerprint over all fields except storage-reference IDs.
+- canonical input fingerprint over all fields except `input_fingerprint` itself and storage-reference IDs.
 
 References use artifact IDs and repository-relative logical paths, never backend URLs or backend-specific object keys. P04 storage references remain the resolver authority.
 
