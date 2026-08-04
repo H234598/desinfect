@@ -1,6 +1,6 @@
 ---
 title: Implementierungsplan V3 – Steuerung
-status: P08.2 abgeschlossen; P09.1 als nächste Phase
+status: P09.1 abgeschlossen; P09.2 als nächste Phase
 source_plan_sha256: aa50863cde1313a7039691b4ca596c1ab498d0fab0008da324de5cb69f12ffc4
 repository: H234598/desinfect
 branch: main
@@ -40,11 +40,13 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 - **P08.1-Gate:** geprüfter Head `54a6d1e`; GitHub Actions `30901827480` sowie Nach-Merge-Lauf `30902077612` erfolgreich; CodeRabbit und qlty erfolgreich; alle drei Reviewthreads aufgelöst; 1210 Pytest-, 9 Unittest- und 2 Node-Tests sowie Wachhund-CLI im Planmodus erfolgreich.
 - **P08.2:** PR #27, Merge `12ac906cdf9982cd91d0bcab5a5e1d783a765ddf`
 - **P08.2-Gate:** geprüfter Head `f60a2fc`; GitHub Actions `30910544137` sowie Nach-Merge-Lauf `30911539579` erfolgreich; qlty erfolgreich; CodeRabbit-Hauptreview erfolgreich und finales inkrementelles Walkthrough ohne neue Aktion; einziger Reviewthread aufgelöst; 1327 Pytest-, 9 Unittest- und 2 Node-Tests erfolgreich.
-- **Fortschritt:** 29 von 60 Arbeitspaketen umgesetzt; 31 offen; 0 in Arbeit; 0 im Review; 0 blockiert.
+- **P09.1:** PR #29, Merge `276e206381d9143547fddfc62cf51d6915cf046f`
+- **P09.1-Gate:** geprüfter Head `3c27489`; GitHub Actions `30916701898` sowie Nach-Merge-Lauf `30917009538` erfolgreich; CodeRabbit und qlty erfolgreich; einziger Reviewthread aufgelöst; 1327 Pytest-, 9 Unittest-, 2 Node- und 14 Workers-Vitest-Tests sowie TypeScript-Typprüfung, Wrangler-Typdriftprüfung, Deployment-Dry-Run und npm audit erfolgreich.
+- **Fortschritt:** 30 von 60 Arbeitspaketen umgesetzt; 30 offen; 0 in Arbeit; 0 im Review; 0 blockiert.
 
-## Nächste Phase P09.1
+## Nächste Phase P09.2
 
-P08.2 ist umgesetzt. P09.1 bleibt `offen`, bis Implementierungsbranch und planmäßige Evidenz vorliegen. P09.1 schafft das Cloudflare-Worker-/Durable-Object-Projektfundament.
+P09.1 ist umgesetzt. P09.2 bleibt `offen`, bis Implementierungsbranch und planmäßige Evidenz vorliegen. P09.2 ergänzt GitHub-App-JWT und fest begrenzte API-Operationen auf dem Cloudflare-Fundament.
 
 ## Arbeitspakete
 
@@ -77,7 +79,7 @@ P08.2 ist umgesetzt. P09.1 bleibt `offen`, bis Implementierungsbranch und planm�
 - [x] **P07.3** Quartals-Reconciliation _(umgesetzt, PR #23, Merge `cf756854964cd4be1b092bb19bfd61c9a3e0ac1e`)_
 - [x] **P08.1** Interner Wachhund und getrennte Uhren _(umgesetzt, PR #25, Merge `6fccb8d0ce42f27dd5dca9f47ff2cd169323b0c0`)_
 - [x] **P08.2** Job Summary, Diagnoseartefakte und Rolling Issue _(umgesetzt, PR #27, Merge `12ac906cdf9982cd91d0bcab5a5e1d783a765ddf`)_
-- [ ] **P09.1** Cloudflare-Worker-/DO-Projektfundament
+- [x] **P09.1** Cloudflare-Worker-/DO-Projektfundament _(umgesetzt, PR #29, Merge `276e206381d9143547fddfc62cf51d6915cf046f`)_
 - [ ] **P09.2** GitHub-App-JWT und feste API-Operationen
 - [ ] **P09.3** DO-Sperre, Idempotenz, Alarm und Nachkontrolle
 - [ ] **P09.4** Cloudflare-Deploy und Betriebsgrenzen
