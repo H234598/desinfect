@@ -232,6 +232,46 @@ def test_staged_directory_rolls_back_when_publication_validator_rejects(
     assert (target / "value.txt").read_text(encoding="utf-8") == "old"
 
 
+@pytest.mark.parametrize("validator_raises", (False, True))
+def test_staged_directory_never_removes_concurrent_target_after_validator_rename(
+    tmp_path: Path, validator_raises: bool
+) -> None:
+    """Target ownership is rebound after validator-side name replacement."""
+
+    target = tmp_path / "site"
+    _generated(target, "old")
+    moved = tmp_path / "validator-owned"
+
+    def replace_target(_target_fd: int) -> None:
+        target.rename(moved)
+        _generated(target, "concurrent")
+        if validator_raises:
+            raise RuntimeError("validator replaced target")
+
+    with pytest.raises(StagingError):
+        with staged_directory(
+            target,
+            allowed_root=tmp_path,
+            publication_validator=replace_target,
+        ) as stage:
+            (stage / "value.txt").write_text("ours", encoding="utf-8")
+
+    assert (target / "value.txt").read_text(encoding="utf-8") == "concurrent"
+    assert moved.is_dir()
+
+
+def test_staged_directory_rejects_nested_same_target_without_lock_artifact(tmp_path: Path) -> None:
+    """Same-target reentry fails fast and leaves no persistent lock file."""
+
+    target = tmp_path / "site"
+    with staged_directory(target, allowed_root=tmp_path):
+        with pytest.raises(StagingConflictError, match="Stagingtransaktion"):
+            with staged_directory(target, allowed_root=tmp_path):
+                pass
+
+    assert not list(tmp_path.glob("*.lock"))
+
+
 def test_staged_directory_rejects_symlink_in_generated_output(tmp_path: Path) -> None:
     """A generated output tree containing a symlink is never published."""
 

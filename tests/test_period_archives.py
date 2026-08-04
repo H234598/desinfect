@@ -2,6 +2,7 @@ from dataclasses import replace
 from datetime import date, datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Iterator, Mapping
 
@@ -1447,6 +1448,29 @@ def test_materialize_records_final_events_after_durable_cleanup_failure(
     assert ledger.events
     assert all(event.target.startswith(first.root.as_posix()) for event in ledger.events)
     validate_period_manifest(first.manifest_paths[0].read_bytes())
+
+
+def test_fd_tree_signature_rejects_root_file_replacement_after_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "signature-root"
+    root.mkdir()
+    payload = root / "value.txt"
+    payload.write_bytes(b"old")
+    descriptor = os.open(root, os.O_RDONLY)
+    real_hash = aggregation_module._hash_regular_file
+
+    def replace_after_hash(*args: object):
+        result = real_hash(*args)
+        payload.write_bytes(b"new")
+        return result
+
+    monkeypatch.setattr(aggregation_module, "_hash_regular_file", replace_after_hash)
+    try:
+        with pytest.raises(AggregationError, match="änderte"):
+            aggregation_module._tree_signature_fd(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def test_materialize_noop_preserves_tree_mtimes_and_outer_ledger(

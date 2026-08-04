@@ -1045,9 +1045,15 @@ def _hash_regular_file(parent_fd: int, name: str, expected: os.stat_result) -> t
 def _tree_signature_fd(directory_fd: int, prefix: str = "") -> tuple[tuple[str, int, int, str], ...]:
     """Return file path/mode/size/SHA tuples without resolving any child path."""
 
+    root_before = os.fstat(directory_fd)
+    if not stat.S_ISDIR(root_before.st_mode):
+        raise AggregationError("Aggregationsbaum enthält kein Verzeichnis")
     rows: list[tuple[str, int, int, str]] = []
-    for name in sorted(os.listdir(directory_fd)):
+    names = tuple(sorted(os.listdir(directory_fd)))
+    metadata_by_name: dict[str, os.stat_result] = {}
+    for name in names:
         metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        metadata_by_name[name] = metadata
         relative = f"{prefix}/{name}" if prefix else name
         if stat.S_ISLNK(metadata.st_mode):
             raise AggregationError("Symlink im Aggregationsbaum ist unzulässig")
@@ -1068,6 +1074,13 @@ def _tree_signature_fd(directory_fd: int, prefix: str = "") -> tuple[tuple[str, 
         if size != metadata.st_size:
             raise AggregationError("Aggregationsdatei änderte sich während der Hash-Prüfung")
         rows.append((relative, stat.S_IMODE(metadata.st_mode), size, digest))
+    if tuple(sorted(os.listdir(directory_fd))) != names or not _same_file_metadata(
+        root_before, os.fstat(directory_fd)
+    ):
+        raise AggregationError("Aggregationsverzeichnis änderte sich während der Prüfung")
+    for name, before in metadata_by_name.items():
+        if not _same_file_metadata(before, os.stat(name, dir_fd=directory_fd, follow_symlinks=False)):
+            raise AggregationError("Aggregationsbaum änderte sich während der Prüfung")
     return tuple(rows)
 
 
@@ -1271,8 +1284,14 @@ def _copy_regular_file(
 def _copy_tree(source_fd: int, destination_fd: int, *, skip_root_sentinel: bool = False) -> None:
     """Copy a generated tree FD-relativ, no-follow, preserving regular modes."""
 
-    for name in sorted(os.listdir(source_fd)):
+    root_before = os.fstat(source_fd)
+    if not stat.S_ISDIR(root_before.st_mode):
+        raise AggregationError("Quellbaum enthält kein Verzeichnis")
+    names = tuple(sorted(os.listdir(source_fd)))
+    metadata_by_name: dict[str, os.stat_result] = {}
+    for name in names:
         metadata = os.stat(name, dir_fd=source_fd, follow_symlinks=False)
+        metadata_by_name[name] = metadata
         if skip_root_sentinel and name == GENERATED_ROOT_SENTINEL:
             continue
         if stat.S_ISLNK(metadata.st_mode):
@@ -1296,6 +1315,13 @@ def _copy_tree(source_fd: int, destination_fd: int, *, skip_root_sentinel: bool 
             _copy_regular_file(source_fd, destination_fd, name, metadata)
         else:
             raise AggregationError("Bestehender Aggregationsbaum enthält keinen regulären Eintrag")
+    if tuple(sorted(os.listdir(source_fd))) != names or not _same_file_metadata(
+        root_before, os.fstat(source_fd)
+    ):
+        raise AggregationError("Quellverzeichnis änderte sich während FD-Kopie")
+    for name, before in metadata_by_name.items():
+        if not _same_file_metadata(before, os.stat(name, dir_fd=source_fd, follow_symlinks=False)):
+            raise AggregationError("Quellbaum änderte sich während FD-Kopie")
 
 
 def _copy_existing_tree(root: Path, relative: PurePosixPath, stage_fd: int) -> None:
