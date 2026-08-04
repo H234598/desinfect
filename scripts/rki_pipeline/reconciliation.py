@@ -6,14 +6,28 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 import json
 import re
-from typing import Iterable
+from typing import Callable, Iterable, TypeAlias
 import unicodedata
 
+from scripts.rki_grabber.models import ArtifactRecord
+from scripts.rki_pipeline.documents import DocumentIdentityError, bitstream_identity
 from scripts.rki_pipeline.io_utils import normalize_posix_path, stable_json_dumps
+from scripts.rki_pipeline.manifests import LoadedManifestCatalog
 from scripts.rki_pipeline.schema_registry import validate_document
+from scripts.rki_pipeline.storage.base import PreparedObject
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_METADATA_FIELDS = (
+    ("version", "version"),
+    ("source_url", "item_url"),
+    ("bitstream_url", "pdf_url"),
+    ("etag", "etag"),
+    ("last_modified", "last_modified"),
+    ("publication_date", "publication_date"),
+)
+
+CandidateLoader: TypeAlias = Callable[[ArtifactRecord], PreparedObject]
 
 
 class FindingCode(StrEnum):
@@ -119,6 +133,117 @@ class ReconciliationResult:
 
 def source_subject_id(source_id: str, bitstream_id: str) -> str:
     return f"{source_id}#{bitstream_id}"
+
+
+def compare_remote_sources(
+    catalog: LoadedManifestCatalog,
+    remote_records: tuple[ArtifactRecord, ...],
+    *,
+    candidate_loader: CandidateLoader | None = None,
+) -> tuple[ReconciliationFinding, ...]:
+    """Compare current manifest sources with a remote metadata snapshot."""
+
+    local_sources = _current_source_projection(catalog)
+    remote_sources: dict[tuple[str, str], ArtifactRecord] = {}
+    findings: list[ReconciliationFinding] = []
+
+    for record in remote_records:
+        bitstream_id = _remote_bitstream_id(record)
+        if bitstream_id is None:
+            continue
+        key = (record.source_id, bitstream_id)
+        if key in remote_sources:
+            raise ValueError("Remote-Source/Bitstream ist doppelt")
+        remote_sources[key] = record
+
+    for key, record in remote_sources.items():
+        local = local_sources.get(key)
+        subject_id = source_subject_id(*key)
+        if local is None:
+            findings.append(_source_finding(FindingCode.NEW, subject_id, "Remote-Quelle ist neu"))
+            continue
+        if _metadata_drifts(local, record):
+            _load_candidate_if_available(candidate_loader, record, local)
+            findings.append(
+                _source_finding(FindingCode.CHANGED, subject_id, "Remote-Metadaten driften")
+            )
+
+    for key in local_sources.keys() - remote_sources.keys():
+        findings.append(
+            _source_finding(
+                FindingCode.MISSING_REMOTE,
+                source_subject_id(*key),
+                "Remote-Quelle fehlt",
+            )
+        )
+
+    return tuple(sorted(findings, key=lambda item: item.key))
+
+
+def _current_source_projection(
+    catalog: LoadedManifestCatalog,
+) -> dict[tuple[str, str], dict[str, object]]:
+    sources = {source["bitstream_id"]: source for source in catalog.graph.sources}
+    current: dict[tuple[str, str], dict[str, object]] = {}
+    for document in catalog.graph.documents:
+        if document["superseded_by"] is not None:
+            continue
+        bitstream_id = document["bitstream_id"]
+        source = sources[bitstream_id]
+        key = (source["source_id"], bitstream_id)
+        current[key] = source
+    return current
+
+
+def _remote_bitstream_id(record: ArtifactRecord) -> str | None:
+    if record.pdf_url is None:
+        return None
+    try:
+        return bitstream_identity(record.pdf_url).bitstream_id
+    except DocumentIdentityError as exc:
+        raise ValueError("Remote-Record hat keine kanonische PDF-Bitstream-Identität") from exc
+
+
+def _metadata_drifts(local: dict[str, object], remote: ArtifactRecord) -> bool:
+    if any(local[local_field] != getattr(remote, remote_field) for local_field, remote_field in _METADATA_FIELDS):
+        return True
+    return remote.sha256 is not None and local["sha256"] != remote.sha256
+
+
+def _load_candidate_if_available(
+    candidate_loader: CandidateLoader | None,
+    record: ArtifactRecord,
+    local: dict[str, object],
+) -> None:
+    if candidate_loader is None:
+        return
+    try:
+        candidate = candidate_loader(record)
+        candidate.__post_init__()
+        if (
+            candidate.source_id != record.source_id
+            or candidate.document_id != record.document_id
+            or candidate.source_sha256 != candidate.sha256
+            or not candidate.path.is_file()
+            or candidate.sha256 != local["sha256"]
+        ):
+            return
+    except Exception:
+        return
+
+
+def _source_finding(
+    code: FindingCode,
+    subject_id: str,
+    message: str,
+) -> ReconciliationFinding:
+    return ReconciliationFinding(
+        code=code,
+        subject_kind=SubjectKind.SOURCE,
+        subject_id=subject_id,
+        relative_path=None,
+        message=message,
+    )
 
 
 def build_reconciliation_result(
