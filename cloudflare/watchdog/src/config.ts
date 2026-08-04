@@ -7,10 +7,14 @@ export interface RuntimeConfigEnv {
   DISPATCH_COOLDOWN_HOURS: string;
 }
 
+const FIXED_OWNER = "H234598";
+const FIXED_REPO = "desinfect";
+const FIXED_WORKFLOW_FILE = "rki-dispatcher.yml";
+
 export interface RuntimeConfig {
-  owner: "H234598";
-  repo: "desinfect";
-  workflowFile: "rki-dispatcher.yml";
+  owner: typeof FIXED_OWNER;
+  repo: typeof FIXED_REPO;
+  workflowFile: typeof FIXED_WORKFLOW_FILE;
   watchdogIntervalDays: number;
   graceHours: number;
   dispatchCooldownHours: number;
@@ -34,14 +38,14 @@ function readBoundedInteger(name: string, raw: string, maximum: number): number 
 }
 
 export function readRuntimeConfig(env: RuntimeConfigEnv): RuntimeConfig {
-  requireFixed("GITHUB_OWNER", env.GITHUB_OWNER, "H234598");
-  requireFixed("GITHUB_REPO", env.GITHUB_REPO, "desinfect");
-  requireFixed("GITHUB_WORKFLOW_FILE", env.GITHUB_WORKFLOW_FILE, "rki-dispatcher.yml");
+  requireFixed("GITHUB_OWNER", env.GITHUB_OWNER, FIXED_OWNER);
+  requireFixed("GITHUB_REPO", env.GITHUB_REPO, FIXED_REPO);
+  requireFixed("GITHUB_WORKFLOW_FILE", env.GITHUB_WORKFLOW_FILE, FIXED_WORKFLOW_FILE);
 
   return {
-    owner: "H234598",
-    repo: "desinfect",
-    workflowFile: "rki-dispatcher.yml",
+    owner: FIXED_OWNER,
+    repo: FIXED_REPO,
+    workflowFile: FIXED_WORKFLOW_FILE,
     watchdogIntervalDays: readBoundedInteger(
       "WATCHDOG_INTERVAL_DAYS",
       env.WATCHDOG_INTERVAL_DAYS,
