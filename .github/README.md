@@ -20,3 +20,9 @@
 - `.github/CODEOWNERS` führt `@H234598` als initialen globalen und expliziten Infrastruktur-CODEOWNER
 
 Der Workflow bleibt bis P11 bewusst schmal und wird dort in die vollständige Validierungs-, Diagnose-, Supply-Chain- und Required-Check-Infrastruktur überführt. P03 führt weder einen echten RKI-Abruf noch einen schreibenden Workflow ein.
+
+## P08.2 Pipeline-Observability
+
+Der wiederverwendbare Pipelineworkflow rendert unter `if: always()` eine redigierte Job Summary und lädt vorhandene Transaktionsevidenz zeitlich begrenzt hoch. Workflowstatus und Transaktionsstatus bleiben getrennt; Diagnose- oder Artefaktfehler verändern den fachlichen Exit nicht.
+
+Ein Rolling Issue ist standardmäßig aus. Nur `ROLLING_ISSUE_ENABLED=true` aktiviert einen getrennten, kurzlebigen Wachhund-App-Token mit `issues:write` für `H234598/desinfect`. `INCIDENT_FAILURE_THRESHOLD` steuert die Schwelle, Default `2`. Marker, Label und Titelpräfix sind fest; Duplikate blockieren statt ein weiteres Issue zu erzeugen. Details: `docs/Wartung/Observability.md` und `runbooks/PIPELINE-FAILED.md`.

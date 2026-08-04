@@ -252,6 +252,40 @@ def _validate_workflows() -> None:
     }
     if token_step.get("with") != expected_token_scope:
         raise P05ValidationError("Wachhund-Token ist nicht minimal repository-scoped")
+
+    summary = _named_index(steps, "Render redacted job summary")
+    upload = _named_index(steps, "Upload redacted transaction evidence")
+    incident_token = _named_index(steps, "Create repository-scoped incident issue token")
+    incident = _named_index(steps, "Maintain rolling incident issue")
+    if not writer < summary < upload < incident_token < incident:
+        raise P05ValidationError("Observability-Schritte besitzen eine unsichere Reihenfolge")
+    if (
+        steps[summary].get("if") != "always()"
+        or steps[upload].get("if") != "always()"
+        or steps[summary].get("continue-on-error") is not True
+        or steps[upload].get("continue-on-error") is not True
+    ):
+        raise P05ValidationError("Summary und Diagnoseartefakt müssen immer laufen")
+    enabled = "always() && vars.ROLLING_ISSUE_ENABLED == 'true'"
+    incident_token_step = steps[incident_token]
+    expected_incident_scope = {
+        "client-id": "${{ vars.WACHHUND_APP_CLIENT_ID }}",
+        "private-key": "${{ secrets.WACHHUND_APP_PRIVATE_KEY }}",
+        "owner": "H234598",
+        "repositories": "desinfect",
+        "permission-issues": "write",
+    }
+    if (
+        incident_token_step.get("if") != enabled
+        or incident_token_step.get("uses")
+        != "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1"
+        or incident_token_step.get("with") != expected_incident_scope
+        or incident_token_step.get("continue-on-error") is not True
+    ):
+        raise P05ValidationError("Incident-Token ist nicht optional, minimal und fehlertolerant")
+    incident_step = steps[incident]
+    if incident_step.get("if") != enabled or incident_step.get("continue-on-error") is not True:
+        raise P05ValidationError("Rolling Issue darf den fachlichen Pipeline-Exit nicht verändern")
     pipeline_text = pipeline_path.read_text(encoding="utf-8")
     for forbidden in ("--force", "--force-with-lease", "GITHUB_TOKEN"):
         if forbidden in pipeline_text:
