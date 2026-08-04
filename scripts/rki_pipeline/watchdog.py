@@ -2,6 +2,7 @@
 """Pure internal-watchdog planning and status projections."""
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -174,3 +175,65 @@ def plan_watchdog(status: dict[str, Any], *, as_of: str) -> BarkPlan | None:
         commit_title=title,
         commit_body=body,
     )
+
+
+def apply_bark(status: dict[str, Any], plan: BarkPlan) -> dict[str, Any]:
+    current = _validated_status(status)
+    if not isinstance(plan, BarkPlan):
+        raise WatchdogError("Barkplan besitzt den falschen Typ")
+    if current["watchdog"]["next_bark_at"] != plan.expected_next_bark_at:
+        raise WatchdogError("Barkplan ist veraltet")
+    expected = plan_watchdog(current, as_of=plan.evaluated_at)
+    if expected != plan:
+        raise WatchdogError("Barkplan ist veraltet")
+    result = deepcopy(current)
+    result["updated_at"] = plan.evaluated_at
+    result["watchdog"]["last_bark_at"] = plan.evaluated_at
+    result["watchdog"]["next_bark_at"] = plan.next_bark_at
+    try:
+        validate_document("status", result)
+    except SchemaContractError as exc:
+        raise WatchdogError("Barkprojektion verletzt den öffentlichen Vertrag") from exc
+    return result
+
+
+def reset_watchdog(
+    status: dict[str, Any],
+    *,
+    now: str,
+    interval_days: int = 45,
+    reset_by: str,
+    run_mode: str,
+    run_status: str,
+    commit_created: bool,
+) -> dict[str, Any]:
+    current = _validated_status(status)
+    interval = _interval(interval_days)
+    if (
+        run_mode != "apply"
+        or run_status not in {"success", "recovered"}
+        or commit_created is not True
+    ):
+        raise WatchdogError("Nur ein erfolgreicher beabsichtigter Apply-Commit darf zurücksetzen")
+    if (
+        type(reset_by) is not str
+        or not reset_by
+        or len(reset_by) > 120
+        or not reset_by.isprintable()
+    ):
+        raise WatchdogError("reset_by muss 1..120 druckbare Zeichen enthalten")
+    reset = _utc(now, "now")
+    reset_at = _format_utc(reset)
+    result = deepcopy(current)
+    result["updated_at"] = reset_at
+    result["watchdog"]["interval_days"] = interval
+    result["watchdog"]["last_reset_at"] = reset_at
+    result["watchdog"]["next_bark_at"] = _format_utc(
+        reset + timedelta(days=interval)
+    )
+    result["watchdog"]["reset_by"] = reset_by
+    try:
+        validate_document("status", result)
+    except SchemaContractError as exc:
+        raise WatchdogError("Resetprojektion verletzt den öffentlichen Vertrag") from exc
+    return result

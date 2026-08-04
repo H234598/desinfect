@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from scripts.rki_pipeline.watchdog import WatchdogError, plan_watchdog
+from scripts.rki_pipeline.watchdog import (
+    WatchdogError,
+    apply_bark,
+    plan_watchdog,
+    reset_watchdog,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -122,3 +127,113 @@ def test_planning_does_not_mutate_status() -> None:
     before = deepcopy(value)
     plan_watchdog(value, as_of=DUE)
     assert value == before
+
+
+def test_bark_projection_advances_only_watchdog_clocks() -> None:
+    value = armed_status()
+    before = deepcopy(value)
+    plan = plan_watchdog(value, as_of=DUE)
+    assert plan is not None
+
+    projected = apply_bark(value, plan)
+
+    assert value == before
+    assert projected["pipeline"] == before["pipeline"]
+    assert projected["watchdog"]["last_bark_at"] == DUE
+    assert projected["watchdog"]["last_reset_at"] == RESET
+    assert projected["watchdog"]["next_bark_at"] == "2026-10-18T04:31:12Z"
+    assert projected["updated_at"] == DUE
+
+
+def test_bark_plan_cannot_be_replayed_or_applied_to_changed_state() -> None:
+    value = armed_status()
+    plan = plan_watchdog(value, as_of=DUE)
+    assert plan is not None
+    applied = apply_bark(value, plan)
+
+    with pytest.raises(WatchdogError, match="veraltet"):
+        apply_bark(applied, plan)
+
+    changed = armed_status()
+    changed["pipeline"]["last_successful_write_at"] = None
+    with pytest.raises(WatchdogError, match="veraltet"):
+        apply_bark(changed, plan)
+
+
+def test_successful_apply_commit_resets_without_touching_pipeline_clocks() -> None:
+    value = armed_status(last_bark_at=DUE)
+    before = deepcopy(value)
+
+    projected = reset_watchdog(
+        value,
+        now="2026-09-04T00:00:00Z",
+        interval_days=45,
+        reset_by="weekly_ingest",
+        run_mode="apply",
+        run_status="success",
+        commit_created=True,
+    )
+
+    assert value == before
+    assert projected["pipeline"] == before["pipeline"]
+    assert projected["watchdog"] == {
+        "interval_days": 45,
+        "last_bark_at": DUE,
+        "last_reset_at": "2026-09-04T00:00:00Z",
+        "next_bark_at": "2026-10-19T00:00:00Z",
+        "reset_by": "weekly_ingest",
+    }
+    assert projected["updated_at"] == "2026-09-04T00:00:00Z"
+
+
+@pytest.mark.parametrize(
+    ("run_mode", "run_status", "commit_created"),
+    [
+        ("plan", "success", True),
+        ("materialize", "success", True),
+        ("apply", "no_op", True),
+        ("apply", "failed", True),
+        ("apply", "success", False),
+    ],
+)
+def test_ineligible_run_cannot_reset_watchdog(
+    run_mode: str,
+    run_status: str,
+    commit_created: bool,
+) -> None:
+    with pytest.raises(WatchdogError, match="Apply-Commit"):
+        reset_watchdog(
+            armed_status(),
+            now="2026-09-04T00:00:00Z",
+            reset_by="weekly_ingest",
+            run_mode=run_mode,
+            run_status=run_status,
+            commit_created=commit_created,
+        )
+
+
+@pytest.mark.parametrize("interval_days", [7, 55])
+def test_reset_accepts_safe_interval_boundaries(interval_days: int) -> None:
+    projected = reset_watchdog(
+        armed_status(),
+        now="2026-09-04T00:00:00Z",
+        interval_days=interval_days,
+        reset_by="weekly_ingest",
+        run_mode="apply",
+        run_status="recovered",
+        commit_created=True,
+    )
+    assert projected["watchdog"]["interval_days"] == interval_days
+
+
+@pytest.mark.parametrize("reset_by", ["", "x" * 121, "line\nbreak"])
+def test_reset_reason_must_be_bounded_and_printable(reset_by: str) -> None:
+    with pytest.raises(WatchdogError, match="reset_by"):
+        reset_watchdog(
+            armed_status(),
+            now="2026-09-04T00:00:00Z",
+            reset_by=reset_by,
+            run_mode="apply",
+            run_status="success",
+            commit_created=True,
+        )
