@@ -12,12 +12,16 @@ import pytest
 from scripts.rki_pipeline.reconciliation import (
     FindingCode,
     ReconciliationIntegrityError,
+    ReconciliationMaterialization,
     ReconciliationCounts,
     ReconciliationFinding,
+    ReconciliationResult,
     RemoteSnapshotError,
     SubjectKind,
     build_reconciliation_result,
     compare_remote_sources,
+    materialize_reconciliation,
+    plan_reconciliation,
     reconcile_rights,
     reconcile_periods,
     reconcile_storage,
@@ -51,7 +55,7 @@ from scripts.rki_pipeline.storage.base import (
 from scripts.rki_pipeline.storage.config import LfsConfig
 from scripts.rki_pipeline.storage.lfs import LfsStorageAdapter
 from scripts.rki_pipeline.manifests import ManifestGraph
-from scripts.rki_pipeline.run_modes import EffectLedger
+from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 from scripts.rki_pipeline import aggregation as aggregation_module
 from scripts.rki_pipeline.io_utils import stable_json_dumps
 from tests.test_period_archives import _materialize_complete_publication, _plan_inputs
@@ -809,6 +813,260 @@ def test_counts_reject_boolean_values() -> None:
             rights_changed=0,
             unresolved=0,
         )
+
+
+_RECONCILIATION_AS_OF = datetime(2026, 8, 4, 4, 5, 6, tzinfo=timezone.utc)
+
+
+def test_plan_reconciliation_composes_empty_consistent_snapshot(tmp_path: Path) -> None:
+    catalog = remote_catalog()
+
+    result = plan_reconciliation(
+        as_of=_RECONCILIATION_AS_OF,
+        from_year=1996,
+        to_year=1996,
+        catalog=catalog,
+        remote_records=(),
+        adapters={},
+        period_root=tmp_path / "periods",
+        authority=load_rights_authority(),
+        policy=load_rights_policy(),
+    )
+
+    assert result.conclusion == "success"
+    assert result.counts.unresolved == 0
+    assert result.successful_at == _RECONCILIATION_AS_OF
+    assert result.report["source_manifest_sha256"] == hashlib.sha256(
+        dict(catalog.rendered.files)["Quellen/manifest.jsonl"]
+    ).hexdigest()
+
+
+def test_plan_reconciliation_composes_deduplicated_component_findings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from scripts.rki_pipeline import reconciliation
+
+    catalog = remote_catalog(remote_record())
+    source = source_subject_id(
+        _RECONCILIATION_SOURCE_ID,
+        catalog.graph.sources[0]["bitstream_id"],
+    )
+    remote_finding = finding(FindingCode.CHANGED, source)
+    storage_finding = ReconciliationFinding(
+        code=FindingCode.CHANGED,
+        subject_kind=SubjectKind.STORAGE,
+        subject_id="artifact-a",
+        relative_path="rki/Bulletins/Jahre/2026/PDF/artifact-a.pdf",
+        message="storage changed",
+    )
+    rights_finding = finding(FindingCode.RIGHTS_CHANGED, source)
+    period_finding = ReconciliationFinding(
+        code=FindingCode.MISSING_LOCAL,
+        subject_kind=SubjectKind.PERIOD,
+        subject_id="year:2026",
+        relative_path="rki/Bulletins/Manifeste/Archive/year/2026.json",
+        message="period missing",
+    )
+    monkeypatch.setattr(reconciliation, "compare_remote_sources", lambda *_args, **_kwargs: (remote_finding,))
+    monkeypatch.setattr(
+        reconciliation,
+        "reconcile_storage",
+        lambda *_args, **_kwargs: (storage_finding, storage_finding),
+    )
+    monkeypatch.setattr(reconciliation, "reconcile_rights", lambda *_args, **_kwargs: (rights_finding,))
+    monkeypatch.setattr(reconciliation, "reconcile_periods", lambda *_args, **_kwargs: (period_finding,))
+
+    result = plan_reconciliation(
+        as_of=_RECONCILIATION_AS_OF,
+        from_year=1996,
+        to_year=1996,
+        catalog=catalog,
+        remote_records=(),
+        adapters={},
+        period_root=tmp_path / "periods",
+        authority=load_rights_authority(),
+        policy=load_rights_policy(),
+    )
+
+    assert [(item.code, item.subject_kind, item.subject_id) for item in result.findings] == [
+        (FindingCode.CHANGED, SubjectKind.SOURCE, source),
+        (FindingCode.CHANGED, SubjectKind.STORAGE, "artifact-a"),
+        (FindingCode.MISSING_LOCAL, SubjectKind.PERIOD, "year:2026"),
+        (FindingCode.RIGHTS_CHANGED, SubjectKind.SOURCE, source),
+    ]
+    assert result.counts == ReconciliationCounts(
+        ok=0,
+        changed=2,
+        missing_remote=0,
+        missing_local=1,
+        orphan=0,
+        rights_changed=1,
+        unresolved=4,
+    )
+    assert result.conclusion == "blocked"
+    assert result.successful_at is None
+
+
+def test_plan_reconciliation_adds_ok_for_current_source_without_open_finding(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from scripts.rki_pipeline import reconciliation
+
+    monkeypatch.setattr(reconciliation, "compare_remote_sources", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(reconciliation, "reconcile_storage", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(reconciliation, "reconcile_rights", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(reconciliation, "reconcile_periods", lambda *_args, **_kwargs: ())
+    catalog = remote_catalog(remote_record())
+    source = source_subject_id(_RECONCILIATION_SOURCE_ID, catalog.graph.sources[0]["bitstream_id"])
+
+    result = plan_reconciliation(
+        as_of=_RECONCILIATION_AS_OF,
+        from_year=1996,
+        to_year=1996,
+        catalog=catalog,
+        remote_records=(),
+        adapters={},
+        period_root=tmp_path / "periods",
+        authority=load_rights_authority(),
+        policy=load_rights_policy(),
+    )
+
+    assert [(item.code, item.subject_id) for item in result.findings] == [
+        (
+            FindingCode.OK,
+            source,
+        ),
+    ]
+
+
+def _successful_reconciliation_result(as_of: datetime = _RECONCILIATION_AS_OF) -> ReconciliationResult:
+    return build_reconciliation_result(
+        as_of=as_of,
+        from_year=1996,
+        to_year=1996,
+        source_manifest_sha256="a" * 64,
+        findings=(finding(FindingCode.OK, "source-a"),),
+    )
+
+
+def test_materialize_reconciliation_writes_valid_immutable_report(tmp_path: Path) -> None:
+    result = _successful_reconciliation_result()
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+
+    materialization = materialize_reconciliation(result, temp_root=tmp_path, ledger=ledger)
+
+    expected = tmp_path / "rki/Bulletins/Manifeste/Reconciliation/reconciliation-20260804T040506Z.json"
+    assert materialization == ReconciliationMaterialization(result, expected, True)
+    validate_document("reconciliation-report", json.loads(expected.read_bytes()))
+    assert expected.read_bytes() == stable_json_dumps(result.report).encode("utf-8") + b"\n"
+    assert [(event.kind, event.target) for event in ledger.events] == [
+        (EffectKind.TEMP_FILE, expected.absolute().as_posix()),
+    ]
+
+
+def test_materialize_reconciliation_reuses_identical_immutable_report(tmp_path: Path) -> None:
+    result = _successful_reconciliation_result()
+    first_ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+    first = materialize_reconciliation(result, temp_root=tmp_path, ledger=first_ledger)
+    assert first.path is not None
+    mtime = first.path.stat().st_mtime_ns
+    second_ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+
+    second = materialize_reconciliation(result, temp_root=tmp_path, ledger=second_ledger)
+
+    assert second == ReconciliationMaterialization(result, first.path, False)
+    assert first.path.stat().st_mtime_ns == mtime
+    assert second_ledger.events == []
+
+
+def test_materialize_reconciliation_skips_blocked_result(tmp_path: Path) -> None:
+    blocked = build_reconciliation_result(
+        as_of=_RECONCILIATION_AS_OF,
+        from_year=1996,
+        to_year=1996,
+        source_manifest_sha256="a" * 64,
+        findings=(finding(FindingCode.CHANGED, "source-a"),),
+    )
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+
+    materialization = materialize_reconciliation(blocked, temp_root=tmp_path, ledger=ledger)
+
+    assert materialization == ReconciliationMaterialization(blocked, None, False)
+    assert not (tmp_path / "rki").exists()
+    assert ledger.events == []
+
+
+def test_materialize_reconciliation_rejects_different_existing_report(tmp_path: Path) -> None:
+    result = _successful_reconciliation_result()
+    path = tmp_path / "rki/Bulletins/Manifeste/Reconciliation/reconciliation-20260804T040506Z.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"different")
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+
+    with pytest.raises(ReconciliationIntegrityError, match="unveränderlich"):
+        materialize_reconciliation(result, temp_root=tmp_path, ledger=ledger)
+
+    assert path.read_bytes() == b"different"
+    assert ledger.events == []
+
+
+def test_materialize_reconciliation_rolls_back_atomic_write_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from scripts.rki_pipeline import reconciliation
+
+    old = tmp_path / "rki/Bulletins/Manifeste/Reconciliation/reconciliation-20260803T040506Z.json"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"prior report")
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+
+    def reject(*_args, **_kwargs) -> NoReturn:
+        raise OSError("injected write error")
+
+    monkeypatch.setattr(reconciliation, "atomic_write_bytes", reject)
+    with pytest.raises(OSError, match="injected"):
+        materialize_reconciliation(_successful_reconciliation_result(), temp_root=tmp_path, ledger=ledger)
+
+    assert old.read_bytes() == b"prior report"
+    assert not (old.parent / "reconciliation-20260804T040506Z.json").exists()
+    assert ledger.events == []
+
+
+@pytest.mark.parametrize("mode", (RunMode.PLAN, RunMode.APPLY))
+def test_materialize_reconciliation_rejects_nonmaterialize_ledger(
+    tmp_path: Path,
+    mode: RunMode,
+) -> None:
+    with pytest.raises(ReconciliationIntegrityError, match="MATERIALIZE"):
+        materialize_reconciliation(
+            _successful_reconciliation_result(),
+            temp_root=tmp_path,
+            ledger=EffectLedger(mode),
+        )
+
+
+def test_materialize_reconciliation_rejects_mismatched_temp_root(tmp_path: Path) -> None:
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path / "other")
+
+    with pytest.raises(ReconciliationIntegrityError, match="temp_root"):
+        materialize_reconciliation(_successful_reconciliation_result(), temp_root=tmp_path, ledger=ledger)
+
+
+def test_materialize_reconciliation_rejects_symlinked_report_directory(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    report_parent = tmp_path / "rki/Bulletins/Manifeste"
+    report_parent.mkdir(parents=True)
+    (report_parent / "Reconciliation").symlink_to(target, target_is_directory=True)
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+
+    with pytest.raises(ValueError, match="Symlink"):
+        materialize_reconciliation(_successful_reconciliation_result(), temp_root=tmp_path, ledger=ledger)
+
+    assert ledger.events == []
 
 
 LOCAL_SOURCE_SHA256 = hashlib.sha256(b"local source").hexdigest()

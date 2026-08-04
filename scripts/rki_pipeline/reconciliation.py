@@ -4,9 +4,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import StrEnum
+import hashlib
 import json
 from pathlib import Path
 import re
+import stat
 from typing import Callable, Iterable, Mapping, TypeAlias
 import unicodedata
 
@@ -21,7 +23,12 @@ from scripts.rki_pipeline.aggregation import (
 from scripts.rki_pipeline.archive import ArchiveError
 from scripts.rki_pipeline.documents import DocumentIdentityError, bitstream_identity
 from scripts.rki_pipeline.due_tasks import TaskKind
-from scripts.rki_pipeline.io_utils import normalize_posix_path, stable_json_dumps
+from scripts.rki_pipeline.io_utils import (
+    atomic_write_bytes,
+    ensure_within,
+    normalize_posix_path,
+    stable_json_dumps,
+)
 from scripts.rki_pipeline.manifests import (
     LoadedManifestCatalog,
     ManifestGraph,
@@ -35,6 +42,7 @@ from scripts.rki_pipeline.rights import (
     RightsState,
     resolve_rights,
 )
+from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 from scripts.rki_pipeline.schema_registry import validate_document
 from scripts.rki_pipeline.storage.base import (
     PreparedObject,
@@ -174,6 +182,13 @@ class ReconciliationResult:
     source_manifest_sha256: str
     report: dict[str, object]
     successful_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class ReconciliationMaterialization:
+    result: ReconciliationResult
+    path: Path | None
+    changed: bool
 
 
 def source_subject_id(source_id: str, bitstream_id: str) -> str:
@@ -806,6 +821,115 @@ def build_reconciliation_result(
         report=report,
         successful_at=as_of if conclusion == "success" else None,
     )
+
+
+def plan_reconciliation(
+    *,
+    as_of: datetime,
+    from_year: int,
+    to_year: int,
+    catalog: LoadedManifestCatalog,
+    remote_records: tuple[ArtifactRecord, ...],
+    adapters: Mapping[StorageBackend, StorageAdapter],
+    period_root: Path,
+    authority: RightsAuthority,
+    policy: RightsPolicy,
+    candidate_loader: CandidateLoader | None = None,
+) -> ReconciliationResult:
+    """Compose deterministic findings from every reconciliation boundary."""
+
+    component_findings = (
+        compare_remote_sources(catalog, remote_records, candidate_loader=candidate_loader),
+        reconcile_storage(catalog.graph, adapters),
+        reconcile_rights(catalog.graph, authority=authority, policy=policy),
+        reconcile_periods(catalog.graph, period_root),
+    )
+    findings_by_key: dict[tuple[str, str, str, str], ReconciliationFinding] = {}
+    for findings in component_findings:
+        for item in findings:
+            findings_by_key.setdefault(item.key, item)
+
+    open_source_subjects = {
+        item.subject_id
+        for item in findings_by_key.values()
+        if item.code is not FindingCode.OK and item.subject_kind is SubjectKind.SOURCE
+    }
+    for source_id, bitstream_id in _current_source_projection(catalog):
+        subject_id = source_subject_id(source_id, bitstream_id)
+        if subject_id not in open_source_subjects:
+            item = _source_finding(FindingCode.OK, subject_id, "Quelle stimmt mit allen Prüfungen überein")
+            findings_by_key.setdefault(item.key, item)
+
+    source_files = [
+        payload
+        for name, payload in catalog.rendered.files
+        if name == "Quellen/manifest.jsonl"
+    ]
+    if len(source_files) != 1:
+        raise ReconciliationIntegrityError("Quellenmanifest fehlt oder ist doppelt")
+    return build_reconciliation_result(
+        as_of=as_of,
+        from_year=from_year,
+        to_year=to_year,
+        source_manifest_sha256=hashlib.sha256(source_files[0]).hexdigest(),
+        findings=tuple(sorted(findings_by_key.values(), key=lambda item: item.key)),
+    )
+
+
+def materialize_reconciliation(
+    result: ReconciliationResult,
+    *,
+    temp_root: Path,
+    ledger: EffectLedger,
+) -> ReconciliationMaterialization:
+    """Atomically materialize one immutable successful reconciliation report."""
+
+    if type(result) is not ReconciliationResult:
+        raise ReconciliationIntegrityError("Reconciliation-Ergebnis ist ungültig")
+    if not isinstance(temp_root, Path):
+        raise ReconciliationIntegrityError("temp_root ist ungültig")
+    if type(ledger) is not EffectLedger or ledger.mode is not RunMode.MATERIALIZE:
+        raise ReconciliationIntegrityError("Reconciliation benötigt MATERIALIZE-Ledger")
+    if ledger.temp_root != temp_root.resolve():
+        raise ReconciliationIntegrityError("Ledger-temp_root stimmt nicht überein")
+    if result.conclusion == "blocked":
+        if result.successful_at is not None:
+            raise ReconciliationIntegrityError("Blockiertes Ergebnis darf keinen Erfolgstermin haben")
+        return ReconciliationMaterialization(result, None, False)
+    if result.conclusion != "success" or result.successful_at is None:
+        raise ReconciliationIntegrityError("Reconciliation-Ergebnis ist nicht materialisierbar")
+    if (
+        result.successful_at.tzinfo is None
+        or result.successful_at.utcoffset() != timedelta(0)
+    ):
+        raise ReconciliationIntegrityError("Erfolgszeitpunkt muss UTC-aware sein")
+    validate_document("reconciliation-report", result.report)
+    timestamp = result.successful_at.strftime("%Y%m%dT%H%M%SZ")
+    target = temp_root / (
+        "rki/Bulletins/Manifeste/Reconciliation/"
+        f"reconciliation-{timestamp}.json"
+    )
+    target = ensure_within(target, temp_root, allow_missing_parents=True)
+    payload = stable_json_dumps(result.report).encode("utf-8") + b"\n"
+    try:
+        metadata = target.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        metadata = None
+    if metadata is not None:
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ReconciliationIntegrityError("Reconciliation-Bericht ist keine reguläre Datei")
+        if target.read_bytes() != payload:
+            raise ReconciliationIntegrityError("Reconciliation-Bericht ist unveränderlich")
+        return ReconciliationMaterialization(result, target, False)
+
+    atomic_write_bytes(target, payload, allowed_root=temp_root)
+    ledger.record(
+        EffectKind.TEMP_FILE,
+        target.absolute().as_posix(),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        size=len(payload),
+    )
+    return ReconciliationMaterialization(result, target, True)
 
 
 def _has_control_character(value: str) -> bool:
