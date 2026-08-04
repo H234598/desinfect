@@ -193,7 +193,7 @@ def test_period_archive_manifest_rejects_cross_kind_collections(
         }
     ]
 
-    with pytest.raises(SchemaContractError, match="archives|month_manifests"):
+    with pytest.raises(SchemaContractError, match=r"archives|month_manifests"):
         validate_document("period-archive-manifest", fixture)
 
 
