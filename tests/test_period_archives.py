@@ -74,6 +74,15 @@ def test_period_before_supported_epoch_fails_closed() -> None:
         period_ref(TaskKind.YEAR, "1900")
 
 
+@pytest.mark.parametrize(
+    ("kind", "value"),
+    ((TaskKind.WEEK, "9999-W52"), (TaskKind.YEAR, "9999")),
+)
+def test_period_beyond_supported_date_range_fails_closed(kind: TaskKind, value: str) -> None:
+    with pytest.raises(PeriodSelectionError, match="unterstützten Bereich|existiert nicht"):
+        period_ref(kind, value)
+
+
 def test_due_and_affected_periods_are_unioned_once_and_sorted() -> None:
     affected = AffectedPeriods(
         weeks={"2025-W52", "2025-W50"},
@@ -882,6 +891,26 @@ def test_period_manifest_is_canonical_backend_neutral_and_order_independent(
     assert payload == render_period_manifest(reversed_period, reversed_builds)
     assert "storage_backend" not in payload.decode("utf-8")
     assert value["archives"] == sorted(value["archives"], key=lambda item: item["archive_id"])
+
+
+def test_period_manifest_carries_nullable_doi_and_binds_it_in_fingerprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = _month_period(tmp_path)
+    document = replace(base.documents[0], doi="10.1000/example")
+    period = replace(base, documents=(document,))
+    period = replace(
+        period,
+        archives=aggregation_module._planned_archives(period.period, period.documents),
+    )
+    builds = _period_builds(tmp_path, period, monkeypatch)
+
+    value = validate_period_manifest(render_period_manifest(period, builds))
+    assert value["documents"][0]["doi"] == "10.1000/example"
+
+    value["documents"][0]["doi"] = None
+    with pytest.raises(PeriodManifestError, match="input_fingerprint"):
+        validate_period_manifest(stable_json_dumps(value).encode("utf-8"))
 
 
 def test_year_manifest_lists_only_selected_document_months(tmp_path: Path) -> None:

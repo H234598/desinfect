@@ -184,9 +184,10 @@ def _period_dates(kind: TaskKind, value: str) -> tuple[date, date]:
             raise PeriodSelectionError("ISO-Woche ist ungültig")
         try:
             start = date.fromisocalendar(int(match["year"]), int(match["week"]), 1)
+            end = date.fromordinal(start.toordinal() + 6)
         except ValueError as exc:
             raise PeriodSelectionError("ISO-Woche existiert nicht") from exc
-        return start, date.fromordinal(start.toordinal() + 6)
+        return start, end
     if kind is TaskKind.MONTH:
         match = _MONTH.fullmatch(value)
         if match is None:
@@ -211,8 +212,11 @@ def period_ref(kind: TaskKind, value: str) -> PeriodRef:
     """Parse one exact week/month/year and derive its Berlin close instant."""
 
     start, end = _period_dates(kind, value)
-    close = datetime.combine(date.fromordinal(end.toordinal() + 1), time.min, _BERLIN)
-    source_date_epoch = int(close.timestamp())
+    try:
+        close = datetime.combine(date.fromordinal(end.toordinal() + 1), time.min, _BERLIN)
+        source_date_epoch = int(close.timestamp())
+    except (OverflowError, OSError, ValueError) as exc:
+        raise PeriodSelectionError("Periodenende liegt außerhalb des unterstützten Bereichs") from exc
     if source_date_epoch < 0:
         raise PeriodSelectionError("Periode liegt vor RKI-Korpus und unterstütztem Unix-Epoch")
     return PeriodRef(kind, value, start, end, source_date_epoch)
@@ -897,6 +901,7 @@ def _document_manifest(document: PeriodDocument) -> dict[str, object]:
     return {
         "document_id": document.document_id,
         "bitstream_id": document.bitstream_id,
+        "doi": document.doi,
         "version": document.version,
         "source_id": document.source_id,
         "publication_date": document.publication_date,

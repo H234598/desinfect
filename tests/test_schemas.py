@@ -155,6 +155,8 @@ def test_period_archive_manifest_rejects_unpaired_artifact_identity(
     fixture["documents"] = [
         {
             "document_id": "rki-176904-12345-v2",
+            "bitstream_id": "rki-bitstream-" + "1" * 64,
+            "doi": None,
             "version": 2,
             "source_id": "rki:176904/12345.2",
             "publication_date": "2026-07-01",

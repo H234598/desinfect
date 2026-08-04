@@ -175,6 +175,12 @@ def test_source_manifest_carries_nullable_artifact_record_doi() -> None:
     assert without_doi["doi"] is None
 
 
+@pytest.mark.parametrize("doi", ("10.25646/12345.2\n", "10.25646/12345\x00.2"))
+def test_source_manifest_rejects_doi_control_characters(doi: str) -> None:
+    with pytest.raises(ManifestBuildError):
+        _source_manifest(_record(doi=doi))
+
+
 def test_source_manifest_maps_exact_reviewed_rights_decision() -> None:
     """Dropping review provenance or mixing source tuples must break the mapper."""
 

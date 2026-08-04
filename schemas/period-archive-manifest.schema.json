@@ -68,6 +68,17 @@
           "pattern": "^rki-176904-[0-9]+-v[1-9][0-9]*$",
           "type": "string"
         },
+        "doi": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "maxLength": 512,
+              "not": {"pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"},
+              "pattern": "^10\\.[0-9]{4,9}/[^\\s]+$",
+              "type": "string"
+            }
+          ]
+        },
         "markdown_artifact_id": {"$ref": "#/$defs/artifactId"},
         "markdown_sha256": {"$ref": "#/$defs/sha256"},
         "pdf_artifact_id": {"$ref": "#/$defs/artifactId"},
@@ -88,6 +99,7 @@
       "required": [
         "document_id",
         "bitstream_id",
+        "doi",
         "version",
         "source_id",
         "publication_date",
