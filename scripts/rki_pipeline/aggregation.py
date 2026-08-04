@@ -89,6 +89,7 @@ class PeriodDocument:
     """One current document version selected for a closed period."""
 
     document_id: str
+    bitstream_id: str
     version: int
     source_id: str
     publication_date: str
@@ -469,18 +470,24 @@ def _period_documents(
         selected.append(
             PeriodDocument(
                 document_id=document_id,
+                bitstream_id=bitstream_id,
                 version=version,
                 source_id=_string(document, "source_id", label="Dokument"),
                 publication_date=_string(document, "publication_date", label="Dokument"),
                 title=_string(source, "title", label="Source"),
                 handle=_string(source, "handle", label="Source"),
-                doi=None,
+                doi=_nullable_string(source, "doi", label="Source"),
                 conversion_state=state,
                 pdf=pdf,
                 markdown=markdown,
             )
         )
-    return tuple(sorted(selected, key=lambda item: (item.publication_date, item.document_id, item.source_id)))
+    return tuple(
+        sorted(
+            selected,
+            key=lambda item: (item.publication_date, item.document_id, item.bitstream_id),
+        )
+    )
 
 
 def _bundle_path(period: PeriodRef, format_name: str) -> str:
@@ -554,6 +561,7 @@ def _plan_fingerprint(periods: tuple[PeriodPlan, ...]) -> str:
                 "documents": [
                     {
                         "document_id": document.document_id,
+                        "bitstream_id": document.bitstream_id,
                         "version": document.version,
                         "source_id": document.source_id,
                         "publication_date": document.publication_date,
@@ -724,7 +732,7 @@ def render_month_index(period_plan: PeriodPlan, aggregation_plan: AggregationPla
     documents = tuple(
         sorted(
             period_plan.documents,
-            key=lambda item: (item.publication_date, item.document_id, item.source_id),
+            key=lambda item: (item.publication_date, item.document_id, item.bitstream_id),
         )
     )
     lines = [
@@ -732,8 +740,8 @@ def render_month_index(period_plan: PeriodPlan, aggregation_plan: AggregationPla
         "",
         f"Artikel: {len(documents)}",
         "",
-        "| Datum | Titel | RKI-Handle | DOI | PDF | Markdown | Konvertierung | PDF SHA-256 | Markdown SHA-256 | Wochenarchive |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Datum | Titel | RKI-Handle | Bitstream-ID | DOI | PDF | Markdown | Konvertierung | PDF SHA-256 | Markdown SHA-256 | Wochenarchive |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     weekly_links = _week_archive_links(period_plan.period, index_path, aggregation_plan)
     for document in documents:
@@ -752,6 +760,7 @@ def render_month_index(period_plan: PeriodPlan, aggregation_plan: AggregationPla
                     _table_cell(document.publication_date),
                     _table_cell(document.title),
                     _table_cell(document.handle),
+                    _table_cell(document.bitstream_id),
                     _table_cell(document.doi) if document.doi is not None else "—",
                     pdf_link,
                     markdown_link,
@@ -772,6 +781,7 @@ def _document_manifest(document: PeriodDocument) -> dict[str, object]:
         raise PeriodManifestError("PeriodDocument ist ungültig")
     return {
         "document_id": document.document_id,
+        "bitstream_id": document.bitstream_id,
         "version": document.version,
         "source_id": document.source_id,
         "publication_date": document.publication_date,
@@ -883,20 +893,17 @@ def _validate_manifest_order(value: dict[str, object], period: PeriodRef) -> Non
         raise PeriodManifestError("Manifest-Listen sind ungültig")
     if documents != sorted(
         documents,
-        key=lambda item: (item["publication_date"], item["document_id"], item["source_id"]),
+        key=lambda item: (item["publication_date"], item["document_id"], item["bitstream_id"]),
     ):
         raise PeriodManifestError("Dokumente sind nicht kanonisch sortiert")
-    document_ids: set[str] = set()
-    source_ids: set[str] = set()
+    document_identities: set[tuple[str, str]] = set()
     for document in documents:
         document_id = document["document_id"]
-        source_id = document["source_id"]
-        if document_id in document_ids:
-            raise PeriodManifestError("document_id ist mehrfach vorhanden")
-        if source_id in source_ids:
-            raise PeriodManifestError("source_id ist mehrfach vorhanden")
-        document_ids.add(document_id)
-        source_ids.add(source_id)
+        bitstream_id = document["bitstream_id"]
+        identity = (document_id, bitstream_id)
+        if identity in document_identities:
+            raise PeriodManifestError("Dokument-/Bitstream-Identität ist mehrfach vorhanden")
+        document_identities.add(identity)
     if archives != sorted(archives, key=lambda item: item["archive_id"]):
         raise PeriodManifestError("Archive sind nicht kanonisch sortiert")
     archive_ids: set[str] = set()
@@ -980,7 +987,7 @@ def render_period_manifest(period_plan: PeriodPlan, builds: Mapping[str, Archive
     ]
     documents = sorted(
         (_document_manifest(document) for document in period_plan.documents),
-        key=lambda item: (item["publication_date"], item["document_id"], item["source_id"]),
+        key=lambda item: (item["publication_date"], item["document_id"], item["bitstream_id"]),
     )
     value: dict[str, object] = {
         "schema_version": "1.0.0",
@@ -1174,7 +1181,7 @@ def _snapshot_plan(aggregation_plan: AggregationPlan) -> AggregationPlan:
         if period_plan.documents != tuple(
             sorted(
                 period_plan.documents,
-                key=lambda item: (item.publication_date, item.document_id, item.source_id),
+                key=lambda item: (item.publication_date, item.document_id, item.bitstream_id),
             )
         ):
             raise AggregationError("PeriodPlan-Dokumente sind nicht kanonisch sortiert")
@@ -1621,6 +1628,7 @@ def _cli_fixture(temp_root: Path, as_of: datetime) -> tuple[AggregationPlan, Rig
         "publication_date": "2025-12-12",
         "sha256": _CLI_SOURCE_SHA256,
         "decision_sha256": decision.decision_sha256,
+        "doi": None,
         "rights": {"state": decision.state.value},
     }
     document = {

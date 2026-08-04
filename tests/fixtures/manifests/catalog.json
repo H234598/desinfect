@@ -1,11 +1,11 @@
 {
   "collections": [
     {
-      "bytes": 1034,
+      "bytes": 1046,
       "count": 1,
       "kind": "source-manifest",
       "path": "Quellen/manifest.jsonl",
-      "sha256": "a121bc0d8636eca3ac9c1db0c51737bdad7d0f5e38899ede9017e462f14c50db"
+      "sha256": "d55bdd93c0cacb169f48fc8823cb851d4258a3155a86257d54529a04fc24071e"
     },
     {
       "bytes": 809,

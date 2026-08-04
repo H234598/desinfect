@@ -1,5 +1,5 @@
 {
-  "$id": "https://h234598.github.io/desinfect/schemas/source-manifest-1.1.0.json",
+  "$id": "https://h234598.github.io/desinfect/schemas/source-manifest-1.2.0.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
@@ -27,6 +27,14 @@
     },
     "decision_sha256": {
       "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "doi": {
+      "maxLength": 512,
+      "pattern": "^10\\.[0-9]{4,9}/[^\\s]+$",
       "type": [
         "string",
         "null"
@@ -145,7 +153,7 @@
       "type": "object"
     },
     "schema_version": {
-      "const": "1.1.0"
+      "const": "1.2.0"
     },
     "sha256": {
       "pattern": "^[0-9a-f]{64}$",
@@ -196,6 +204,7 @@
     "bitstream_version",
     "rights_evidence",
     "decision_sha256",
+    "doi",
     "same_content_as"
   ],
   "title": "Desinfect source manifest",

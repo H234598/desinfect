@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 from typing import Iterator, Mapping
+import zipfile
 
 import pytest
 
@@ -195,6 +196,7 @@ def _plan_inputs(
         "publication_date": "2026-07-10",
         "sha256": source_sha256,
         "decision_sha256": _DECISION_SHA256,
+        "doi": None,
         "rights": {"state": "approved"},
     }
     old_source = {
@@ -507,10 +509,15 @@ def _prepared_for_graph(
     }
 
 
-def test_plan_accepts_valid_p06_alias_and_conversionless_bitstream(tmp_path: Path) -> None:
+def test_p06_aliases_flow_through_plan_index_manifest_and_materialize(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     alias_source, alias_document, alias_storage = p06_second_bitstream()
+    source = p06_source()
+    source["doi"] = "10.25646/12345.2"
+    alias_source["doi"] = source["doi"]
     graph = build_p06_graph(
-        sources=(p06_source(), alias_source),
+        sources=(source, alias_source),
         documents=(p06_document(), alias_document),
         storage=(p06_storage()[0], p06_storage()[1], alias_storage),
     )
@@ -522,8 +529,57 @@ def test_plan_accepts_valid_p06_alias_and_conversionless_bitstream(tmp_path: Pat
         prepared_by_logical_key=_prepared_for_graph(tmp_path, graph),
     )
 
-    pdf_archive = next(archive for archive in plan.periods[0].archives if archive.spec.kind == "month-pdf")
+    documents = []
+    for document in plan.periods[0].documents:
+        payloads = {}
+        for field in ("pdf", "markdown"):
+            prepared = getattr(document, field)
+            if prepared is None:
+                payloads[field] = None
+                continue
+            payload = prepared.artifact_id.encode("ascii")
+            prepared.path.parent.mkdir(parents=True, exist_ok=True)
+            prepared.path.write_bytes(payload)
+            payloads[field] = replace(
+                prepared,
+                sha256=hashlib.sha256(payload).hexdigest(),
+                size=len(payload),
+            )
+        documents.append(replace(document, **payloads))
+    period = replace(plan.periods[0], documents=tuple(documents))
+    period = replace(
+        period,
+        archives=aggregation_module._planned_archives(period.period, period.documents),
+    )
+    plan = replace(plan, periods=(period,))
+    plan = replace(plan, input_fingerprint=aggregation_module._plan_fingerprint(plan.periods))
+
+    period = plan.periods[0]
+    identities = tuple((item.document_id, item.bitstream_id) for item in period.documents)
+    assert identities == tuple(sorted(identities))
+    assert len(identities) == len(set(identities)) == 2
+    assert {item.source_id for item in period.documents} == {p06_source()["source_id"]}
+    assert {item.doi for item in period.documents} == {"10.25646/12345.2"}
+    rendered_index = render_month_index(period, plan)
+    assert all(bitstream_id.encode("ascii") in rendered_index for _, bitstream_id in identities)
+
+    pdf_archive = next(archive for archive in period.archives if archive.spec.kind == "month-pdf")
     assert len(pdf_archive.spec.entries) == 2
+    authorized_plan, authorizer = _materialize_authorizer(tmp_path, plan, monkeypatch)
+    result = materialize_period_archives(
+        authorized_plan,
+        tmp_path / "alias-products",
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=authorizer,
+    )
+    manifest = validate_period_manifest(result.manifest_paths[0].read_bytes())
+    assert [(item["document_id"], item["bitstream_id"]) for item in manifest["documents"]] == list(
+        identities
+    )
+    pdf_build = next(item.build for item in result.archives if item.archive_id.endswith("-pdf"))
+    with zipfile.ZipFile(pdf_build.path) as archive_file:
+        assert len([name for name in archive_file.namelist() if name.endswith(".pdf")]) == 2
 
 
 def test_plan_resolves_markdown_storage_reference_by_artifact_id(tmp_path: Path) -> None:
@@ -965,9 +1021,8 @@ def test_period_manifest_snapshots_adversarial_build_mapping_once(
     assert mapping.items_calls == 1
 
 
-@pytest.mark.parametrize("field", ["document_id", "source_id"])
-def test_manifest_validation_rejects_duplicate_document_identity(
-    tmp_path: Path, field: str, monkeypatch: pytest.MonkeyPatch
+def test_manifest_validation_rejects_duplicate_document_bitstream_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     period = _month_period(tmp_path)
     value = json.loads(
@@ -976,18 +1031,14 @@ def test_manifest_validation_rejects_duplicate_document_identity(
     second = dict(value["documents"][0])
     second["publication_date"] = "2026-07-11"
     second["pdf_sha256"] = "e" * 64
-    if field == "document_id":
-        second["source_id"] = "rki:176904/900000002"
-    else:
-        second["document_id"] = "rki-176904-900000002-v1"
     value["documents"].append(second)
     value["documents"] = sorted(
         value["documents"],
-        key=lambda item: (item["publication_date"], item["document_id"], item["source_id"]),
+        key=lambda item: (item["publication_date"], item["document_id"], item["bitstream_id"]),
     )
     value["input_fingerprint"] = _manifest_fingerprint_for_test(value)
 
-    with pytest.raises(PeriodManifestError, match=field):
+    with pytest.raises(PeriodManifestError, match="Dokument-/Bitstream"):
         validate_period_manifest(stable_json_dumps(value).encode("utf-8"))
 
 

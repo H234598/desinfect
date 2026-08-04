@@ -126,8 +126,18 @@
       "media_type": "application/json",
       "path": "schemas/source-manifest-v1.0.json",
       "provenance": "H234598/desinfect P06 synthetic migration fixture",
-      "purpose": "deterministic source-manifest migration from 1.0.0 to 1.1.0",
+      "purpose": "deterministic source-manifest migration from 1.0.0 to 1.2.0",
       "sha256": "7f3701800642bb4352d7ce1bea1462c0d49d862b10a80e94beb3c6026a665a10",
+      "synthetic": true
+    },
+    {
+      "bytes": 786,
+      "license_status": "synthetic",
+      "media_type": "application/json",
+      "path": "schemas/source-manifest-v1.1.json",
+      "provenance": "H234598/desinfect P07.2 synthetic migration fixture",
+      "purpose": "deterministic source-manifest migration from 1.1.0 to 1.2.0",
+      "sha256": "3cc48c8bc646a3978ed924b28120b2419a5ccb6ac2dd22348dff855873997782",
       "synthetic": true
     },
     {
@@ -161,13 +171,13 @@
       "synthetic": true
     },
     {
-      "bytes": 1034,
+      "bytes": 1046,
       "license_status": "synthetic",
       "media_type": "application/x-ndjson",
       "path": "manifests/Quellen/manifest.jsonl",
       "provenance": "Desinfect P06 synthetic manifest graph fixture",
       "purpose": "canonical source-manifest collection",
-      "sha256": "a121bc0d8636eca3ac9c1db0c51737bdad7d0f5e38899ede9017e462f14c50db",
+      "sha256": "d55bdd93c0cacb169f48fc8823cb851d4258a3155a86257d54529a04fc24071e",
       "synthetic": true
     },
     {
@@ -207,7 +217,7 @@
       "path": "manifests/catalog.json",
       "provenance": "Desinfect P06 synthetic manifest graph fixture",
       "purpose": "canonical manifest collection catalog",
-      "sha256": "257ee98f520bd50af2f5434ff60ebbc202eb7b0afe658739b0f86693ea2c6b1f",
+      "sha256": "07c0bf66ce8e9287b80bc49e235fda2426caeb67719833c9e4061b7a5687c91f",
       "synthetic": true
     }
   ],

@@ -256,9 +256,10 @@ def test_schema_validator_checks_every_p06_predecessor(
     fixture_root.mkdir(parents=True)
     (tmp_path / "status.json").write_bytes((ROOT / "status.json").read_bytes())
     for name in (
-        "status-v2.json",
-        "source-manifest-v1.0.json",
-        "document-manifest-v1.0.json",
+            "status-v2.json",
+            "source-manifest-v1.0.json",
+            "source-manifest-v1.1.json",
+            "document-manifest-v1.0.json",
         "storage-reference-v1.0.json",
         "conversion-manifest-v1.0.json",
         "period-archive-manifest.json",
