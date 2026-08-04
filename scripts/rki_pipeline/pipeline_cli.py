@@ -192,7 +192,21 @@ def main(argv: list[str] | None = None) -> int:
             end="",
         )
         return 0
-    except (OSError, ValueError, DispatchPlanError, TransactionError, GitWriterError) as exc:
+    except TransactionError as exc:
+        if args.command == "execute" and args.output is not None and exc.run_manifest is not None:
+            try:
+                _write_or_print(
+                    {
+                        "schema_version": "1.0.0",
+                        "run_manifest": exc.run_manifest,
+                    },
+                    args.output,
+                )
+            except (OSError, ValueError) as output_error:
+                print(f"pipeline-cli: Fehler beim Schreiben des Fehlermanifests: {output_error}", file=sys.stderr)
+        print(f"pipeline-cli: {exc}", file=sys.stderr)
+        return 3
+    except (OSError, ValueError, DispatchPlanError, GitWriterError) as exc:
         print(f"pipeline-cli: {exc}", file=sys.stderr)
         return 2 if isinstance(exc, (ValueError, DispatchPlanError, GitWriterError)) else 3
 

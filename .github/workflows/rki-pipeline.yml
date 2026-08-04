@@ -28,6 +28,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -255,8 +256,38 @@ jobs:
             --push \
             --confirm-apply APPLY
 
+      - name: Render redacted job summary
+        id: observability
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -u
+          mkdir -p build/pipeline
+          summary_path="build/pipeline/job-summary.md"
+          if [[ -f build/pipeline/transaction-result.json ]] && \
+             python3 -m scripts.rki_pipeline.ci_summary \
+               build/pipeline/transaction-result.json \
+               --status status.json \
+               --job-status "${{ job.status }}" \
+               --output "$summary_path" \
+               --github-output "$GITHUB_OUTPUT"; then
+            echo "summary_available=true" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' \
+              '## RKI-Pipeline' \
+              '' \
+              '- Status: Diagnosemanifest nicht verfügbar' \
+              '- Nächste sichere Aktion: fehlgeschlagenen Schritt und Artefakte prüfen' \
+              > "$summary_path"
+            echo "retention_days=90" >> "$GITHUB_OUTPUT"
+            echo "summary_available=false" >> "$GITHUB_OUTPUT"
+          fi
+          cat "$summary_path" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload redacted transaction evidence
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: rki-transaction-${{ github.run_id }}
@@ -264,5 +295,38 @@ jobs:
             build/pipeline/dispatch-plan.json
             build/pipeline/transaction-result.json
             build/pipeline/commit-plan.json
+            build/pipeline/job-summary.md
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: ${{ steps.observability.outputs.retention_days || '90' }}
+
+      - name: Create repository-scoped incident issue token
+        id: incident-token
+        if: always() && vars.ROLLING_ISSUE_ENABLED == 'true'
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.WACHHUND_APP_CLIENT_ID }}
+          private-key: ${{ secrets.WACHHUND_APP_PRIVATE_KEY }}
+          owner: H234598
+          repositories: desinfect
+          permission-issues: write
+
+      - name: Maintain rolling incident issue
+        if: always() && vars.ROLLING_ISSUE_ENABLED == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          ACTIONS_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.incident-token.outputs.token }}
+          INCIDENT_FAILURE_THRESHOLD: ${{ vars.INCIDENT_FAILURE_THRESHOLD || '2' }}
+        run: |
+          arguments=(
+            --mode apply
+            --status status.json
+            --job-status "${{ job.status }}"
+            --threshold "$INCIDENT_FAILURE_THRESHOLD"
+          )
+          if [[ -f build/pipeline/transaction-result.json ]]; then
+            arguments+=(--run-manifest build/pipeline/transaction-result.json)
+          fi
+          python3 -m scripts.rki_pipeline.incident_issue "${arguments[@]}"

@@ -33,7 +33,7 @@ def test_repository_has_exactly_one_schedule() -> None:
 def test_dispatcher_is_read_only_and_calls_reusable_pipeline() -> None:
     path, data = load("rki-dispatcher.yml")
     assert set(triggers(data)) == {"schedule", "workflow_dispatch"}
-    assert data["permissions"] == {"contents": "read"}
+    assert data["permissions"] == {"actions": "read", "contents": "read"}
     pipeline = data["jobs"]["pipeline"]
     assert pipeline["uses"] == "./.github/workflows/rki-pipeline.yml"
     assert pipeline["secrets"] == {
@@ -47,7 +47,7 @@ def test_dispatcher_is_read_only_and_calls_reusable_pipeline() -> None:
 def test_pipeline_owns_the_only_writer_concurrency_and_never_cancels() -> None:
     path, data = load("rki-pipeline.yml")
     assert set(triggers(data)) == {"workflow_call", "workflow_dispatch"}
-    assert data["permissions"] == {"contents": "read"}
+    assert data["permissions"] == {"actions": "read", "contents": "read"}
     assert triggers(data)["workflow_call"]["secrets"] == {
         "WACHHUND_APP_PRIVATE_KEY": {"required": True},
     }
@@ -107,3 +107,71 @@ def test_backfill_is_manual_bounded_and_requires_literal_apply_confirmation() ->
 
 def test_variant_b_validator_accepts_repository_workflows() -> None:
     assert validate_repository(ROOT) == []
+
+
+def test_pipeline_always_renders_and_uploads_redacted_diagnostics() -> None:
+    _path, data = load("rki-pipeline.yml")
+    steps = data["jobs"]["pipeline"]["steps"]
+    summary = next(step for step in steps if step["name"] == "Render redacted job summary")
+    upload = next(step for step in steps if step["name"] == "Upload redacted transaction evidence")
+
+    assert summary["id"] == "observability"
+    assert summary["if"] == "always()"
+    assert summary["continue-on-error"] is True
+    assert "scripts.rki_pipeline.ci_summary" in summary["run"]
+    assert "GITHUB_STEP_SUMMARY" in summary["run"]
+    assert '--job-status "${{ job.status }}"' in summary["run"]
+    assert "'## RKI-Pipeline'" in summary["run"]
+    assert "'- Status: Diagnosemanifest nicht verfügbar'" in summary["run"]
+    assert (
+        "'- Nächste sichere Aktion: fehlgeschlagenen Schritt und Artefakte prüfen'"
+        in summary["run"]
+    )
+    assert 'echo "summary_available=false" >> "$GITHUB_OUTPUT"' in summary["run"]
+    assert 'echo "retention_days=90" >> "$GITHUB_OUTPUT"' in summary["run"]
+    assert steps.index(summary) < steps.index(upload)
+    assert upload["if"] == "always()"
+    assert upload["continue-on-error"] is True
+    assert "build/pipeline/job-summary.md" in upload["with"]["path"]
+    assert upload["with"]["retention-days"] == (
+        "${{ steps.observability.outputs.retention_days || '90' }}"
+    )
+
+
+def test_incident_issue_uses_separate_minimal_app_token_when_enabled() -> None:
+    _path, data = load("rki-pipeline.yml")
+    steps = data["jobs"]["pipeline"]["steps"]
+    token = next(
+        step for step in steps
+        if step["name"] == "Create repository-scoped incident issue token"
+    )
+    maintain = next(step for step in steps if step["name"] == "Maintain rolling incident issue")
+
+    enabled = "always() && vars.ROLLING_ISSUE_ENABLED == 'true'"
+    assert token["id"] == "incident-token"
+    assert token["if"] == enabled
+    assert re.fullmatch(
+        r"actions/create-github-app-token@[0-9a-f]{40}",
+        token["uses"].split(" #", 1)[0],
+    )
+    assert token["with"] == {
+        "client-id": "${{ vars.WACHHUND_APP_CLIENT_ID }}",
+        "private-key": "${{ secrets.WACHHUND_APP_PRIVATE_KEY }}",
+        "owner": "H234598",
+        "repositories": "desinfect",
+        "permission-issues": "write",
+    }
+    assert maintain["if"] == enabled
+    assert maintain["env"] == {
+        "ACTIONS_TOKEN": "${{ github.token }}",
+        "GH_TOKEN": "${{ steps.incident-token.outputs.token }}",
+        "INCIDENT_FAILURE_THRESHOLD": (
+            "${{ vars.INCIDENT_FAILURE_THRESHOLD || '2' }}"
+        ),
+    }
+    assert "scripts.rki_pipeline.incident_issue" in maintain["run"]
+    assert "--mode apply" in maintain["run"]
+    assert "--status status.json" in maintain["run"]
+    assert "--run-manifest build/pipeline/transaction-result.json" in maintain["run"]
+    assert "if [[ -f build/pipeline/transaction-result.json ]]" in maintain["run"]
+    assert '--job-status "${{ job.status }}"' in maintain["run"]

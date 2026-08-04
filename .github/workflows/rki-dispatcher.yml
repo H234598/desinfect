@@ -16,6 +16,7 @@ on:
           - apply
 
 permissions:
+  actions: read
   contents: read
 
 jobs:

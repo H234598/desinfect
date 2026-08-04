@@ -229,6 +229,16 @@
       "purpose": "canonical manifest collection catalog",
       "sha256": "07c0bf66ce8e9287b80bc49e235fda2426caeb67719833c9e4061b7a5687c91f",
       "synthetic": true
+    },
+    {
+      "bytes": 1289,
+      "license_status": "synthetic",
+      "media_type": "application/json",
+      "path": "status/failure.json",
+      "provenance": "H234598/desinfect P08.2 synthetic failure summary fixture",
+      "purpose": "schema-valid failed transaction envelope for CI-summary smoke",
+      "sha256": "f76bac5fee4d588d72c7f9a15caabdd234bd31292682327530a6ffb32ce29c71",
+      "synthetic": true
     }
   ],
   "max_file_bytes": 65536,
