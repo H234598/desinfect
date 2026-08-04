@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import errno
-import json
 import os
 from pathlib import Path
 import re
@@ -14,7 +12,7 @@ import sys
 from typing import Any, Sequence
 import unicodedata
 
-from scripts.rki_pipeline.io_utils import atomic_write_text
+from scripts.rki_pipeline.io_utils import atomic_write_text, read_bounded_json_object
 from scripts.rki_pipeline.runtime_status import redact_text
 from scripts.rki_pipeline.schema_registry import SchemaContractError, validate_document
 
@@ -197,64 +195,8 @@ def render_summary(
     return "\n".join(lines) + "\n"
 
 
-def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"Doppelter JSON-Schlüssel: {key}")
-        result[key] = value
-    return result
-
-
-def _reject_nonfinite(value: str) -> None:
-    raise ValueError(f"Nicht-endliche JSON-Zahl: {value}")
-
-
-def _read_bounded_regular_file(path: Path) -> bytes:
-    nofollow = getattr(os, "O_NOFOLLOW", None)
-    if nofollow is None:
-        raise OSError("Plattform unterstützt keinen sicheren Datei-Read")
-    flags = os.O_RDONLY | nofollow | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NONBLOCK", 0)
-    try:
-        descriptor = os.open(path, flags)
-    except OSError as exc:
-        if exc.errno == errno.ELOOP:
-            raise ValueError("Eingabedatei darf kein Symlink sein") from exc
-        raise
-    try:
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ValueError("Eingabedatei muss eine reguläre Datei sein")
-        if metadata.st_size > MAX_INPUT_BYTES:
-            raise ValueError("Eingabedatei überschreitet Größenlimit")
-        chunks: list[bytes] = []
-        remaining = MAX_INPUT_BYTES + 1
-        while remaining:
-            chunk = os.read(descriptor, min(64 * 1024, remaining))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        raw = b"".join(chunks)
-        if len(raw) > MAX_INPUT_BYTES:
-            raise ValueError("Eingabedatei überschreitet Größenlimit")
-        return raw
-    finally:
-        os.close(descriptor)
-
-
 def _load_json(path: Path) -> dict[str, Any]:
-    try:
-        text = _read_bounded_regular_file(path).decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ValueError("Eingabedatei ist kein UTF-8") from exc
-    payload = json.loads(
-        text, object_pairs_hook=_reject_duplicate_keys, parse_constant=_reject_nonfinite
-    )
-    if not isinstance(payload, dict):
-        raise ValueError("JSON-Wurzel muss ein Objekt sein")
-    return payload
+    return read_bounded_json_object(path, max_bytes=MAX_INPUT_BYTES)
 
 
 def _append_github_output(path: Path, text: str) -> None:
@@ -293,7 +235,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             public_status=public_status,
             job_status=args.job_status,
         )
-        manifest, _commit_required = _manifest_and_commit(payload)
+        manifest = payload.get("run_manifest", payload)
         days = retention_days(manifest["status"], job_status=args.job_status)
         if args.output is None:
             print(rendered, end="")

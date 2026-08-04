@@ -52,7 +52,7 @@ python3 -m scripts.rki_pipeline.incident_issue \
 
 Der Offline-Plan fragt GitHub nicht ab und übernimmt deshalb keine Live-Issues in die Entscheidung.
 
-`apply` benötigt `GH_TOKEN` aus einem kurzlebigen, repositorybegrenzten Wachhund-App-Token. Der Workflow fordert dafür separat nur `issues:write` an. GitHub-Token, Repository, Label und Titel sind keine CLI- oder Payload-gesteuerten Freitextwerte.
+`apply` benötigt `GH_TOKEN` aus einem kurzlebigen, repositorybegrenzten Wachhund-App-Token. Der Workflow fordert dafür separat nur `issues:write` an. Bei `--job-status failure` oder `--job-status cancelled` benötigt `apply` zusätzlich `ACTIONS_TOKEN` mit ausschließlich `actions:read` sowie die aktuelle Lauf-ID in `GITHUB_RUN_ID`. GitHub-Token, Repository, Label und Titel sind keine CLI- oder Payload-gesteuerten Freitextwerte.
 
 ## Aktivierung und Rücknahme
 

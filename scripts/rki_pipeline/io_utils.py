@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 import errno
 import hashlib
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -486,6 +487,86 @@ def stable_json_dumps(payload: Any, *, indent: int = 2) -> str:
         )
         + "\n"
     )
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Eingabedatei enthält einen doppelten Schlüssel")
+        result[key] = value
+    return result
+
+
+def _reject_nonfinite_json(_value: str) -> None:
+    raise ValueError("Eingabedatei enthält einen nichtendlichen Wert")
+
+
+def _finite_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        _reject_nonfinite_json(value)
+    return parsed
+
+
+def read_bounded_json_object(path: Path, *, max_bytes: int) -> dict[str, Any]:
+    """Read one no-follow, bounded UTF-8 JSON object."""
+
+    if type(max_bytes) is not int or max_bytes < 1:
+        raise ValueError("JSON-Größenlimit muss positiv sein")
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if type(no_follow) is not int or no_follow == 0:
+        raise OSError("Plattform unterstützt O_NOFOLLOW nicht")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | no_follow
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise ValueError("Eingabepfad ist keine lesbare reguläre Datei") from exc
+        raise OSError("Eingabepfad ist keine lesbare reguläre Datei") from exc
+    try:
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("Eingabepfad ist keine reguläre Datei")
+            if metadata.st_size > max_bytes:
+                raise ValueError("Eingabedatei überschreitet Größenlimit")
+            chunks: list[bytes] = []
+            remaining = max_bytes + 1
+            while remaining:
+                chunk = os.read(descriptor, min(64 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            raw = b"".join(chunks)
+            if len(raw) > max_bytes:
+                raise ValueError("Eingabedatei überschreitet Größenlimit")
+        except OSError as exc:
+            raise OSError("Eingabedatei ist nicht lesbar") from exc
+    finally:
+        os.close(descriptor)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("Eingabedatei ist kein gültiges UTF-8") from exc
+    try:
+        value = json.loads(
+            text,
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=_reject_nonfinite_json,
+            parse_float=_finite_json_float,
+        )
+    except json.JSONDecodeError as exc:
+        raise ValueError("Eingabedatei enthält kein gültiges JSON") from exc
+    if not isinstance(value, dict):
+        raise ValueError("JSON-Wurzel muss ein Objekt sein")
+    return value
 
 
 def source_date_epoch() -> int:

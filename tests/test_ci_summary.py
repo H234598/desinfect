@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from scripts.rki_pipeline.ci_summary import main, render_summary, retention_days
+from scripts.rki_pipeline.ci_summary import (
+    _load_json,
+    main,
+    render_summary,
+    retention_days,
+)
 from scripts.rki_pipeline.schema_registry import SchemaContractError
 
 
@@ -297,6 +302,8 @@ def _unsafe_json_path(
         path.write_bytes(b'{"value": 1, "value": 2}')
     elif kind == "nonfinite":
         path.write_bytes(b'{"value": NaN}')
+    elif kind == "float_overflow":
+        path.write_bytes(b'{"value": 1e9999}')
     else:  # pragma: no cover - test table owns the closed set
         raise AssertionError(kind)
     return path
@@ -305,7 +312,15 @@ def _unsafe_json_path(
 @pytest.mark.parametrize("location", ["input", "status"])
 @pytest.mark.parametrize(
     "kind",
-    ["symlink", "directory", "oversize", "invalid_utf8", "duplicate_keys", "nonfinite"],
+    [
+        "symlink",
+        "directory",
+        "oversize",
+        "invalid_utf8",
+        "duplicate_keys",
+        "nonfinite",
+        "float_overflow",
+    ],
 )
 def test_cli_rejects_unsafe_json_files_without_touching_outputs(
     tmp_path: Path,
@@ -345,6 +360,14 @@ def test_cli_rejects_unsafe_json_files_without_touching_outputs(
     assert result == 2
     assert output.read_bytes() == b"bestehende summary\n"
     assert github_output.read_bytes() == b"existing=value\n"
+
+
+def test_ci_json_reader_rejects_float_overflow(tmp_path: Path) -> None:
+    path = tmp_path / "overflow.json"
+    path.write_bytes(b'{"value": 1e9999}')
+
+    with pytest.raises(ValueError, match="nichtendlichen Wert"):
+        _load_json(path)
 
 
 def test_failure_fixture_is_schema_valid_and_contains_recovery() -> None:

@@ -6,17 +6,15 @@ import argparse
 from copy import deepcopy
 from dataclasses import dataclass
 import json
-import math
 import os
 from pathlib import Path
 import re
-import stat
 import sys
 from typing import Any, Callable
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from scripts.rki_pipeline.io_utils import stable_json_dumps
+from scripts.rki_pipeline.io_utils import read_bounded_json_object, stable_json_dumps
 from scripts.rki_pipeline.runtime_status import (
     RuntimeStatusError,
     project_public_status,
@@ -57,6 +55,7 @@ _FAILURE_CONCLUSIONS = {
 }
 _NON_FAILURE_CONCLUSIONS = {"neutral", "skipped", "success"}
 Transport = Callable[..., Any]
+_LABEL_ALREADY_EXISTS = object()
 
 
 class IncidentIssueError(RuntimeError):
@@ -282,6 +281,7 @@ class GitHubRestClient:
         payload: dict[str, object] | None = None,
         *,
         allow_not_found: bool = False,
+        allow_label_already_exists: bool = False,
     ) -> object:
         data = None
         headers = {
@@ -304,7 +304,11 @@ class GitHubRestClient:
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
                 status = getattr(response, "status", 200)
         except HTTPError as exc:
-            if not allow_not_found or exc.code != 404:
+            expected_error = (
+                (allow_not_found and exc.code == 404)
+                or (allow_label_already_exists and exc.code == 422)
+            )
+            if not expected_error:
                 raise IncidentIssueError("GitHub-Anfrage fehlgeschlagen") from exc
             try:
                 raw = exc.read(MAX_RESPONSE_BYTES + 1)
@@ -319,6 +323,20 @@ class GitHubRestClient:
             raise IncidentIssueError("GitHub-Antwortgröße überschreitet Grenze")
         if allow_not_found and status == 404:
             return None
+        if allow_label_already_exists and status == 422:
+            if method == "POST" and path == _LABELS_PATH:
+                try:
+                    error = json.loads(raw)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    error = None
+                expected = {
+                    "code": "already_exists",
+                    "field": "name",
+                    "resource": "Label",
+                }
+                if isinstance(error, dict) and error.get("errors") == [expected]:
+                    return _LABEL_ALREADY_EXISTS
+            raise IncidentIssueError("GitHub-Anfrage lieferte keinen Erfolg")
         if not 200 <= status < 300:
             raise IncidentIssueError("GitHub-Anfrage lieferte keinen Erfolg")
         if not raw:
@@ -445,7 +463,10 @@ class GitHubRestClient:
                     "description": "Automatisch verwalteter RKI-Pipeline-Incident",
                     "name": LABEL,
                 },
+                allow_label_already_exists=True,
             )
+            if label is _LABEL_ALREADY_EXISTS:
+                label = self._request("GET", f"{_LABELS_PATH}/{LABEL}")
         if not isinstance(label, dict) or label.get("name") != LABEL:
             raise IncidentIssueError("GitHub-Label-Antwort ist ungültig")
 
@@ -500,80 +521,11 @@ class GitHubRestClient:
         raise IncidentIssueError("Incident-Plan enthält unbekannte Aktion")
 
 
-def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise IncidentIssueError("Eingabedatei enthält einen doppelten Schlüssel")
-        result[key] = value
-    return result
-
-
-def _reject_nonfinite(_value: str) -> None:
-    raise IncidentIssueError("Eingabedatei enthält einen nichtendlichen Wert")
-
-
-def _finite_float(value: str) -> float:
-    parsed = float(value)
-    if not math.isfinite(parsed):
-        _reject_nonfinite(value)
-    return parsed
-
-
 def _load_json(path: Path) -> dict[str, Any]:
-    no_follow = getattr(os, "O_NOFOLLOW", None)
-    if not isinstance(no_follow, int) or no_follow == 0:
-        raise IncidentIssueError("Plattform unterstützt O_NOFOLLOW nicht")
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | no_follow
-        | getattr(os, "O_NONBLOCK", 0)
-    )
     try:
-        descriptor = os.open(path, flags)
-    except OSError as exc:
-        raise IncidentIssueError(
-            "Eingabepfad ist keine lesbare reguläre Datei"
-        ) from exc
-    try:
-        try:
-            metadata = os.fstat(descriptor)
-            if not stat.S_ISREG(metadata.st_mode):
-                raise IncidentIssueError("Eingabepfad ist keine reguläre Datei")
-            if metadata.st_size > MAX_INPUT_BYTES:
-                raise IncidentIssueError("Eingabedatei überschreitet Größenlimit")
-            chunks: list[bytes] = []
-            remaining = MAX_INPUT_BYTES + 1
-            while remaining:
-                chunk = os.read(descriptor, min(64 * 1024, remaining))
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                remaining -= len(chunk)
-            raw = b"".join(chunks)
-            if len(raw) > MAX_INPUT_BYTES:
-                raise IncidentIssueError("Eingabedatei überschreitet Größenlimit")
-        except OSError as exc:
-            raise IncidentIssueError("Eingabedatei ist nicht lesbar") from exc
-    finally:
-        os.close(descriptor)
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise IncidentIssueError("Eingabedatei ist kein gültiges UTF-8") from exc
-    try:
-        value = json.loads(
-            text,
-            object_pairs_hook=_unique_object,
-            parse_constant=_reject_nonfinite,
-            parse_float=_finite_float,
-        )
-    except json.JSONDecodeError as exc:
-        raise IncidentIssueError("Eingabedatei enthält kein gültiges JSON") from exc
-    if not isinstance(value, dict):
-        raise IncidentIssueError("JSON-Wurzel muss ein Objekt sein")
-    return value
+        return read_bounded_json_object(path, max_bytes=MAX_INPUT_BYTES)
+    except (OSError, ValueError) as exc:
+        raise IncidentIssueError(str(exc)) from exc
 
 
 def _run_manifest(payload: dict[str, Any]) -> dict[str, Any]:

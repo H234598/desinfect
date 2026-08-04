@@ -734,6 +734,108 @@ def test_client_creates_missing_label_before_issue() -> None:
     }
 
 
+def test_client_recovers_when_label_create_races_with_another_creator() -> None:
+    status = public_status(failures=2, state="degraded")
+    plan = plan_incident_issue(status, ())
+    transport = FakeTransport(
+        [
+            HTTPError(
+                "https://api.github.com/repos/H234598/desinfect/labels/pipeline-incident",
+                404,
+                "Not Found",
+                {},
+                BytesIO(b"{}"),
+            ),
+            HTTPError(
+                "https://api.github.com/repos/H234598/desinfect/labels",
+                422,
+                "Unprocessable Entity",
+                {},
+                BytesIO(
+                    json.dumps(
+                        {
+                            "errors": [
+                                {
+                                    "code": "already_exists",
+                                    "field": "name",
+                                    "resource": "Label",
+                                }
+                            ],
+                            "message": f"Validation Failed: {TOKEN}",
+                        }
+                    ).encode()
+                ),
+            ),
+            FakeResponse({"name": LABEL}),
+            FakeResponse({"number": 17}),
+        ]
+    )
+
+    GitHubRestClient(TOKEN, transport=transport).apply(
+        plan,
+        status=status,
+        matches=(),
+        threshold=DEFAULT_THRESHOLD,
+    )
+
+    assert [request.method for request, _timeout in transport.calls] == [
+        "GET",
+        "POST",
+        "GET",
+        "POST",
+    ]
+    assert [
+        urlsplit(request.full_url).path.removeprefix("/repos/H234598/desinfect")
+        for request, _timeout in transport.calls
+    ] == [
+        "/labels/pipeline-incident",
+        "/labels",
+        "/labels/pipeline-incident",
+        "/issues",
+    ]
+
+
+def test_client_does_not_swallow_other_label_create_validation_error() -> None:
+    status = public_status(failures=2, state="degraded")
+    plan = plan_incident_issue(status, ())
+    transport = FakeTransport(
+        [
+            FakeResponse({}, status=404),
+            HTTPError(
+                "https://api.github.com/repos/H234598/desinfect/labels",
+                422,
+                "Unprocessable Entity",
+                {},
+                BytesIO(
+                    json.dumps(
+                        {
+                            "errors": [
+                                {
+                                    "code": "invalid",
+                                    "field": "color",
+                                    "resource": "Label",
+                                }
+                            ],
+                            "message": f"Validation Failed: {TOKEN}",
+                        }
+                    ).encode()
+                ),
+            ),
+        ]
+    )
+
+    with pytest.raises(IncidentIssueError) as caught:
+        GitHubRestClient(TOKEN, transport=transport).apply(
+            plan,
+            status=status,
+            matches=(),
+            threshold=DEFAULT_THRESHOLD,
+        )
+
+    assert len(transport.calls) == 2
+    assert TOKEN not in str(caught.value)
+
+
 def test_client_fails_closed_when_label_lookup_is_invalid() -> None:
     status = public_status(failures=2, state="degraded")
     plan = plan_incident_issue(status, ())
@@ -1108,8 +1210,17 @@ def test_apply_cli_uses_actions_history_for_repeated_job_failure(
     payload = json.loads(captured.out)
     assert payload["action"] == "create"
     assert "Aufeinanderfolgende Fehler: `2`" in payload["body"]
+    for request, _timeout in transport.calls:
+        path = urlsplit(request.full_url).path
+        if "/actions/" in path:
+            assert request.get_header("Authorization") == f"Bearer {ACTIONS_TOKEN}"
+        else:
+            assert "/issues" in path or "/labels" in path
+            assert request.get_header("Authorization") == f"Bearer {TOKEN}"
     assert ACTIONS_TOKEN not in captured.out
     assert ACTIONS_TOKEN not in captured.err
+    assert TOKEN not in captured.out
+    assert TOKEN not in captured.err
 
 
 def test_apply_cli_job_failure_requires_actions_history_token(
