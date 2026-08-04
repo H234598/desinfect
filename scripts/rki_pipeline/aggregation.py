@@ -1581,7 +1581,6 @@ def _load_existing_weekly_references(
                 if type(archive) is not dict:
                     raise AggregationError("Wochenmanifest-Archivreferenz ist ungültig")
                 kind = _string(archive, "kind", label="Wochenarchiv")
-                format_name = kind.removeprefix("week-")
                 relative_bundle = _string(
                     archive, "relative_bundle", label="Wochenarchiv"
                 )
