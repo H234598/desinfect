@@ -301,10 +301,17 @@ def compare_remote_sources(
 def reconcile_storage(
     graph: ManifestGraph,
     adapters: Mapping[StorageBackend, StorageAdapter],
+    *,
+    complete_graph: ManifestGraph | None = None,
 ) -> tuple[ReconciliationFinding, ...]:
     """Verify persisted storage references and detect adapter inventory orphans."""
 
     references = _manifest_storage_references(graph)
+    complete_references = (
+        references
+        if complete_graph is None
+        else _manifest_storage_references(complete_graph)
+    )
     checked_adapters = _storage_adapters(adapters)
     findings: list[ReconciliationFinding] = []
 
@@ -335,6 +342,11 @@ def reconcile_storage(
         (reference.storage_backend, reference.relative_path): reference
         for reference in references
     }
+    complete_artifact_ids = {reference.artifact_id for reference in complete_references}
+    complete_backend_paths = {
+        (reference.storage_backend, reference.relative_path)
+        for reference in complete_references
+    }
     for backend, adapter in checked_adapters.items():
         try:
             inventory = adapter.list_references()
@@ -361,7 +373,12 @@ def reconcile_storage(
                 expected = by_backend_path.get((backend, reference.relative_path))
             if expected is None:
                 owner = _storage_reference_owner(graph, reference)
-                if reference.source_id is not None and owner is None:
+                outside_scope = reference.artifact_id in complete_artifact_ids or (
+                    backend is StorageBackend.LFS
+                    and reference.provenance_state == "legacy_needs_review"
+                    and (backend, reference.relative_path) in complete_backend_paths
+                )
+                if complete_graph is not None and outside_scope:
                     continue
                 findings.append(_storage_finding(FindingCode.ORPHAN, reference, owner))
 
@@ -656,7 +673,10 @@ def _expected_period_plans(
         if document.get("superseded_by") is None
         and type(document.get("publication_date")) is str
         and type(document.get("paths")) is dict
-        and type(document["paths"].get("pdf")) is str
+        and (
+            type(document["paths"].get("pdf")) is str
+            or type(document["paths"].get("markdown")) is str
+        )
     )
     if not documents:
         return {}
@@ -1338,7 +1358,11 @@ def plan_reconciliation(
             scoped_remote_records,
             candidate_loader=candidate_loader,
         ),
-        reconcile_storage(scoped_catalog.graph, checked_adapters),
+        reconcile_storage(
+            scoped_catalog.graph,
+            checked_adapters,
+            complete_graph=catalog.graph,
+        ),
         reconcile_rights(scoped_catalog.graph, authority=authority, policy=policy),
         reconcile_periods(scoped_catalog.graph, period_root),
     )

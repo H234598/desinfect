@@ -232,9 +232,9 @@ def test_period_completeness_accepts_available_formats(
     assert reconcile_periods(graph, root) == ()
 
 
-def test_period_completeness_accepts_markdown_only_without_pdf_requirement(
+def _markdown_only_period_fixture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+) -> tuple[ManifestGraph, Path]:
     graph, root = _period_fixture(tmp_path, monkeypatch)
     document = graph.documents[-1]
     markdown_path = document["paths"]["markdown"]
@@ -261,7 +261,41 @@ def test_period_completeness_accepts_markdown_only_without_pdf_requirement(
 
         _rewrite_period_manifest(_period_manifest(root, kind, value), remove_pdf)
 
+    return markdown_graph, root
+
+
+def test_period_completeness_accepts_markdown_only_without_pdf_requirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    markdown_graph, root = _markdown_only_period_fixture(tmp_path, monkeypatch)
+
     assert reconcile_periods(markdown_graph, root) == ()
+
+
+def test_period_expected_evidence_rejects_coherent_markdown_only_version_tamper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph, root = _markdown_only_period_fixture(tmp_path, monkeypatch)
+
+    def change_version(manifest: dict[str, object]) -> None:
+        manifest["documents"][0]["version"] += 1
+
+    _rewrite_period_manifest(_period_manifest(root, "year", "2026"), change_version)
+
+    findings = reconcile_periods(graph, root)
+
+    owner = source_subject_id(
+        graph.documents[-1]["source_id"],
+        graph.documents[-1]["bitstream_id"],
+    )
+    assert [(item.code, item.subject_id, item.relative_path) for item in findings] == [
+        (
+            FindingCode.CHANGED,
+            owner,
+            "rki/Bulletins/Manifeste/Archive/year/2026.json",
+        ),
+    ]
 
 
 def test_period_completeness_checks_year_only_for_partial_date(
@@ -564,6 +598,23 @@ def test_storage_ownerless_orphan_uses_artifact_identity() -> None:
         document_id=None,
         decision_sha256=None,
         provenance_state="legacy_needs_review",
+    )
+    adapter = RecordingAdapter(StorageBackend.LFS, (extra,), {})
+
+    findings = reconcile_storage(storage_graph(reference), {StorageBackend.LFS: adapter})
+
+    assert [(item.code, item.subject_id) for item in findings] == [
+        (FindingCode.ORPHAN, "orphan-a"),
+    ]
+
+
+def test_storage_current_inventory_reference_without_graph_owner_is_artifact_orphan() -> None:
+    reference = storage_reference()
+    extra = replace(
+        storage_reference("orphan-a"),
+        source_id="rki:176904/900000099",
+        source_sha256="9" * 64,
+        document_id="rki-176904-900000099-v1",
     )
     adapter = RecordingAdapter(StorageBackend.LFS, (extra,), {})
 
@@ -1927,13 +1978,7 @@ def test_plan_scope_excludes_out_of_scope_graph_remote_drift_and_candidate_load(
         storage_references=tuple(reference.to_dict() for reference in references),
     )
     catalog = LoadedManifestCatalog(graph=graph, rendered=render_manifest_catalog(graph))
-    storage_graphs: list[ManifestGraph] = []
     rights_graphs: list[ManifestGraph] = []
-    monkeypatch.setattr(
-        reconciliation,
-        "reconcile_storage",
-        lambda scoped, *_args, **_kwargs: storage_graphs.append(scoped) or (),
-    )
     monkeypatch.setattr(
         reconciliation,
         "reconcile_rights",
@@ -1941,6 +1986,7 @@ def test_plan_scope_excludes_out_of_scope_graph_remote_drift_and_candidate_load(
     )
     monkeypatch.setattr(reconciliation, "reconcile_periods", lambda *_args, **_kwargs: ())
     calls: list[str] = []
+    adapter = RecordingAdapter(StorageBackend.LFS, references, {})
 
     result = plan_reconciliation(
         as_of=_RECONCILIATION_AS_OF,
@@ -1948,7 +1994,7 @@ def test_plan_scope_excludes_out_of_scope_graph_remote_drift_and_candidate_load(
         to_year=2026,
         catalog=catalog,
         remote_records=(current, replace(excluded, etag='"drift"')),
-        adapters={},
+        adapters={StorageBackend.LFS: adapter},
         period_root=tmp_path / "periods",
         authority=load_rights_authority(),
         policy=load_rights_policy(),
@@ -1958,8 +2004,9 @@ def test_plan_scope_excludes_out_of_scope_graph_remote_drift_and_candidate_load(
     assert result.conclusion == "success"
     assert result.counts == ReconciliationCounts(1, 0, 0, 0, 0, 0, 0)
     assert calls == []
-    assert len(storage_graphs) == len(rights_graphs) == 1
-    for scoped in (*storage_graphs, *rights_graphs):
+    assert adapter.verified == [current.document_id]
+    assert len(rights_graphs) == 1
+    for scoped in rights_graphs:
         assert [document["document_id"] for document in scoped.documents] == [current.document_id]
         assert [source["source_id"] for source in scoped.sources] == [current.source_id]
         assert [reference["document_id"] for reference in scoped.storage_references] == [

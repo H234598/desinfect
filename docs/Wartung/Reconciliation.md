@@ -44,7 +44,10 @@ Komponenten brechen beim Zusammenführen ebenfalls fail-closed ab.
 Jedes nicht-`ok`-Finding erhöht `unresolved` um eins. `new` besitzt keinen
 gleichnamigen Aggregatzähler: Es erhöht `missing_local`. Reihenfolge ist Code,
 Subject-Kind, Subject-ID, relativer Pfad. Quellenbezogene Subjects verwenden
-`<source_id>#<bitstream_id>`; Orphans verwenden ihre Artefakt-ID.
+`<source_id>#<bitstream_id>`. Orphans mit ausgewähltem Graph-Owner verwenden
+ebenfalls diese ID; ein Inventareintrag ohne Graph-Owner verwendet seine
+Artefakt-ID. Nur im vollständigen Manifestgraph nachgewiesene, aber aus dem
+Jahresbereich ausgeschlossene Inventareinträge werden ignoriert.
 
 ## Remote- und lokale Prüfung
 

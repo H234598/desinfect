@@ -447,8 +447,10 @@ def _period_documents(
         paths = _mapping_value(document, "paths", label="Dokument")
         if type(paths) is not dict:
             raise AggregationError("Dokumentpfade sind ungültig")
-        pdf_path = _string(paths, "pdf", label="Dokumentpfade")
+        pdf_path = _nullable_string(paths, "pdf", label="Dokumentpfade")
         markdown_path = _nullable_string(paths, "markdown", label="Dokumentpfade")
+        if pdf_path is None and markdown_path is None:
+            raise AggregationError("Dokument besitzt kein unterstütztes Produkt")
         all_candidates = by_owner.get((document_id, bitstream_id), [])
         persisted_candidates = [
             candidate
@@ -477,16 +479,18 @@ def _period_documents(
                 source, "sha256", label="Source"
             ):
                 raise AggregationError("Conversion-Source-SHA stimmt nicht mit Source überein")
-        pdf_reference = storage_by_path.get(pdf_path)
-        if pdf_reference is None:
-            raise AggregationError(f"Storage für PDF fehlt: {pdf_path}")
-        pdf = _prepared_for(
-            pdf_reference,
-            prepared_by_logical_key,
-            source=source,
-            document=document,
-            conversion_id=None,
-        )
+        pdf: PreparedObject | None = None
+        if pdf_path is not None:
+            pdf_reference = storage_by_path.get(pdf_path)
+            if pdf_reference is None:
+                raise AggregationError(f"Storage für PDF fehlt: {pdf_path}")
+            pdf = _prepared_for(
+                pdf_reference,
+                prepared_by_logical_key,
+                source=source,
+                document=document,
+                conversion_id=None,
+            )
         markdown: PreparedObject | None = None
         if state in _MATERIALIZED_CONVERSION_STATES:
             assert conversion is not None and conversion_id is not None
