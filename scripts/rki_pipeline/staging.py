@@ -10,6 +10,7 @@ import errno
 import os
 from pathlib import Path
 import signal
+import stat
 import sys
 from typing import Iterator
 import uuid
@@ -140,6 +141,51 @@ def _assert_marked_directory(parent_fd: int, name: str) -> None:
         os.close(descriptor)
 
 
+def _directory_generation(directory_fd: int, prefix: str = "") -> tuple[tuple[object, ...], ...]:
+    """Snapshot every owned entry without following links."""
+
+    rows: list[tuple[object, ...]] = []
+    for name in sorted(os.listdir(directory_fd)):
+        metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        relative = f"{prefix}/{name}" if prefix else name
+        if stat.S_ISLNK(metadata.st_mode):
+            raise StagingError(f"Symlink im Zielbaum ist unzulässig: {relative}")
+        if not stat.S_ISREG(metadata.st_mode) and not stat.S_ISDIR(metadata.st_mode):
+            raise StagingError(f"Zielbaum enthält keinen regulären Eintrag: {relative}")
+        rows.append(
+            (
+                relative,
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_mode,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_ctime_ns,
+            )
+        )
+        if stat.S_ISDIR(metadata.st_mode):
+            child_fd = _open_child_directory(directory_fd, name)
+            try:
+                rows.extend(_directory_generation(child_fd, relative))
+            finally:
+                os.close(child_fd)
+    return tuple(rows)
+
+
+def _target_generation(parent_fd: int, name: str) -> tuple[tuple[object, ...], ...] | None:
+    """Return absence or no-follow metadata for target's complete generation."""
+
+    if not entry_exists(parent_fd, name):
+        return None
+    target_fd = _open_child_directory(parent_fd, name)
+    try:
+        metadata = os.fstat(target_fd)
+        return (("", metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_size,
+                 metadata.st_mtime_ns, metadata.st_ctime_ns), *_directory_generation(target_fd))
+    finally:
+        os.close(target_fd)
+
+
 @contextmanager
 def staged_directory(
     target: Path,
@@ -179,6 +225,8 @@ def staged_directory(
                     raise StagingError(f"Stale Backup existiert: {backup_name}")
                 remove_tree_at(parent_fd, backup_name, require_sentinel=True)
 
+            expected_generation = _target_generation(parent_fd, target_name)
+
             os.mkdir(staging_name, mode=0o755, dir_fd=parent_fd)
             staging_created = True
             staging_fd = _open_child_directory(parent_fd, staging_name)
@@ -194,6 +242,8 @@ def staged_directory(
             os.close(staging_fd)
             staging_fd = None
 
+            if _target_generation(parent_fd, target_name) != expected_generation:
+                raise StagingConflictError(f"Zielgeneration wurde parallel geändert: {target_name}")
             if entry_exists(parent_fd, target_name):
                 if not replace_existing:
                     raise StagingConflictError(

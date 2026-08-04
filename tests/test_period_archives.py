@@ -10,6 +10,7 @@ import pytest
 from scripts.rki_grabber.models import AffectedPeriods
 from scripts.rki_pipeline import aggregation as aggregation_module
 from scripts.rki_pipeline import rights
+from scripts.rki_pipeline import staging as staging_module
 from scripts.rki_pipeline.aggregation import (
     AggregationError,
     PeriodArchiveMaterialization,
@@ -25,7 +26,7 @@ from scripts.rki_pipeline.aggregation import (
 )
 from scripts.rki_pipeline.archive import ArchiveBuild, build_archive
 from scripts.rki_pipeline.due_tasks import DueTask, TaskKind
-from scripts.rki_pipeline.io_utils import stable_json_dumps
+from scripts.rki_pipeline.io_utils import mark_generated_root, stable_json_dumps
 from scripts.rki_pipeline.manifests import ManifestGraph
 from scripts.rki_pipeline.rights import resolve_rights
 from scripts.rki_pipeline.run_modes import EffectLedger, RunMode
@@ -1253,9 +1254,8 @@ def test_late_arrival_changes_only_its_three_historical_periods(
         ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
         authorizer=late_authorizer,
     )
-    changed = {
-        path for path, fingerprint in _tree_fingerprint(root).items() if before.get(path) != fingerprint
-    }
+    after = _tree_fingerprint(root)
+    changed = {path for path in set(before) | set(after) if before.get(path) != after.get(path)}
     allowed_prefixes = (
         "rki/Bulletins/Monate/2026/04/ZIP/Wochen/",
         "rki/Bulletins/Monate/2026/04/ZIP/",
@@ -1267,6 +1267,153 @@ def test_late_arrival_changes_only_its_three_historical_periods(
     )
     assert changed
     assert all(path.startswith(allowed_prefixes) for path in changed)
+
+
+def test_materialize_preserves_unplanned_historical_period_products(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initial_inputs = _late_arrival_inputs(tmp_path)
+    initial_inputs["affected_periods"] = AffectedPeriods(
+        weeks={"2026-W17"}, months={"2026-04"}, years={2026}
+    )
+    first_plan, first_authorizer = _materialize_authorizer(
+        tmp_path, plan_period_archives(**initial_inputs), monkeypatch
+    )
+    root = tmp_path / "period-products"
+    materialize_period_archives(
+        first_plan,
+        root,
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=first_authorizer,
+    )
+    before = _tree_fingerprint(root)
+    obsolete_bundle = root / aggregation_module._bundle_path(
+        period_ref(TaskKind.WEEK, "2026-W17"), "markdown"
+    )
+    mark_generated_root(obsolete_bundle, allowed_root=root)
+    (obsolete_bundle / "archive.zip").write_bytes(b"obsolete")
+    update_inputs = _late_arrival_inputs(tmp_path)
+    update_inputs["due_tasks"] = (
+        due(TaskKind.WEEK, "2026-W17"),
+        due(TaskKind.MONTH, "2026-04"),
+        due(TaskKind.YEAR, "2026"),
+    )
+    update_plan, update_authorizer = _materialize_authorizer(
+        tmp_path, plan_period_archives(**update_inputs), monkeypatch
+    )
+
+    materialize_period_archives(
+        update_plan,
+        root,
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=update_authorizer,
+    )
+
+    after = _tree_fingerprint(root)
+    historical = {
+        path: fingerprint
+        for path, fingerprint in before.items()
+        if path.startswith("rki/Bulletins/Monate/2026/07/")
+        or path == "rki/Bulletins/Manifeste/Archive/week/2026-W28.json"
+        or path == "rki/Bulletins/Manifeste/Archive/month/2026-07.json"
+    }
+    assert historical
+    assert {path: after[path] for path in historical} == historical
+    assert not obsolete_bundle.exists()
+
+
+def test_materialize_rejects_document_payload_without_matching_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, authorizer, _first, _ledger = _materialize_fixture(tmp_path, monkeypatch)
+    period = plan.periods[0]
+    malformed = replace(plan, periods=(replace(period, archives=()),))
+    malformed = replace(
+        malformed,
+        input_fingerprint=aggregation_module._plan_fingerprint(malformed.periods),
+    )
+
+    with pytest.raises(AggregationError, match="Periodenarchiv"):
+        materialize_period_archives(
+            malformed,
+            tmp_path / "malformed",
+            temp_root=tmp_path,
+            ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+            authorizer=authorizer,
+        )
+
+
+def test_materialize_rejects_mutable_period_iterable_before_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, authorizer, _first, _ledger = _materialize_fixture(tmp_path, monkeypatch)
+
+    class W27W28:
+        def __iter__(self):
+            yield from plan.periods
+            yield from plan.periods
+
+    mutable = replace(plan, periods=W27W28())
+    with pytest.raises(AggregationError, match="periods.*tuple"):
+        materialize_period_archives(
+            mutable,
+            tmp_path / "mutable",
+            temp_root=tmp_path,
+            ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+            authorizer=authorizer,
+        )
+
+
+def test_materialize_resolves_relative_target_to_absolute_final_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, authorizer = _materialize_authorizer(
+        tmp_path,
+        plan_period_archives(**_plan_inputs(tmp_path)),
+        monkeypatch,
+    )
+
+    result = materialize_period_archives(
+        plan,
+        Path("relative-products"),
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=authorizer,
+    )
+
+    assert result.root == (tmp_path / "relative-products").resolve()
+    assert result.root.is_dir()
+    assert all(path.is_absolute() and path.exists() for path in result.index_paths + result.manifest_paths)
+
+
+def test_materialize_records_final_events_after_durable_cleanup_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, authorizer, first, _ledger = _materialize_fixture(tmp_path, monkeypatch)
+    first.manifest_paths[0].write_bytes(b"corrupt")
+    real_remove = staging_module.remove_tree_at
+
+    def fail_backup_cleanup(parent_fd: int, name: str, *, require_sentinel: bool = True) -> None:
+        if name == ".period-products.backup":
+            raise OSError("injected backup cleanup failure")
+        real_remove(parent_fd, name, require_sentinel=require_sentinel)
+
+    monkeypatch.setattr(staging_module, "remove_tree_at", fail_backup_cleanup)
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+    with pytest.raises(AggregationError, match="veröffentlicht, Cleanup"):
+        materialize_period_archives(
+            plan,
+            first.root,
+            temp_root=tmp_path,
+            ledger=ledger,
+            authorizer=authorizer,
+        )
+
+    assert ledger.events
+    assert all(event.target.startswith(first.root.as_posix()) for event in ledger.events)
+    validate_period_manifest(first.manifest_paths[0].read_bytes())
 
 
 def test_materialize_noop_preserves_tree_mtimes_and_outer_ledger(
@@ -1290,7 +1437,8 @@ def test_materialize_noop_preserves_tree_mtimes_and_outer_ledger(
     assert {path: (second.root / path).stat().st_mtime_ns for path in before} == mtimes
     assert len(ledger.events) == event_count
     assert all(event.target.startswith(second.root.as_posix()) for event in ledger.events)
-    assert not list(tmp_path.rglob(".stage-*"))
+    assert not list(tmp_path.rglob("*.staging-*"))
+    assert not list(tmp_path.rglob("*.backup"))
 
 
 def test_materialize_rechecks_stale_rights_before_existing_tree_equivalence(
@@ -1305,8 +1453,8 @@ def test_materialize_rechecks_stale_rights_before_existing_tree_equivalence(
     )
     monkeypatch.setattr(
         aggregation_module,
-        "_tree_signature",
-        lambda _root: pytest.fail("existing output was read before rights authorization"),
+        "_existing_tree_signature",
+        lambda *_args: pytest.fail("existing output was read before rights authorization"),
     )
 
     with pytest.raises(AggregationError, match="Rechteentscheidung"):

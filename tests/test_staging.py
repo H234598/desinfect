@@ -9,6 +9,7 @@ import pytest
 from scripts.rki_pipeline.io_utils import UnsafePathError, mark_generated_root
 from scripts.rki_pipeline import staging as staging_module
 from scripts.rki_pipeline.staging import (
+    StagingConflictError,
     StagingError,
     StagingUnsupportedError,
     staged_directory,
@@ -159,6 +160,24 @@ def test_staged_directory_resists_symlink_ancestor_swap(tmp_path: Path) -> None:
 
     assert (root / "nested-real" / "site" / "value.txt").read_text(encoding="utf-8") == "new"
     assert not (outside / "site").exists()
+
+
+def test_staged_directory_rejects_target_generation_change(tmp_path: Path) -> None:
+    """Never replace a target whose nested generation changed during staging."""
+
+    target = tmp_path / "site"
+    _generated(target, "old")
+    nested = target / "nested"
+    nested.mkdir()
+    (nested / "value.txt").write_text("old", encoding="utf-8")
+
+    with pytest.raises(StagingConflictError, match="parallel|Generation"):
+        with staged_directory(target, allowed_root=tmp_path) as stage:
+            (stage / "value.txt").write_text("new", encoding="utf-8")
+            (nested / "value.txt").replace(nested / "replacement.txt")
+
+    assert (nested / "replacement.txt").read_text(encoding="utf-8") == "old"
+    assert not (target / "value.txt").read_text(encoding="utf-8") == "new"
 
 
 def test_staged_directory_rejects_symlink_in_generated_output(tmp_path: Path) -> None:
