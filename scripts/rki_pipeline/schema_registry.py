@@ -179,15 +179,15 @@ def migrate_status_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def migrate_source_manifest_v1_0_to_v1_1(payload: dict[str, Any]) -> dict[str, Any]:
-    """Migrate exactly source-manifest 1.0.0 without inventing missing evidence."""
+def migrate_source_manifest_v1_0_to_v1_2(payload: dict[str, Any]) -> dict[str, Any]:
+    """Migrate source-manifest 1.0.0 without inventing missing evidence."""
 
     if payload.get("schema_version") != "1.0.0":
         raise SchemaContractError(f"Nicht unterstützte Source-Manifest-Migration: {payload.get('schema_version')!r}")
     result = deepcopy(payload)
     result.update(
         {
-            "schema_version": "1.1.0",
+            "schema_version": "1.2.0",
             "provenance_state": "legacy_needs_review",
             "bitstream_id": None,
             "bitstream_url": None,
@@ -199,11 +199,36 @@ def migrate_source_manifest_v1_0_to_v1_1(payload: dict[str, Any]) -> dict[str, A
                 "open_access": None,
             },
             "decision_sha256": None,
+            "doi": None,
             "same_content_as": [],
         }
     )
     validate_document("source-manifest", result)
     return result
+
+
+def migrate_source_manifest_v1_1_to_v1_2(payload: dict[str, Any]) -> dict[str, Any]:
+    """Add nullable DOI to an exact source-manifest 1.1.0 payload."""
+
+    if payload.get("schema_version") != "1.1.0":
+        raise SchemaContractError(
+            f"Nicht unterstützte Source-Manifest-Migration: {payload.get('schema_version')!r}"
+        )
+    result = deepcopy(payload)
+    result.update({"schema_version": "1.2.0", "doi": None})
+    validate_document("source-manifest", result)
+    return result
+
+
+def migrate_source_manifest_to_v1_2(payload: dict[str, Any]) -> dict[str, Any]:
+    """Dispatch either registered source-manifest predecessor to version 1.2."""
+
+    version = payload.get("schema_version")
+    if version == "1.0.0":
+        return migrate_source_manifest_v1_0_to_v1_2(payload)
+    if version == "1.1.0":
+        return migrate_source_manifest_v1_1_to_v1_2(payload)
+    raise SchemaContractError(f"Nicht unterstützte Source-Manifest-Migration: {version!r}")
 
 
 def migrate_document_manifest_v1_0_to_v1_1(payload: dict[str, Any]) -> dict[str, Any]:
@@ -286,7 +311,8 @@ def migrate_storage_reference_v1_0_to_v1_1(payload: dict[str, Any]) -> dict[str,
 
 MIGRATIONS: dict[tuple[str, str, str], Callable[[dict[str, Any]], dict[str, Any]]] = {
     ("status", "2.0.0", "3.0.0"): migrate_status_v2_to_v3,
-    ("source-manifest", "1.0.0", "1.1.0"): migrate_source_manifest_v1_0_to_v1_1,
+    ("source-manifest", "1.0.0", "1.2.0"): migrate_source_manifest_to_v1_2,
+    ("source-manifest", "1.1.0", "1.2.0"): migrate_source_manifest_to_v1_2,
     ("document-manifest", "1.0.0", "1.1.0"): migrate_document_manifest_v1_0_to_v1_1,
     ("conversion-manifest", "1.0.0", "1.1.0"): migrate_conversion_manifest_v1_0_to_v1_1,
     ("storage-reference", "1.0.0", "1.1.0"): migrate_storage_reference_v1_0_to_v1_1,

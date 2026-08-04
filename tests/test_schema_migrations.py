@@ -38,7 +38,7 @@ def _fixture(name: str) -> dict[str, object]:
     return json.loads((ROOT / "tests" / "fixtures" / "schemas" / name).read_text(encoding="utf-8"))
 
 
-def test_source_manifest_v1_to_v1_1_is_deterministic_and_preserves_unknowns() -> None:
+def test_source_manifest_v1_to_current_is_deterministic_and_preserves_unknowns() -> None:
     source = _fixture("source-manifest-v1.0.json")
     original = deepcopy(source)
     first = migrate_document("source-manifest", source)
@@ -46,7 +46,8 @@ def test_source_manifest_v1_to_v1_1_is_deterministic_and_preserves_unknowns() ->
 
     assert source == original
     assert first == second
-    assert first["schema_version"] == "1.1.0"
+    assert first["schema_version"] == "1.2.0"
+    assert first["doi"] is None
     assert first["provenance_state"] == "legacy_needs_review"
     assert first["bitstream_id"] is None
     assert first["bitstream_url"] is None
@@ -59,6 +60,27 @@ def test_source_manifest_v1_to_v1_1_is_deterministic_and_preserves_unknowns() ->
         "open_access": None,
     }
     validate_document("source-manifest", first)
+
+
+def test_source_manifest_v1_1_to_current_adds_nullable_doi() -> None:
+    source = _fixture("source-manifest-v1.1.json")
+    original = deepcopy(source)
+
+    migrated = migrate_document("source-manifest", source)
+
+    assert source == original
+    assert migrated["schema_version"] == "1.2.0"
+    assert migrated["doi"] is None
+    validate_document("source-manifest", migrated)
+
+
+@pytest.mark.parametrize("doi", ("10/no-prefix", "10.1/short-prefix", "10.1234/white space"))
+def test_source_manifest_rejects_noncanonical_doi(doi: str) -> None:
+    payload = migrate_document("source-manifest", _fixture("source-manifest-v1.1.json"))
+    payload["doi"] = doi
+
+    with pytest.raises(SchemaContractError, match="doi"):
+        validate_document("source-manifest", payload)
 
 
 def test_document_manifest_v1_to_v1_1_is_deterministic_and_derives_periods() -> None:

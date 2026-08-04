@@ -7,15 +7,19 @@ from contextlib import contextmanager
 import ctypes
 from dataclasses import dataclass
 import errno
+import fcntl
 import os
 from pathlib import Path
 import signal
+import stat
 import sys
-from typing import Iterator
+import threading
+from typing import Callable, Iterator
 import uuid
 
 from scripts.rki_pipeline.io_utils import (
     assert_generated_root_fd,
+    clear_generated_tree_fd,
     entry_exists,
     fd_directory_path,
     fsync_directory_fd,
@@ -40,11 +44,17 @@ class StagingUnsupportedError(StagingError):
     """Host filesystem cannot provide atomic no-replace publication."""
 
 
+_TARGET_REGISTRY: set[tuple[int, int, str]] = set()
+_TARGET_REGISTRY_GUARD = threading.Lock()
+
+
 @dataclass(slots=True)
 class StagingState:
     """Observable publication state for ledger/error reconciliation."""
 
     published: bool = False
+    no_change: bool = False
+    no_change_validated: bool = False
 
 
 def _rename_noreplace(parent_fd: int, source: str, target: str) -> None:
@@ -140,6 +150,181 @@ def _assert_marked_directory(parent_fd: int, name: str) -> None:
         os.close(descriptor)
 
 
+def _directory_generation(directory_fd: int, prefix: str = "") -> tuple[tuple[object, ...], ...]:
+    """Snapshot every owned entry without following links."""
+
+    root_before = os.fstat(directory_fd)
+    if not stat.S_ISDIR(root_before.st_mode):
+        raise StagingError("Zielgeneration enthält kein Verzeichnis")
+    rows: list[tuple[object, ...]] = []
+    names = tuple(sorted(os.listdir(directory_fd)))
+    metadata_by_name: dict[str, os.stat_result] = {}
+    for name in names:
+        metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        metadata_by_name[name] = metadata
+        relative = f"{prefix}/{name}" if prefix else name
+        if stat.S_ISLNK(metadata.st_mode):
+            raise StagingError(f"Symlink im Zielbaum ist unzulässig: {relative}")
+        if not stat.S_ISREG(metadata.st_mode) and not stat.S_ISDIR(metadata.st_mode):
+            raise StagingError(f"Zielbaum enthält keinen regulären Eintrag: {relative}")
+        rows.append(
+            (
+                relative,
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_mode,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_ctime_ns,
+            )
+        )
+        if stat.S_ISDIR(metadata.st_mode):
+            child_fd = _open_child_directory(directory_fd, name)
+            try:
+                if not _metadata_matches(metadata, os.fstat(child_fd)):
+                    raise StagingConflictError("Zielgeneration änderte sich während der Prüfung")
+                rows.extend(_directory_generation(child_fd, relative))
+                if not _metadata_matches(metadata, os.fstat(child_fd)):
+                    raise StagingConflictError("Zielgeneration änderte sich während der Prüfung")
+            finally:
+                os.close(child_fd)
+    if tuple(sorted(os.listdir(directory_fd))) != names or not _metadata_matches(
+        root_before, os.fstat(directory_fd)
+    ):
+        raise StagingConflictError("Zielgeneration änderte sich während der Prüfung")
+    for name, before in metadata_by_name.items():
+        if not _metadata_matches(before, os.stat(name, dir_fd=directory_fd, follow_symlinks=False)):
+            raise StagingConflictError("Zielgeneration änderte sich während der Prüfung")
+    return tuple(rows)
+
+
+def _metadata_matches(left: os.stat_result, right: os.stat_result) -> bool:
+    """Compare complete generation metadata relevant to descriptor ownership."""
+
+    return (
+        left.st_dev,
+        left.st_ino,
+        left.st_mode,
+        left.st_size,
+        left.st_mtime_ns,
+        left.st_ctime_ns,
+    ) == (
+        right.st_dev,
+        right.st_ino,
+        right.st_mode,
+        right.st_size,
+        right.st_mtime_ns,
+        right.st_ctime_ns,
+    )
+
+
+def _target_generation(parent_fd: int, name: str) -> tuple[tuple[object, ...], ...] | None:
+    """Return absence or no-follow metadata for target's complete generation."""
+
+    if not entry_exists(parent_fd, name):
+        return None
+    target_fd = _open_child_directory(parent_fd, name)
+    try:
+        metadata = os.fstat(target_fd)
+        return (("", metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_size,
+                 metadata.st_mtime_ns, metadata.st_ctime_ns), *_directory_generation(target_fd))
+    finally:
+        os.close(target_fd)
+
+
+def _claimed_generation_matches(
+    expected: tuple[tuple[object, ...], ...] | None,
+    claimed: tuple[tuple[object, ...], ...] | None,
+) -> bool:
+    """Compare a claimed backup, allowing its root ctime/mtime rename effects."""
+
+    if expected is None or claimed is None or not expected or not claimed:
+        return expected == claimed
+    return expected[0][:5] == claimed[0][:5] and expected[1:] == claimed[1:]
+
+
+@contextmanager
+def _target_transaction_lock(parent_fd: int, target_name: str) -> Iterator[None]:
+    """Acquire nonblocking parent-FD lock plus in-process same-target registry."""
+
+    metadata = os.fstat(parent_fd)
+    key = (metadata.st_dev, metadata.st_ino, target_name)
+    with _TARGET_REGISTRY_GUARD:
+        if key in _TARGET_REGISTRY:
+            raise StagingConflictError(f"Ziel ist bereits in einer Stagingtransaktion: {target_name}")
+        _TARGET_REGISTRY.add(key)
+    locked = False
+    try:
+        try:
+            fcntl.flock(parent_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            locked = True
+        except BlockingIOError as exc:
+            raise StagingConflictError(f"Staging-Parent ist belegt: {target_name}") from exc
+        except OSError as exc:
+            if exc.errno in {errno.ENOLCK, errno.EOPNOTSUPP}:
+                raise StagingUnsupportedError(
+                    "Staging-Parent-Lock wird nicht unterstützt"
+                ) from exc
+            raise
+        yield
+    finally:
+        if locked:
+            fcntl.flock(parent_fd, fcntl.LOCK_UN)
+        with _TARGET_REGISTRY_GUARD:
+            _TARGET_REGISTRY.discard(key)
+
+
+def _directory_identity(directory_fd: int) -> tuple[int, int, int]:
+    """Return immutable ownership identity for one open directory."""
+
+    metadata = os.fstat(directory_fd)
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise StagingError("Publiziertes Ziel ist kein Verzeichnis")
+    return metadata.st_dev, metadata.st_ino, metadata.st_mode
+
+
+def _named_identity_matches(parent_fd: int, name: str, identity: tuple[int, int, int]) -> bool:
+    """Bind current descriptor-relative name to a previously owned directory."""
+
+    try:
+        descriptor = _open_child_directory(parent_fd, name)
+    except FileNotFoundError:
+        return False
+    try:
+        return _directory_identity(descriptor) == identity
+    finally:
+        os.close(descriptor)
+
+
+def _claim_owned_target(
+    parent_fd: int,
+    target_name: str,
+    quarantine_name: str,
+    owned_fd: int,
+) -> int | None:
+    """Claim target iff it is the exact publication held by ``owned_fd``."""
+
+    if not entry_exists(parent_fd, target_name):
+        return None
+    identity = _directory_identity(owned_fd)
+    _rename_noreplace(parent_fd, target_name, quarantine_name)
+    fsync_directory_fd(parent_fd)
+    descriptor = _open_child_directory(parent_fd, quarantine_name)
+    try:
+        if _directory_identity(descriptor) == identity:
+            return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+    os.close(descriptor)
+    try:
+        _rename_noreplace(parent_fd, quarantine_name, target_name)
+        fsync_directory_fd(parent_fd)
+    except StagingError as exc:
+        raise StagingConflictError("Fremdes Ziel konnte nach Quarantäne-Claim nicht zurückgestellt werden") from exc
+    raise StagingConflictError("Target-Name wurde durch eine fremde Generation ersetzt")
+
+
 @contextmanager
 def staged_directory(
     target: Path,
@@ -148,6 +333,7 @@ def staged_directory(
     force: bool = False,
     replace_existing: bool = True,
     state: StagingState | None = None,
+    publication_validator: Callable[[int], None] | None = None,
 ) -> Iterator[Path]:
     """Build a generated directory and atomically replace *target*.
 
@@ -161,23 +347,36 @@ def staged_directory(
     target_name = relative.name
     staging_name = f".{target_name}.staging-{uuid.uuid4().hex}"
     backup_name = f".{target_name}.backup"
+    quarantine_name = f".{target_name}.quarantine-{uuid.uuid4().hex}"
     publication_state = state if state is not None else StagingState()
     publication_state.published = False
+    publication_state.no_change = False
+    publication_state.no_change_validated = False
 
     with open_root_directory(allowed_root, create=True) as root_fd:
         parent_fd = open_directory_beneath(root_fd, relative.parts[:-1], create=True)
+        transaction_lock = _target_transaction_lock(parent_fd, target_name)
+        try:
+            transaction_lock.__enter__()
+        except BaseException:
+            os.close(parent_fd)
+            raise
         staging_fd: int | None = None
+        published_fd: int | None = None
         staging_created = False
         staging_marked = False
         target_moved = False
         staging_published = False
         publication_committed = False
+        published_identity: tuple[int, int, int] | None = None
         try:
             if entry_exists(parent_fd, backup_name):
                 _assert_marked_directory(parent_fd, backup_name)
                 if not force:
                     raise StagingError(f"Stale Backup existiert: {backup_name}")
                 remove_tree_at(parent_fd, backup_name, require_sentinel=True)
+
+            expected_generation = _target_generation(parent_fd, target_name)
 
             os.mkdir(staging_name, mode=0o755, dir_fd=parent_fd)
             staging_created = True
@@ -191,39 +390,45 @@ def staged_directory(
 
             assert_generated_root_fd(staging_fd)
             validate_tree_no_symlinks_fd(staging_fd)
-            os.close(staging_fd)
-            staging_fd = None
-
-            if entry_exists(parent_fd, target_name):
-                if not replace_existing:
-                    raise StagingConflictError(
-                        f"Ziel wurde parallel veröffentlicht: {target_name}"
-                    )
-                _assert_marked_directory(parent_fd, target_name)
-                os.replace(
-                    target_name,
-                    backup_name,
-                    src_dir_fd=parent_fd,
-                    dst_dir_fd=parent_fd,
-                )
-                target_moved = True
-                fsync_directory_fd(parent_fd)
 
             with _publication_signal_guard():
-                if replace_existing:
-                    os.replace(
-                        staging_name,
-                        target_name,
-                        src_dir_fd=parent_fd,
-                        dst_dir_fd=parent_fd,
-                    )
-                else:
-                    _rename_noreplace(parent_fd, staging_name, target_name)
+                if _target_generation(parent_fd, target_name) != expected_generation:
+                    raise StagingConflictError(f"Zielgeneration wurde parallel geändert: {target_name}")
+                if publication_state.no_change:
+                    publication_state.no_change_validated = True
+                    return
+                if expected_generation is not None:
+                    if not replace_existing:
+                        raise StagingConflictError(
+                            f"Ziel wurde parallel veröffentlicht: {target_name}"
+                        )
+                    _assert_marked_directory(parent_fd, target_name)
+                    _rename_noreplace(parent_fd, target_name, backup_name)
+                    target_moved = True
+                    if not _claimed_generation_matches(
+                        expected_generation, _target_generation(parent_fd, backup_name)
+                    ):
+                        _rename_noreplace(parent_fd, backup_name, target_name)
+                        target_moved = False
+                        raise StagingConflictError(
+                            f"Zielgeneration wurde parallel geändert: {target_name}"
+                        )
+                    fsync_directory_fd(parent_fd)
+                _rename_noreplace(parent_fd, staging_name, target_name)
                 staging_created = False
                 staging_published = True
                 publication_state.published = True
-            fsync_directory_fd(parent_fd)
-            publication_committed = True
+                published_fd = staging_fd
+                staging_fd = None
+                published_identity = _directory_identity(published_fd)
+                if publication_validator is not None:
+                    publication_validator(published_fd)
+                if not _named_identity_matches(parent_fd, target_name, published_identity):
+                    raise StagingConflictError(
+                        f"Publiziertes Ziel wurde parallel ersetzt: {target_name}"
+                    )
+                fsync_directory_fd(parent_fd)
+                publication_committed = True
 
             if entry_exists(parent_fd, backup_name):
                 try:
@@ -246,24 +451,52 @@ def staged_directory(
                 # target with a potentially partially removed old backup.
                 raise
             try:
-                if staging_published and entry_exists(parent_fd, target_name):
-                    remove_tree_at(parent_fd, target_name, require_sentinel=True)
-                    staging_published = False
-                    publication_state.published = False
-                if target_moved and entry_exists(parent_fd, backup_name):
-                    os.replace(
-                        backup_name,
+                rollback_error: BaseException | None = None
+                if staging_published and published_fd is not None:
+                    quarantine_fd = _claim_owned_target(
+                        parent_fd,
                         target_name,
-                        src_dir_fd=parent_fd,
-                        dst_dir_fd=parent_fd,
+                        quarantine_name,
+                        published_fd,
                     )
-                    target_moved = False
-                    fsync_directory_fd(parent_fd)
-            except BaseException as rollback_error:
+                    if quarantine_fd is None:
+                        staging_published = False
+                        publication_state.published = False
+                    else:
+                        try:
+                            clear_generated_tree_fd(quarantine_fd)
+                            if not _named_identity_matches(
+                                parent_fd,
+                                quarantine_name,
+                                published_identity,
+                            ):
+                                rollback_error = StagingConflictError(
+                                    "Eigene Quarantäne wurde parallel ersetzt"
+                                )
+                            staging_published = False
+                            publication_state.published = False
+                        finally:
+                            os.close(quarantine_fd)
+                if target_moved:
+                    if not entry_exists(parent_fd, backup_name):
+                        rollback_error = rollback_error or StagingConflictError(
+                            f"Rollback-Backup fehlt: {backup_name}"
+                        )
+                    elif entry_exists(parent_fd, target_name):
+                        rollback_error = rollback_error or StagingConflictError(
+                            f"Concurrent Target verhindert sicheren Rollback: {target_name}"
+                        )
+                    else:
+                        _rename_noreplace(parent_fd, backup_name, target_name)
+                        target_moved = False
+                        fsync_directory_fd(parent_fd)
+                if rollback_error is not None:
+                    raise rollback_error
+            except BaseException as rollback_failure:
                 raise StagingError(
                     "Staging fehlgeschlagen und Rollback konnte nicht sicher "
-                    f"abgeschlossen werden: {rollback_error}"
-                ) from rollback_error
+                    f"abgeschlossen werden: {rollback_failure}"
+                ) from rollback_failure
             raise
         finally:
             if staging_fd is not None:
@@ -279,7 +512,12 @@ def staged_directory(
                 except BaseException as exc:
                     cleanup_error = exc
             active_error = sys.exc_info()[0] is not None
-            os.close(parent_fd)
+            try:
+                transaction_lock.__exit__(*sys.exc_info())
+            finally:
+                if published_fd is not None:
+                    os.close(published_fd)
+                os.close(parent_fd)
             if cleanup_error is not None:
                 if active_error:
                     current = sys.exc_info()[1]

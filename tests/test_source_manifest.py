@@ -33,6 +33,7 @@ def _record(
         "issue.pdf?sequence=2"
     ),
     sha256: str = "a" * 64,
+    doi: str | None = None,
 ) -> ArtifactRecord:
     return ArtifactRecord(
         scope=Scope.ISSUES,
@@ -44,7 +45,7 @@ def _record(
         title="Synthetic RKI bulletin",
         publication_date="1996-03-22",
         year=1996,
-        doi=None,
+        doi=doi,
         rights=RightsMetadata(
             label="Synthetic fixture — no publication decision",
             uri="https://example.invalid/synthetic-license",
@@ -130,7 +131,7 @@ def test_builders_produce_fail_closed_valid_manifests() -> None:
         superseded_by="rki-176904-12345-v3",
     )
 
-    assert source["schema_version"] == "1.1.0"
+    assert source["schema_version"] == "1.2.0"
     assert source["bitstream_version"] == 2
     assert source["rights"] == {
         "state": "metadata_only",
@@ -163,6 +164,21 @@ def test_builders_produce_fail_closed_valid_manifests() -> None:
         "canonical_periods": {"week": "1996-W12", "month": "1996-03", "year": 1996},
         "superseded_by": "rki-176904-12345-v3",
     }
+
+
+def test_source_manifest_carries_nullable_artifact_record_doi() -> None:
+    with_doi = _source_manifest(_record(doi="10.25646/12345.2"))
+    without_doi = _source_manifest(_record())
+
+    assert with_doi["schema_version"] == "1.2.0"
+    assert with_doi["doi"] == "10.25646/12345.2"
+    assert without_doi["doi"] is None
+
+
+@pytest.mark.parametrize("doi", ("10.25646/12345.2\n", "10.25646/12345\x00.2"))
+def test_source_manifest_rejects_doi_control_characters(doi: str) -> None:
+    with pytest.raises(ManifestBuildError):
+        _source_manifest(_record(doi=doi))
 
 
 def test_source_manifest_maps_exact_reviewed_rights_decision() -> None:

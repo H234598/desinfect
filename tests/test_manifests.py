@@ -40,7 +40,7 @@ def _authorizer():
 
 def _source() -> dict[str, object]:
     return {
-        "schema_version": "1.1.0",
+        "schema_version": "1.2.0",
         "source_id": SOURCE_ID,
         "handle": "176904/900000001",
         "version": 1,
@@ -67,6 +67,7 @@ def _source() -> dict[str, object]:
             "open_access": True,
         },
         "decision_sha256": DECISION_SHA256,
+        "doi": None,
         "same_content_as": [],
     }
 

@@ -120,7 +120,7 @@ def build_source_manifest(
     ):
         raise ManifestBuildError("Rechteentscheidung ist nicht kanonisch")
     payload: dict[str, object] = {
-        "schema_version": "1.1.0",
+        "schema_version": "1.2.0",
         "source_id": document.source_id,
         "handle": document.handle,
         "version": document.version,
@@ -147,6 +147,7 @@ def build_source_manifest(
             "open_access": record.rights.open_access,
         },
         "decision_sha256": rights_decision.decision_sha256,
+        "doi": record.doi,
         "same_content_as": _aliases(bitstream.bitstream_id, same_content_as),
     }
     return _validated("source-manifest", payload)

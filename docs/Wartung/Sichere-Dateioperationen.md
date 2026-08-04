@@ -14,6 +14,13 @@ Basis für spätere persistente Dateioperationen.
   Verzeichnis-`fsync`;
 - generierte Verzeichnisse benötigen `.desinfect-generated-root`;
 - Staging und Ziel müssen auf demselben Dateisystem liegen;
+- eine nicht blockierende, parent-weite `flock` serialisiert alle Zielnamen desselben
+  Parent-Verzeichnisses; parallele Geschwisterziele schlagen sofort geschlossen fehl;
+- nach Staging-zu-Ziel-Umbenennung bleibt exakt derselbe Verzeichnis-FD bis
+  Transaktionsende offen; Validator, Ownership-Prüfung und Rollback verwenden diese
+  gepinnte Inode-Identität;
+- Veröffentlichung blockiert Abbruchsignale von Rename über Parent-`fsync` und
+  Commit-Markierung; erst danach werden Signale wieder freigegeben;
 - bei Fehlern bleibt der vorherige vollständige Zielstand erhalten.
 
 Unmarkierte Verzeichnisse werden niemals automatisch ersetzt oder gelöscht.

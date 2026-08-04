@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
 
+from scripts.rki_pipeline import schema_registry as schema_registry_module
 from scripts.rki_pipeline.schema_registry import SchemaContractError, load_registry, load_schema, validate_document
 from scripts import validate_schemas
 
@@ -77,12 +78,26 @@ def _conversion_manifest_payload() -> dict[str, object]:
 
 def test_all_registered_schemas_are_strict_draft_2020_12() -> None:
     registry = load_registry()
-    assert len(registry["contracts"]) == 12
+    assert len(registry["contracts"]) == 13
     for entry in registry["contracts"]:
         schema = load_schema(entry["name"], registry)
         Draft202012Validator.check_schema(schema)
         assert schema["additionalProperties"] is False
         assert schema["$schema"].endswith("2020-12/schema")
+
+
+def test_registered_migration_names_resolve_to_runtime_callables() -> None:
+    for entry in load_registry()["contracts"]:
+        migration_name = entry["migration"]
+        if migration_name is None:
+            assert entry["previous_versions"] == []
+            continue
+        migration = getattr(schema_registry_module, migration_name)
+        assert callable(migration)
+        for previous_version in entry["previous_versions"]:
+            assert schema_registry_module.MIGRATIONS[
+                (entry["name"], previous_version, entry["current_version"])
+            ] is migration
 
 
 def test_invalid_registered_schema_raises_contract_error(tmp_path: Path) -> None:
@@ -117,6 +132,110 @@ def test_public_status_validates_and_unknown_field_fails_closed() -> None:
     changed["unexpected"] = True
     with pytest.raises(SchemaContractError, match="Additional properties"):
         validate_document("status", changed)
+
+
+def test_period_archive_manifest_validates_and_unknown_field_fails_closed() -> None:
+    fixture = json.loads(
+        (ROOT / "tests" / "fixtures" / "schemas" / "period-archive-manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    validate_document("period-archive-manifest", fixture)
+    changed = deepcopy(fixture)
+    changed["unexpected"] = True
+    with pytest.raises(SchemaContractError, match="Additional properties"):
+        validate_document("period-archive-manifest", changed)
+
+
+@pytest.mark.parametrize(
+    ("root_kind", "period", "archive_kind", "month_manifests"),
+    [
+        ("week", "2026-W27", "month-pdf", []),
+        ("month", "2026-07", "week-pdf", []),
+        ("year", "2026", "month-pdf", []),
+        (
+            "week",
+            "2026-W27",
+            None,
+            ["rki/Bulletins/Manifeste/Archive/month/2026-07.json"],
+        ),
+        (
+            "month",
+            "2026-07",
+            None,
+            ["rki/Bulletins/Manifeste/Archive/month/2026-07.json"],
+        ),
+    ],
+)
+def test_period_archive_manifest_rejects_cross_kind_collections(
+    root_kind: str,
+    period: str,
+    archive_kind: str | None,
+    month_manifests: list[str],
+) -> None:
+    fixture = json.loads(
+        (ROOT / "tests" / "fixtures" / "schemas" / "period-archive-manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    fixture["kind"] = root_kind
+    fixture["period"] = period
+    fixture["month_manifests"] = month_manifests
+    fixture["archives"] = [] if archive_kind is None else [
+        {
+            "archive_id": "rki-cross-kind-pdf",
+            "kind": archive_kind,
+            "relative_bundle": "rki/Bulletins/Archive",
+            "input_fingerprint": "b" * 64,
+            "output_sha256": "c" * 64,
+            "bytes": 1,
+            "storage_reference": None,
+        }
+    ]
+
+    with pytest.raises(SchemaContractError, match=r"archives|month_manifests"):
+        validate_document("period-archive-manifest", fixture)
+
+
+@pytest.mark.parametrize(
+    ("artifact_field", "sha256_field", "artifact_id", "sha256"),
+    [
+        ("pdf_artifact_id", "pdf_sha256", None, "a" * 64),
+        ("pdf_artifact_id", "pdf_sha256", "pdf-artifact", None),
+        ("markdown_artifact_id", "markdown_sha256", None, "b" * 64),
+        ("markdown_artifact_id", "markdown_sha256", "markdown-artifact", None),
+    ],
+)
+def test_period_archive_manifest_rejects_unpaired_artifact_identity(
+    artifact_field: str,
+    sha256_field: str,
+    artifact_id: str | None,
+    sha256: str | None,
+) -> None:
+    fixture = json.loads(
+        (ROOT / "tests" / "fixtures" / "schemas" / "period-archive-manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    fixture["documents"] = [
+        {
+            "document_id": "rki-176904-12345-v2",
+            "bitstream_id": "rki-bitstream-" + "1" * 64,
+            "doi": None,
+            "version": 2,
+            "source_id": "rki:176904/12345.2",
+            "publication_date": "2026-07-01",
+            "pdf_artifact_id": None,
+            "pdf_sha256": None,
+            "markdown_artifact_id": None,
+            "markdown_sha256": None,
+        }
+    ]
+    fixture["documents"][0][artifact_field] = artifact_id
+    fixture["documents"][0][sha256_field] = sha256
+
+    with pytest.raises(SchemaContractError):
+        validate_document("period-archive-manifest", fixture)
 
 
 def test_storage_reference_rejects_non_sha256() -> None:
@@ -204,11 +323,13 @@ def test_schema_validator_checks_every_p06_predecessor(
     fixture_root.mkdir(parents=True)
     (tmp_path / "status.json").write_bytes((ROOT / "status.json").read_bytes())
     for name in (
-        "status-v2.json",
-        "source-manifest-v1.0.json",
-        "document-manifest-v1.0.json",
+            "status-v2.json",
+            "source-manifest-v1.0.json",
+            "source-manifest-v1.1.json",
+            "document-manifest-v1.0.json",
         "storage-reference-v1.0.json",
         "conversion-manifest-v1.0.json",
+        "period-archive-manifest.json",
     ):
         target = fixture_root / name
         if name == corrupt_fixture:

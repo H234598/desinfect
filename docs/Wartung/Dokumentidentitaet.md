@@ -4,9 +4,9 @@
 
 `bitstream_identity(url)` akzeptiert nur HTTPS-URLs von `edoc.rki.de`, PDF-Pfade für RKI-Handles und optionalen positiven `sequence`-Parameter. `isAllowed=y` wird bei Kanonisierung entfernt; unbekannte, doppelte oder fragmentierte Query-Parameter werden abgewiesen. `bitstream_id` ist SHA-256 der kanonischen URL. Fehlende `sequence` bleibt `null`, nicht Version 1.
 
-Vollständiges Publikationsdatum stammt aus RKI-Metadaten. Daraus folgen ISO-Woche, Kalendermonat und Jahr; Pfade richten sich nach diesem Datum. Bei gleichem Datei-SHA-256 ist niedrigste `bitstream_id` kanonisch; jede andere Bitstream-Manifestdatei setzt `same_content_as` explizit auf diese ID.
+Vollständiges Publikationsdatum stammt aus RKI-Metadaten. Daraus folgen ISO-Woche, Kalendermonat und Jahr; Pfade richten sich nach diesem Datum. Bei gleichem Datei-SHA-256 ist niedrigste `bitstream_id` kanonisch; jede andere Bitstream-Manifestdatei setzt `same_content_as` explizit auf diese ID. Nachgelagerte Archive behandeln `(document_id, bitstream_id)` als Eindeutigkeitsgrenze. Dadurch dürfen mehrere valide Bitstreams dasselbe Dokument und dieselbe `source_id` aliasieren, ohne zusammenzufallen.
 
-Schema-Versionen werden nur über registrierte Ein-Schritt-Migrationen aktualisiert. Vor Rückgabe und vor Schreiben validiert jeder Builder gegen `source-manifest` beziehungsweise `document-manifest`.
+`source-manifest` `1.2.0` trägt `doi` als nullable Feld mit DOI-Syntaxprüfung. Produktionsbuilder geben `1.2.0` aus; registrierte direkte Migrationen von `1.0.0` und `1.1.0` ergänzen `doi: null`. Schema-Versionen werden nur über registrierte Migrationen aktualisiert. Vor Rückgabe und vor Schreiben validiert jeder Builder gegen `source-manifest` beziehungsweise `document-manifest`.
 
 Prüfen:
 

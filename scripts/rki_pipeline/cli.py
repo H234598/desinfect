@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 
-from scripts.rki_pipeline import archive, conversion_cli
+from scripts.rki_pipeline import aggregation, archive, conversion_cli
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -13,8 +13,10 @@ def main(argv: list[str] | None = None) -> int:
         return conversion_cli.main(arguments[1:])
     if arguments and arguments[0] == "build-archive":
         return archive.main(arguments[1:])
+    if arguments and arguments[0] == "aggregate":
+        return aggregation.main(arguments[1:])
     print(
-        "usage: python -m scripts.rki_pipeline.cli (convert|build-archive) ...",
+        "usage: python -m scripts.rki_pipeline.cli (convert|build-archive|aggregate) ...",
         file=sys.stderr,
     )
     return 2
