@@ -230,6 +230,9 @@ def test_staged_directory_rolls_back_when_publication_validator_rejects(
             (stage / "value.txt").write_text("new", encoding="utf-8")
 
     assert (target / "value.txt").read_text(encoding="utf-8") == "old"
+    quarantines = list(tmp_path.glob(".site.quarantine-*"))
+    assert len(quarantines) == 1
+    assert (quarantines[0] / "value.txt").read_text(encoding="utf-8") == "new"
 
 
 @pytest.mark.parametrize("validator_raises", (False, True))

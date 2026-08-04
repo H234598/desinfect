@@ -379,35 +379,15 @@ def _remove_tree_contents_fd(directory_fd: int) -> None:
             os.unlink(name, dir_fd=directory_fd)
 
 
-def remove_tree_at(
-    parent_fd: int,
-    name: str,
-    *,
-    require_sentinel: bool = True,
-    expected_identity: tuple[int, int, int] | None = None,
-) -> None:
-    """Remove one descriptor-relative tree only while its owned identity stays bound."""
+def remove_tree_at(parent_fd: int, name: str, *, require_sentinel: bool = True) -> None:
+    """Remove one descriptor-relative directory tree with optional sentinel gate."""
 
     directory_fd = _open_directory(name, dir_fd=parent_fd)
     try:
-        opened = os.fstat(directory_fd)
-        if expected_identity is not None and (
-            opened.st_dev,
-            opened.st_ino,
-            opened.st_mode,
-        ) != expected_identity:
-            raise UnsafePathError(f"Verzeichnisgeneration wurde vor Löschung ersetzt: {name}")
         if require_sentinel:
             assert_generated_root_fd(directory_fd)
         validate_tree_no_symlinks_fd(directory_fd)
         _remove_tree_contents_fd(directory_fd)
-        named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-        if (named.st_dev, named.st_ino, named.st_mode) != (
-            opened.st_dev,
-            opened.st_ino,
-            opened.st_mode,
-        ):
-            raise UnsafePathError(f"Verzeichnisgeneration wurde während Löschung ersetzt: {name}")
     finally:
         os.close(directory_fd)
     os.rmdir(name, dir_fd=parent_fd)

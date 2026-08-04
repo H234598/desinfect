@@ -435,7 +435,7 @@ def staged_directory(
 
             if entry_exists(parent_fd, backup_name):
                 raise StagingError(f"Backup blieb nach Stagingtransaktion bestehen: {backup_name}")
-        except BaseException:
+        except BaseException as transaction_error:
             if staging_fd is not None:
                 os.close(staging_fd)
                 staging_fd = None
@@ -443,7 +443,9 @@ def staged_directory(
                 # A later backup-cleanup error must never replace the durable new
                 # target with a potentially partially removed old backup.
                 raise
+            retained_quarantine: str | None = None
             try:
+                rollback_error: BaseException | None = None
                 if staging_published and published_identity is not None:
                     quarantine_fd = _claim_owned_target(
                         parent_fd,
@@ -453,29 +455,41 @@ def staged_directory(
                     )
                     if quarantine_fd is not None:
                         try:
-                            remove_tree_at(
+                            if _named_identity_matches(
                                 parent_fd,
                                 quarantine_name,
-                                require_sentinel=True,
-                                expected_identity=published_identity,
-                            )
-                            staging_published = False
-                            publication_state.published = False
+                                published_identity,
+                            ):
+                                retained_quarantine = quarantine_name
+                                staging_published = False
+                                publication_state.published = False
+                            else:
+                                rollback_error = StagingConflictError(
+                                    "Eigene Quarantäne wurde parallel ersetzt"
+                                )
                         finally:
                             os.close(quarantine_fd)
                 if target_moved and entry_exists(parent_fd, backup_name):
                     if entry_exists(parent_fd, target_name):
-                        raise StagingConflictError(
+                        rollback_error = rollback_error or StagingConflictError(
                             f"Concurrent Target verhindert sicheren Rollback: {target_name}"
                         )
-                    _rename_noreplace(parent_fd, backup_name, target_name)
-                    target_moved = False
-                    fsync_directory_fd(parent_fd)
-            except BaseException as rollback_error:
+                    else:
+                        _rename_noreplace(parent_fd, backup_name, target_name)
+                        target_moved = False
+                        fsync_directory_fd(parent_fd)
+                if rollback_error is not None:
+                    raise rollback_error
+            except BaseException as rollback_failure:
                 raise StagingError(
                     "Staging fehlgeschlagen und Rollback konnte nicht sicher "
-                    f"abgeschlossen werden: {rollback_error}"
-                ) from rollback_error
+                    f"abgeschlossen werden: {rollback_failure}"
+                ) from rollback_failure
+            if retained_quarantine is not None:
+                transaction_error.add_note(
+                    "Verworfene Publikation blieb zur sicheren Wiederherstellung in "
+                    f"{retained_quarantine} erhalten"
+                )
             raise
         finally:
             if staging_fd is not None:
