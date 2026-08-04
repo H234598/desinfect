@@ -1158,6 +1158,25 @@ def inspect_period_publication(
                         ),
                         size=archive["bytes"],
                     )
+                    try:
+                        live_bundle_fd = open_directory_beneath(root_fd, relative.parts)
+                    except (FileNotFoundError, OSError, UnsafePathError) as exc:
+                        raise ArchiveSecurityError(
+                            "Periodenarchiv wurde nach der Prüfung ausgetauscht"
+                        ) from exc
+                    try:
+                        held = os.fstat(bundle_fd)
+                        live = os.fstat(live_bundle_fd)
+                        if (
+                            not stat.S_ISDIR(held.st_mode)
+                            or not stat.S_ISDIR(live.st_mode)
+                            or (held.st_dev, held.st_ino) != (live.st_dev, live.st_ino)
+                        ):
+                            raise ArchiveSecurityError(
+                                "Periodenarchiv änderte seine Identität nach der Prüfung"
+                            )
+                    finally:
+                        os.close(live_bundle_fd)
                 finally:
                     os.close(bundle_fd)
     except FileNotFoundError:

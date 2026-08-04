@@ -387,7 +387,7 @@ def reconcile_periods(
         tuple[TaskKind, str],
         dict[tuple[str, str], tuple[str, str, str | None, str | None, str | None, str | None]],
     ] = {}
-    subjects: dict[tuple[str, str], str] = {}
+    identities: set[tuple[str, str]] = set()
     periods: dict[tuple[TaskKind, str], PeriodRef] = {}
     try:
         documents = sorted(
@@ -414,9 +414,9 @@ def reconcile_periods(
         if type(paths) is not dict:
             raise ReconciliationIntegrityError("Dokumentpfade sind ungültig")
         identity = (document_id, bitstream_id)
-        if identity in subjects:
+        if identity in identities:
             raise ReconciliationIntegrityError("Dokument-/Bitstream-Identität ist doppelt")
-        subjects[identity] = source_subject_id(source_id, bitstream_id)
+        identities.add(identity)
         document_periods = _document_periods(document, publication_date)
         pdf_id, pdf_sha256 = _period_artifact(paths.get("pdf"), storage_by_path, document_id)
         markdown_id, markdown_sha256 = _period_artifact(
@@ -451,31 +451,28 @@ def reconcile_periods(
                 inspection = inspect_period_publication(period_root, period)
                 inspections[key] = inspection
         except FileNotFoundError:
-            findings.extend(
-                _period_findings(
+            findings.append(
+                _period_finding(
                     FindingCode.MISSING_LOCAL,
-                    expected[key],
-                    subjects,
+                    period,
                     relative_path,
                 )
             )
             continue
         except (ArchiveError, PeriodManifestError):
-            findings.extend(
-                _period_findings(
+            findings.append(
+                _period_finding(
                     FindingCode.CHANGED,
-                    expected[key],
-                    subjects,
+                    period,
                     relative_path,
                 )
             )
             continue
         if not _period_membership_matches(inspection.manifest, period, expected[key]):
-            findings.extend(
-                _period_findings(
+            findings.append(
+                _period_finding(
                     FindingCode.CHANGED,
-                    expected[key],
-                    subjects,
+                    period,
                     relative_path,
                 )
             )
@@ -537,25 +534,21 @@ def _period_manifest_path(period: PeriodRef) -> str:
     return f"rki/Bulletins/Manifeste/Archive/{period.kind.value}/{period.value}.json"
 
 
-def _period_findings(
+def _period_finding(
     code: FindingCode,
-    expected: Mapping[tuple[str, str], object],
-    subjects: Mapping[tuple[str, str], str],
+    period: PeriodRef,
     relative_path: str,
-) -> tuple[ReconciliationFinding, ...]:
+) -> ReconciliationFinding:
     messages = {
         FindingCode.MISSING_LOCAL: "Erforderliche Periodenveröffentlichung fehlt lokal",
         FindingCode.CHANGED: "Periodenveröffentlichung oder Archivintegrität weicht ab",
     }
-    return tuple(
-        ReconciliationFinding(
-            code=code,
-            subject_kind=SubjectKind.PERIOD,
-            subject_id=subjects[identity],
-            relative_path=relative_path,
-            message=messages[code],
-        )
-        for identity in sorted(expected)
+    return ReconciliationFinding(
+        code=code,
+        subject_kind=SubjectKind.PERIOD,
+        subject_id=f"{period.kind.value}:{period.value}",
+        relative_path=relative_path,
+        message=messages[code],
     )
 
 

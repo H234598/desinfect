@@ -274,6 +274,38 @@ def test_period_completeness_checks_year_only_for_partial_date(
     assert reconcile_periods(partial_graph, root) == ()
 
 
+def test_period_completeness_emits_one_canonical_finding_per_affected_period(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph, root = _period_fixture(tmp_path, monkeypatch)
+    current = graph.documents[-1]
+    partial = {
+        **current,
+        "publication_date": None,
+        "canonical_periods": {"week": None, "month": None, "year": 2026},
+        "paths": {"pdf": None, "markdown": None},
+    }
+    second = {
+        **partial,
+        "document_id": "rki-176904-900000099-v1",
+        "bitstream_id": "rki-bitstream-" + "9" * 64,
+        "source_id": "rki:176904/900000099",
+    }
+    partial_graph = ManifestGraph(
+        sources=(),
+        documents=(partial, second),
+        conversions=(),
+        storage_references=(),
+    )
+    _period_manifest(root, "year", "2026").unlink()
+
+    findings = reconcile_periods(partial_graph, root)
+
+    assert [(item.code, item.subject_id) for item in findings] == [
+        (FindingCode.MISSING_LOCAL, "year:2026"),
+    ]
+
+
 @pytest.mark.parametrize(
     ("mutation", "code", "relative_path"),
     (
@@ -355,12 +387,11 @@ def test_period_completeness_classifies_missing_and_changed_publications(
 
     findings = reconcile_periods(graph, root)
 
-    current = graph.documents[-1]
     assert [(item.code, item.subject_kind, item.subject_id, item.relative_path) for item in findings] == [
         (
             code,
             SubjectKind.PERIOD,
-            source_subject_id(current["source_id"], current["bitstream_id"]),
+            f"{Path(relative_path).parent.name}:{Path(relative_path).stem}",
             relative_path,
         )
     ]
