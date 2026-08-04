@@ -217,6 +217,36 @@ def test_graph_accepts_exact_linked_current_manifests() -> None:
     )
 
 
+def test_storage_reference_from_manifest_round_trips_valid_manifest() -> None:
+    from scripts.rki_pipeline.manifests import storage_reference_from_manifest
+
+    manifest = _storage()[0]
+
+    assert storage_reference_from_manifest(manifest).to_dict() == manifest
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("storage_backend", "invalid"),
+        ("sha256", "A" * 64),
+        ("bytes", -1),
+        ("document_id", "rki-176904-900000002-v1"),
+        ("unexpected", "value"),
+    ),
+    ids=("backend", "hash", "bytes", "provenance-link", "unknown-key"),
+)
+def test_graph_rejects_invalid_storage_reference_schema(
+    field: str,
+    value: object,
+) -> None:
+    pdf_reference, markdown_reference = _storage()
+    pdf_reference[field] = value
+
+    with pytest.raises(ValueError, match="storage-reference"):
+        _build(storage=(pdf_reference, markdown_reference))
+
+
 @pytest.mark.parametrize(
     ("collection", "field", "value", "message"),
     (

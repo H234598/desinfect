@@ -13,7 +13,7 @@ import json
 import os
 from pathlib import Path
 import stat
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from scripts.rki_pipeline.documents import bitstream_identity, document_identity
 from scripts.rki_pipeline.io_utils import (
@@ -299,7 +299,7 @@ def _validate_conversions(
             raise ManifestGraphError("Conversion-Source-SHA widerspricht Source-SHA")
 
 
-def _storage_reference(value: Manifest) -> StorageReference:
+def storage_reference_from_manifest(value: Mapping[str, object]) -> StorageReference:
     return StorageReference(
         artifact_id=value["artifact_id"],
         relative_path=value["relative_path"],
@@ -389,7 +389,7 @@ def _validate_storage(
         try:
             authorize_storage_operation(
                 authorizer,
-                _storage_reference(reference),
+                storage_reference_from_manifest(reference),
                 operation="manifest_catalog",
             )
         except (StorageAuthorizationError, ValueError) as exc:

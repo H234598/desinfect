@@ -1,20 +1,24 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
+from typing import NoReturn
 from pathlib import Path
 
 import pytest
 
 from scripts.rki_pipeline.reconciliation import (
     FindingCode,
+    ReconciliationIntegrityError,
     ReconciliationCounts,
     ReconciliationFinding,
     RemoteSnapshotError,
     SubjectKind,
     build_reconciliation_result,
     compare_remote_sources,
+    reconcile_rights,
+    reconcile_storage,
     source_subject_id,
 )
 from scripts.rki_grabber.models import ArtifactRecord, RecordState, RightsMetadata, Scope
@@ -26,13 +30,24 @@ from scripts.rki_pipeline.manifests import (
 )
 from scripts.rki_pipeline.rights import (
     RightsDecision,
+    RightsPolicyError,
     RightsState,
     load_rights_authority,
     load_rights_policy,
+    resolve_rights,
 )
 from scripts.rki_pipeline.schema_registry import validate_document
 from scripts.rki_pipeline.source_manifest import build_document_manifest, build_source_manifests
-from scripts.rki_pipeline.storage.base import PreparedObject, RightsStorageAuthorizer
+from scripts.rki_pipeline.storage.base import (
+    PreparedObject,
+    RightsStorageAuthorizer,
+    StorageBackend,
+    StorageError,
+    StorageIntent,
+    StorageReference,
+)
+from scripts.rki_pipeline.manifests import ManifestGraph
+from scripts.rki_pipeline.run_modes import EffectLedger
 
 
 def finding(code: FindingCode, subject_id: str) -> ReconciliationFinding:
@@ -43,6 +58,308 @@ def finding(code: FindingCode, subject_id: str) -> ReconciliationFinding:
         relative_path=None,
         message=code.value,
     )
+
+
+_RECONCILIATION_SOURCE_ID = "rki:176904/900000001"
+_RECONCILIATION_SOURCE_SHA256 = "a" * 64
+_RECONCILIATION_BITSTREAM_ID = "rki-bitstream-" + "b" * 64
+_RECONCILIATION_DOCUMENT_ID = "rki-176904-900000001-v1"
+
+
+@dataclass
+class RecordingAdapter:
+    backend: StorageBackend
+    references: tuple[StorageReference, ...]
+    failures: dict[str, Exception]
+    verified: list[str] = field(default_factory=list)
+
+    def authorize(
+        self,
+        subject: StorageIntent | PreparedObject | StorageReference,
+        *,
+        operation: str,
+    ) -> NoReturn:
+        raise AssertionError("reconciliation must not authorize storage")
+
+    def exists(self, intent: StorageIntent) -> NoReturn:
+        raise AssertionError("reconciliation must not query storage existence")
+
+    def materialize(
+        self,
+        intent: StorageIntent,
+        *,
+        temp_root: Path,
+        ledger: EffectLedger,
+    ) -> NoReturn:
+        raise AssertionError("reconciliation must not materialize storage")
+
+    def export(
+        self,
+        reference: StorageReference,
+        *,
+        temp_root: Path,
+        ledger: EffectLedger,
+    ) -> NoReturn:
+        raise AssertionError("reconciliation must not export storage")
+
+    def apply(self, prepared: PreparedObject, *, ledger: EffectLedger) -> NoReturn:
+        raise AssertionError("reconciliation must not apply storage")
+
+    def verify(self, reference: StorageReference) -> None:
+        self.verified.append(reference.artifact_id)
+        failure = self.failures.get(reference.artifact_id)
+        if failure is not None:
+            raise failure
+
+    def list_references(self) -> tuple[StorageReference, ...]:
+        return self.references
+
+
+def storage_reference(
+    artifact_id: str = "artifact-a",
+    *,
+    decision_sha256: str = "c" * 64,
+    rights_state: str = "approved",
+) -> StorageReference:
+    return StorageReference(
+        artifact_id=artifact_id,
+        relative_path=f"rki/Bulletins/Jahre/2026/PDF/{artifact_id}.pdf",
+        storage_backend=StorageBackend.LFS,
+        storage_object_id=f"sha256:{'d' * 64}",
+        sha256="d" * 64,
+        size=12,
+        source_id=_RECONCILIATION_SOURCE_ID,
+        source_sha256=_RECONCILIATION_SOURCE_SHA256,
+        document_id=_RECONCILIATION_DOCUMENT_ID,
+        conversion_id=None,
+        decision_sha256=decision_sha256,
+        provenance_state="current",
+        visibility="repository_authorized",
+        rights_state=rights_state,
+        public_reference=None,
+    )
+
+
+def storage_graph(
+    *references: StorageReference,
+    decision_sha256: str = "c" * 64,
+    rights_state: str = "approved",
+) -> ManifestGraph:
+    return ManifestGraph(
+        sources=(
+            {
+                "source_id": _RECONCILIATION_SOURCE_ID,
+                "sha256": _RECONCILIATION_SOURCE_SHA256,
+                "bitstream_id": _RECONCILIATION_BITSTREAM_ID,
+                "decision_sha256": decision_sha256,
+                "rights": {"state": rights_state},
+            },
+        ),
+        documents=(),
+        conversions=(),
+        storage_references=tuple(reference.to_dict() for reference in references),
+    )
+
+
+def test_storage_verifies_each_manifest_reference_once() -> None:
+    first = storage_reference("artifact-a")
+    second = storage_reference("artifact-b")
+    adapter = RecordingAdapter(StorageBackend.LFS, (), {})
+
+    findings = reconcile_storage(
+        storage_graph(first, second),
+        {StorageBackend.LFS: adapter},
+    )
+
+    assert findings == ()
+    assert adapter.verified == ["artifact-a", "artifact-b"]
+
+
+@pytest.mark.parametrize(
+    ("adapters", "failures"),
+    (
+        ({}, {}),
+        ({StorageBackend.LFS: RecordingAdapter(StorageBackend.LFS, (), {})}, {"artifact-a": FileNotFoundError()}),
+    ),
+    ids=("adapter-missing", "reference-missing"),
+)
+def test_storage_missing_adapter_or_reference_is_missing_local(adapters, failures) -> None:
+    reference = storage_reference()
+    if adapters:
+        adapters[StorageBackend.LFS].failures.update(failures)
+
+    findings = reconcile_storage(storage_graph(reference), adapters)
+
+    assert [(item.code, item.subject_id) for item in findings] == [
+        (FindingCode.MISSING_LOCAL, "artifact-a"),
+    ]
+
+
+def test_storage_integrity_error_is_changed_without_exception_details() -> None:
+    reference = storage_reference()
+    adapter = RecordingAdapter(
+        StorageBackend.LFS,
+        (),
+        {"artifact-a": StorageError("/private/secret payload")},
+    )
+
+    findings = reconcile_storage(storage_graph(reference), {StorageBackend.LFS: adapter})
+
+    assert [item.code for item in findings] == [FindingCode.CHANGED]
+    assert "/private/" not in findings[0].message
+    assert "secret payload" not in findings[0].message
+
+
+def test_storage_inventory_extra_reference_is_orphan() -> None:
+    reference = storage_reference()
+    extra = storage_reference("orphan-a")
+    adapter = RecordingAdapter(StorageBackend.LFS, (extra,), {})
+
+    findings = reconcile_storage(storage_graph(reference), {StorageBackend.LFS: adapter})
+
+    assert [(item.code, item.subject_id) for item in findings] == [
+        (FindingCode.ORPHAN, "orphan-a"),
+    ]
+
+
+def test_storage_duplicate_inventory_identity_fails_closed() -> None:
+    reference = storage_reference()
+    duplicate = storage_reference("orphan-a")
+    adapter = RecordingAdapter(StorageBackend.LFS, (duplicate, duplicate), {})
+
+    with pytest.raises(ReconciliationIntegrityError, match="doppelt"):
+        reconcile_storage(storage_graph(reference), {StorageBackend.LFS: adapter})
+
+
+def _rights_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    state: RightsState,
+) -> tuple[object, object, RightsDecision]:
+    from scripts.rki_pipeline import rights
+
+    register = tmp_path / "rights-register.yml"
+    register.write_text(
+        "schema_version: 1\n"
+        "decisions:\n"
+        f'  - source_id: "{_RECONCILIATION_SOURCE_ID}"\n'
+        f'    source_sha256: "{_RECONCILIATION_SOURCE_SHA256}"\n'
+        f'    state: "{state.value}"\n'
+        '    basis: "Synthetic reconciliation test"\n'
+        '    reviewed_by: "Test Reviewer"\n'
+        '    reviewed_at: "2026-08-04T04:00:00Z"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(rights, "_canonical_authority_source", register.resolve)
+    authority = load_rights_authority()
+    policy = load_rights_policy()
+    return (
+        authority,
+        policy,
+        resolve_rights(
+            _RECONCILIATION_SOURCE_ID,
+            _RECONCILIATION_SOURCE_SHA256,
+            authority=authority,
+            policy=policy,
+        ),
+    )
+
+
+def test_rights_persisted_decision_mismatch_marks_source_and_storage_changed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority, policy, decision = _rights_authority(
+        tmp_path, monkeypatch, state=RightsState.APPROVED
+    )
+    reference = storage_reference(decision_sha256="f" * 64)
+
+    findings = reconcile_rights(
+        storage_graph(reference, decision_sha256="f" * 64),
+        authority=authority,
+        policy=policy,
+    )
+
+    assert [(item.code, item.subject_kind) for item in findings] == [
+        (FindingCode.RIGHTS_CHANGED, SubjectKind.SOURCE),
+        (FindingCode.RIGHTS_CHANGED, SubjectKind.STORAGE),
+    ]
+    assert all(decision.decision_sha256 not in item.message for item in findings)
+
+
+@pytest.mark.parametrize(
+    "state",
+    (RightsState.INTERNAL_ONLY, RightsState.TAKEDOWN, RightsState.METADATA_ONLY),
+    ids=("restricted", "takedown", "metadata-only"),
+)
+def test_rights_nonapproved_current_decision_is_changed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    state: RightsState,
+) -> None:
+    authority, policy, decision = _rights_authority(tmp_path, monkeypatch, state=state)
+    reference = storage_reference(
+        decision_sha256=decision.decision_sha256 or "0" * 64,
+        rights_state=state.value,
+    )
+
+    findings = reconcile_rights(
+        storage_graph(
+            reference,
+            decision_sha256=decision.decision_sha256 or "0" * 64,
+            rights_state=state.value,
+        ),
+        authority=authority,
+        policy=policy,
+    )
+
+    assert [item.code for item in findings] == [
+        FindingCode.RIGHTS_CHANGED,
+        FindingCode.RIGHTS_CHANGED,
+    ]
+
+
+def test_rights_unchanged_approved_decision_has_no_finding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority, policy, decision = _rights_authority(
+        tmp_path, monkeypatch, state=RightsState.APPROVED
+    )
+    assert decision.decision_sha256 is not None
+    reference = storage_reference(decision_sha256=decision.decision_sha256)
+
+    assert reconcile_rights(
+        storage_graph(reference, decision_sha256=decision.decision_sha256),
+        authority=authority,
+        policy=policy,
+    ) == ()
+
+
+def test_rights_contract_error_is_path_free_integrity_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority, policy, _decision = _rights_authority(
+        tmp_path, monkeypatch, state=RightsState.APPROVED
+    )
+    from scripts.rki_pipeline import reconciliation
+
+    def reject(*_args, **_kwargs) -> NoReturn:
+        raise RightsPolicyError("/private/secret payload")
+
+    monkeypatch.setattr(reconciliation, "resolve_rights", reject)
+
+    with pytest.raises(ReconciliationIntegrityError) as error:
+        reconcile_rights(
+            storage_graph(storage_reference()),
+            authority=authority,
+            policy=policy,
+        )
+
+    assert "/private/" not in str(error.value)
+    assert "secret payload" not in str(error.value)
 
 
 def test_result_sorts_findings_and_maps_new_to_missing_local() -> None:

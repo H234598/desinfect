@@ -6,15 +6,34 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 import json
 import re
-from typing import Callable, Iterable, TypeAlias
+from typing import Callable, Iterable, Mapping, TypeAlias
 import unicodedata
 
 from scripts.rki_grabber.models import ArtifactRecord, RecordState
 from scripts.rki_pipeline.documents import DocumentIdentityError, bitstream_identity
 from scripts.rki_pipeline.io_utils import normalize_posix_path, stable_json_dumps
-from scripts.rki_pipeline.manifests import LoadedManifestCatalog
+from scripts.rki_pipeline.manifests import (
+    LoadedManifestCatalog,
+    ManifestGraph,
+    storage_reference_from_manifest,
+)
+from scripts.rki_pipeline.rights import (
+    RightsAuthority,
+    RightsDecision,
+    RightsPolicy,
+    RightsPolicyError,
+    RightsState,
+    resolve_rights,
+)
 from scripts.rki_pipeline.schema_registry import validate_document
-from scripts.rki_pipeline.storage.base import PreparedObject
+from scripts.rki_pipeline.storage.base import (
+    PreparedObject,
+    StorageAdapter,
+    StorageAuthorizationError,
+    StorageBackend,
+    StorageError,
+    StorageReference,
+)
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -40,6 +59,10 @@ _DOWNLOADABLE_STATES = frozenset(
 
 class RemoteSnapshotError(ValueError):
     """A remote record cannot be compared safely."""
+
+
+class ReconciliationIntegrityError(ValueError):
+    """A reconciliation input or adapter contract is inconsistent."""
 
 
 class FindingCode(StrEnum):
@@ -190,6 +213,194 @@ def compare_remote_sources(
         )
 
     return tuple(sorted(findings, key=lambda item: item.key))
+
+
+def reconcile_storage(
+    graph: ManifestGraph,
+    adapters: Mapping[StorageBackend, StorageAdapter],
+) -> tuple[ReconciliationFinding, ...]:
+    """Verify persisted storage references and detect adapter inventory orphans."""
+
+    references = _manifest_storage_references(graph)
+    checked_adapters = _storage_adapters(adapters)
+    findings: list[ReconciliationFinding] = []
+    manifest_ids = {reference.artifact_id for reference in references}
+
+    for reference in references:
+        adapter = checked_adapters.get(reference.storage_backend)
+        if adapter is None:
+            findings.append(_storage_finding(FindingCode.MISSING_LOCAL, reference))
+            continue
+        try:
+            adapter.verify(reference)
+        except FileNotFoundError:
+            findings.append(_storage_finding(FindingCode.MISSING_LOCAL, reference))
+        except StorageAuthorizationError:
+            findings.append(_storage_finding(FindingCode.RIGHTS_CHANGED, reference))
+        except StorageError:
+            findings.append(_storage_finding(FindingCode.CHANGED, reference))
+        except Exception as exc:
+            raise ReconciliationIntegrityError("Storage-Adapter-Vertrag ist ungültig") from exc
+
+    inventory_ids: set[str] = set()
+    by_artifact_id = {reference.artifact_id: reference for reference in references}
+    for backend, adapter in checked_adapters.items():
+        try:
+            inventory = adapter.list_references()
+        except Exception as exc:
+            raise ReconciliationIntegrityError("Storage-Inventar ist nicht prüfbar") from exc
+        if type(inventory) is not tuple:
+            raise ReconciliationIntegrityError("Storage-Inventar ist kein Tupel")
+        for reference in sorted(inventory, key=lambda item: item.artifact_id):
+            if type(reference) is not StorageReference:
+                raise ReconciliationIntegrityError("Storage-Inventar enthält keine Referenz")
+            if reference.storage_backend is not backend:
+                raise ReconciliationIntegrityError("Storage-Inventar gehört zum falschen Backend")
+            if reference.artifact_id in inventory_ids:
+                raise ReconciliationIntegrityError("Storage-Artefaktidentität ist doppelt")
+            inventory_ids.add(reference.artifact_id)
+            expected = by_artifact_id.get(reference.artifact_id)
+            if expected is not None and reference != expected:
+                raise ReconciliationIntegrityError("Storage-Artefaktidentität ist widersprüchlich")
+            if reference.artifact_id not in manifest_ids:
+                findings.append(_storage_finding(FindingCode.ORPHAN, reference))
+
+    return tuple(sorted(findings, key=lambda item: item.key))
+
+
+def reconcile_rights(
+    graph: ManifestGraph,
+    *,
+    authority: RightsAuthority,
+    policy: RightsPolicy,
+) -> tuple[ReconciliationFinding, ...]:
+    """Compare persisted source and storage rights decisions with current policy."""
+
+    _require_graph(graph)
+    references = _manifest_storage_references(graph)
+    findings: list[ReconciliationFinding] = []
+    decisions: dict[tuple[str, str], RightsDecision] = {}
+    source_changed: dict[tuple[str, str], bool] = {}
+
+    for source in sorted(graph.sources, key=lambda item: (item["source_id"], item["bitstream_id"])):
+        try:
+            source_id = source["source_id"]
+            source_sha256 = source["sha256"]
+            bitstream_id = source["bitstream_id"]
+            persisted_hash = source["decision_sha256"]
+            persisted_state = source["rights"]["state"]
+        except (KeyError, TypeError) as exc:
+            raise ReconciliationIntegrityError("Source-Rechteverknüpfung ist ungültig") from exc
+        if not all(type(value) is str for value in (
+            source_id,
+            source_sha256,
+            bitstream_id,
+            persisted_hash,
+            persisted_state,
+        )):
+            raise ReconciliationIntegrityError("Source-Rechteverknüpfung ist ungültig")
+        key = (source_id, source_sha256)
+        decision = decisions.get(key)
+        if decision is None:
+            try:
+                decision = resolve_rights(
+                    source_id,
+                    source_sha256,
+                    authority=authority,
+                    policy=policy,
+                )
+            except RightsPolicyError as exc:
+                raise ReconciliationIntegrityError("Rechteentscheidung ist nicht prüfbar") from exc
+            if type(decision) is not RightsDecision:
+                raise ReconciliationIntegrityError("Rechteentscheidung ist ungültig")
+            decisions[key] = decision
+        changed = (
+            decision.decision_sha256 != persisted_hash
+            or decision.state.value != persisted_state
+            or decision.state is not RightsState.APPROVED
+        )
+        source_changed[key] = source_changed.get(key, False) or changed
+        if changed:
+            findings.append(
+                _source_finding(
+                    FindingCode.RIGHTS_CHANGED,
+                    source_subject_id(source_id, bitstream_id),
+                    "Aktuelle Rechteentscheidung weicht ab",
+                )
+            )
+
+    for reference in references:
+        if reference.source_id is None or reference.source_sha256 is None:
+            raise ReconciliationIntegrityError("Storage-Rechteverknüpfung ist ungültig")
+        key = (reference.source_id, reference.source_sha256)
+        decision = decisions.get(key)
+        if decision is None:
+            raise ReconciliationIntegrityError("Storage-Source-Rechteverknüpfung fehlt")
+        if (
+            source_changed[key]
+            or decision.decision_sha256 != reference.decision_sha256
+            or decision.state.value != reference.rights_state
+        ):
+            findings.append(_storage_finding(FindingCode.RIGHTS_CHANGED, reference))
+
+    return tuple(sorted(findings, key=lambda item: item.key))
+
+
+def _require_graph(graph: ManifestGraph) -> None:
+    if type(graph) is not ManifestGraph:
+        raise ReconciliationIntegrityError("Manifestgraph ist ungültig")
+
+
+def _manifest_storage_references(graph: ManifestGraph) -> tuple[StorageReference, ...]:
+    _require_graph(graph)
+    references: list[StorageReference] = []
+    artifact_ids: set[str] = set()
+    try:
+        manifests = sorted(graph.storage_references, key=lambda item: item["artifact_id"])
+    except (KeyError, TypeError) as exc:
+        raise ReconciliationIntegrityError("Storage-Manifest ist ungültig") from exc
+    for manifest in manifests:
+        try:
+            reference = storage_reference_from_manifest(manifest)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ReconciliationIntegrityError("Storage-Manifest ist ungültig") from exc
+        if reference.artifact_id in artifact_ids:
+            raise ReconciliationIntegrityError("Storage-Artefaktidentität ist doppelt")
+        artifact_ids.add(reference.artifact_id)
+        references.append(reference)
+    return tuple(references)
+
+
+def _storage_adapters(
+    adapters: Mapping[StorageBackend, StorageAdapter],
+) -> dict[StorageBackend, StorageAdapter]:
+    if not isinstance(adapters, Mapping):
+        raise ReconciliationIntegrityError("Storage-Adapterzuordnung ist ungültig")
+    result: dict[StorageBackend, StorageAdapter] = {}
+    for backend, adapter in adapters.items():
+        if type(backend) is not StorageBackend or getattr(adapter, "backend", None) is not backend:
+            raise ReconciliationIntegrityError("Storage-Adapterzuordnung ist ungültig")
+        result[backend] = adapter
+    return dict(sorted(result.items(), key=lambda item: item[0].value))
+
+
+def _storage_finding(
+    code: FindingCode,
+    reference: StorageReference,
+) -> ReconciliationFinding:
+    messages = {
+        FindingCode.CHANGED: "Storage-Artefaktintegrität weicht ab",
+        FindingCode.MISSING_LOCAL: "Storage-Artefakt fehlt lokal",
+        FindingCode.ORPHAN: "Storage-Artefakt ist nicht im Manifest",
+        FindingCode.RIGHTS_CHANGED: "Storage-Rechteentscheidung weicht ab",
+    }
+    return ReconciliationFinding(
+        code=code,
+        subject_kind=SubjectKind.STORAGE,
+        subject_id=reference.artifact_id,
+        relative_path=reference.relative_path,
+        message=messages[code],
+    )
 
 
 def _current_source_projection(
