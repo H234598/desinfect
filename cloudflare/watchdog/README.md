@@ -38,6 +38,25 @@ Secretwert nie in Shellargument, Log, Datei oder Git schreiben. App- und Install
 
 P09.1 enthält absichtlich keine JWT-, GitHub-REST-, Dispatch-, Idempotenz-, Alarm- oder Deploylogik. Rückbau: `cloudflare/watchdog/` und zugehörige CI-Zeilen entfernen; GitHub-Pipeline bleibt unabhängig.
 
+## P09.2 Vorschau
+
+P09.2 ergänzt:
+
+- RSA-SHA256 JWT für die GitHub-App im Worker-Runtime.
+- Installationstoken mit festen Rechten (`actions: write`, `contents: read`) und Laufzeitlimit.
+- feste GitHub-REST-Endpunkte nur für `H234598/desinfect` und `rki-dispatcher.yml`:
+  - `contents/status.json?ref=main`
+  - `commits?sha=main&per_page=1`
+  - `actions/workflows/{workflow_file}`
+  - `.../{workflow_file}/enable`
+  - `.../{workflow_file}/dispatches`
+  - `.../{workflow_file}/runs?branch=main&event=workflow_dispatch&per_page=<fix>`
+- feste API-Headers (`Accept`, `Authorization`, `User-Agent`, `X-GitHub-Api-Version`), fixe Fehlergrenzen und no-trace/No-Storage-Handling.
+
+## Runbooks
+
+- `runbooks/CLOUDFLARE-GITHUB-AUTH.md`: Secrets, Tokenfluss, Schwellwerte und manuelle App/Installation-Basis.
+
 Aktuelle Primärreferenzen:
 
 - <https://developers.cloudflare.com/workers/configuration/cron-triggers/>
