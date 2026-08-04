@@ -124,6 +124,70 @@ def test_execute_materializes_tasks_but_leaves_repository_unchanged(tmp_path: Pa
     assert git(repository, "status", "--porcelain") == ""
 
 
+def test_execute_writes_failed_run_manifest_without_changing_exit_code(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    head = init_repo(repository)
+    dispatch = plan_file(tmp_path, head)
+    temp_root = tmp_path / "temp"
+    temp_root.write_text("not a directory\n", encoding="utf-8")
+    output = tmp_path / "result.json"
+
+    result = main(
+        [
+            "execute",
+            "--plan",
+            str(dispatch),
+            "--repository-root",
+            str(repository),
+            "--temp-root",
+            str(temp_root),
+            "--now",
+            "2026-07-31T12:00:00Z",
+            "--output",
+            str(output),
+        ]
+    )
+
+    assert result == 3
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "1.0.0"
+    assert payload["run_manifest"]["status"] == "failed"
+
+
+def test_execute_preserves_transaction_exit_when_failure_output_cannot_write(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    head = init_repo(repository)
+    dispatch = plan_file(tmp_path, head)
+    temp_root = tmp_path / "temp"
+    temp_root.write_text("not a directory\n", encoding="utf-8")
+    output_parent = tmp_path / "blocked"
+    output_parent.write_text("not a directory\n", encoding="utf-8")
+
+    result = main(
+        [
+            "execute",
+            "--plan",
+            str(dispatch),
+            "--repository-root",
+            str(repository),
+            "--temp-root",
+            str(temp_root),
+            "--now",
+            "2026-07-31T12:00:00Z",
+            "--output",
+            str(output_parent / "result.json"),
+        ]
+    )
+
+    assert result == 3
+
+
 def test_validate_plan_rejects_corrupt_hash(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     repository = tmp_path / "repo"
     repository.mkdir()
@@ -145,6 +209,7 @@ def test_execute_blocks_base_drift_before_materialization(tmp_path: Path) -> Non
     git(repository, "add", "next.txt")
     git(repository, "commit", "-qm", "move head")
     temp_root = tmp_path / "temp"
+    output = tmp_path / "result.json"
     assert main(
         [
             "execute",
@@ -156,9 +221,12 @@ def test_execute_blocks_base_drift_before_materialization(tmp_path: Path) -> Non
             str(temp_root),
             "--now",
             "2026-07-31T12:00:00Z",
+            "--output",
+            str(output),
         ]
     ) == 3
     assert not temp_root.exists()
+    assert not output.exists()
 
 
 def test_commit_push_requires_confirmation_and_app_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
