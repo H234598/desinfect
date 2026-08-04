@@ -19,6 +19,7 @@ import uuid
 
 from scripts.rki_pipeline.io_utils import (
     assert_generated_root_fd,
+    clear_generated_tree_fd,
     entry_exists,
     fd_directory_path,
     fsync_directory_fd,
@@ -301,8 +302,12 @@ def _claim_owned_target(
         return None
     _rename_noreplace(parent_fd, target_name, quarantine_name)
     descriptor = _open_child_directory(parent_fd, quarantine_name)
-    if _directory_identity(descriptor) == identity:
-        return descriptor
+    try:
+        if _directory_identity(descriptor) == identity:
+            return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
     os.close(descriptor)
     try:
         _rename_noreplace(parent_fd, quarantine_name, target_name)
@@ -435,7 +440,7 @@ def staged_directory(
 
             if entry_exists(parent_fd, backup_name):
                 raise StagingError(f"Backup blieb nach Stagingtransaktion bestehen: {backup_name}")
-        except BaseException as transaction_error:
+        except BaseException:
             if staging_fd is not None:
                 os.close(staging_fd)
                 staging_fd = None
@@ -443,7 +448,6 @@ def staged_directory(
                 # A later backup-cleanup error must never replace the durable new
                 # target with a potentially partially removed old backup.
                 raise
-            retained_quarantine: str | None = None
             try:
                 rollback_error: BaseException | None = None
                 if staging_published and published_identity is not None:
@@ -455,22 +459,25 @@ def staged_directory(
                     )
                     if quarantine_fd is not None:
                         try:
-                            if _named_identity_matches(
+                            clear_generated_tree_fd(quarantine_fd)
+                            if not _named_identity_matches(
                                 parent_fd,
                                 quarantine_name,
                                 published_identity,
                             ):
-                                retained_quarantine = quarantine_name
-                                staging_published = False
-                                publication_state.published = False
-                            else:
                                 rollback_error = StagingConflictError(
                                     "Eigene Quarantäne wurde parallel ersetzt"
                                 )
+                            staging_published = False
+                            publication_state.published = False
                         finally:
                             os.close(quarantine_fd)
-                if target_moved and entry_exists(parent_fd, backup_name):
-                    if entry_exists(parent_fd, target_name):
+                if target_moved:
+                    if not entry_exists(parent_fd, backup_name):
+                        rollback_error = rollback_error or StagingConflictError(
+                            f"Rollback-Backup fehlt: {backup_name}"
+                        )
+                    elif entry_exists(parent_fd, target_name):
                         rollback_error = rollback_error or StagingConflictError(
                             f"Concurrent Target verhindert sicheren Rollback: {target_name}"
                         )
@@ -485,11 +492,6 @@ def staged_directory(
                     "Staging fehlgeschlagen und Rollback konnte nicht sicher "
                     f"abgeschlossen werden: {rollback_failure}"
                 ) from rollback_failure
-            if retained_quarantine is not None:
-                transaction_error.add_note(
-                    "Verworfene Publikation blieb zur sicheren Wiederherstellung in "
-                    f"{retained_quarantine} erhalten"
-                )
             raise
         finally:
             if staging_fd is not None:

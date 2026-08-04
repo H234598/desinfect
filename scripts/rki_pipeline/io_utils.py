@@ -379,6 +379,15 @@ def _remove_tree_contents_fd(directory_fd: int) -> None:
             os.unlink(name, dir_fd=directory_fd)
 
 
+def clear_generated_tree_fd(directory_fd: int) -> None:
+    """Clear one held generated tree without unlinking its mutable directory name."""
+
+    assert_generated_root_fd(directory_fd)
+    validate_tree_no_symlinks_fd(directory_fd)
+    _remove_tree_contents_fd(directory_fd)
+    fsync_directory_fd(directory_fd)
+
+
 def remove_tree_at(parent_fd: int, name: str, *, require_sentinel: bool = True) -> None:
     """Remove one descriptor-relative directory tree with optional sentinel gate."""
 

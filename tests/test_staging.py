@@ -232,7 +232,7 @@ def test_staged_directory_rolls_back_when_publication_validator_rejects(
     assert (target / "value.txt").read_text(encoding="utf-8") == "old"
     quarantines = list(tmp_path.glob(".site.quarantine-*"))
     assert len(quarantines) == 1
-    assert (quarantines[0] / "value.txt").read_text(encoding="utf-8") == "new"
+    assert list(quarantines[0].iterdir()) == []
 
 
 @pytest.mark.parametrize("validator_raises", (False, True))
@@ -304,7 +304,33 @@ def test_staged_directory_never_removes_replaced_quarantine(
 
     assert foreign is not None
     assert (foreign / "value.txt").read_text(encoding="utf-8") == "foreign"
-    assert (ours_away / "value.txt").read_text(encoding="utf-8") == "ours"
+    assert list(ours_away.iterdir()) == []
+
+
+def test_staged_directory_reports_missing_backup_during_rollback(tmp_path: Path) -> None:
+    """A moved-away backup can never masquerade as a successful rollback."""
+
+    target = tmp_path / "site"
+    _generated(target, "old")
+    moved_backup = tmp_path / "lost-backup"
+
+    def reject(_target_fd: int) -> None:
+        (tmp_path / ".site.backup").rename(moved_backup)
+        raise RuntimeError("signature mismatch")
+
+    with pytest.raises(StagingError, match="Backup fehlt"):
+        with staged_directory(
+            target,
+            allowed_root=tmp_path,
+            publication_validator=reject,
+        ) as stage:
+            (stage / "value.txt").write_text("new", encoding="utf-8")
+
+    assert not target.exists()
+    assert (moved_backup / "value.txt").read_text(encoding="utf-8") == "old"
+    quarantines = list(tmp_path.glob(".site.quarantine-*"))
+    assert len(quarantines) == 1
+    assert list(quarantines[0].iterdir()) == []
 
 
 def test_staged_directory_rejects_nested_same_target_without_lock_artifact(tmp_path: Path) -> None:
