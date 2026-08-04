@@ -147,6 +147,30 @@ def test_period_archive_manifest_validates_and_unknown_field_fails_closed() -> N
         validate_document("period-archive-manifest", changed)
 
 
+def test_reconciliation_report_validates_and_unknown_field_fails_closed() -> None:
+    payload = {
+        "schema_version": "1.0.0",
+        "scope": {"from_year": 1996, "to_year": 2026},
+        "as_of": "2026-08-04T04:00:00Z",
+        "counts": {
+            "ok": 1,
+            "changed": 0,
+            "missing_remote": 0,
+            "missing_local": 0,
+            "orphan": 0,
+            "rights_changed": 0,
+            "unresolved": 0,
+        },
+        "conclusion": "success",
+        "source_manifest_sha256": "a" * 64,
+    }
+    validate_document("reconciliation-report", payload)
+    changed = deepcopy(payload)
+    changed["unexpected"] = True
+    with pytest.raises(SchemaContractError, match="Additional properties"):
+        validate_document("reconciliation-report", changed)
+
+
 @pytest.mark.parametrize(
     ("root_kind", "period", "archive_kind", "month_manifests"),
     [
