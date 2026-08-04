@@ -27,6 +27,7 @@ from scripts.rki_pipeline.archive import (
     archive_input_fingerprint,
     materialize_archive,
     validate_archive,
+    validate_archive_bundle_fd,
 )
 from scripts.rki_pipeline.due_tasks import DueTask, DueTaskError, TaskKind, parse_utc
 from scripts.rki_pipeline.io_utils import (
@@ -58,7 +59,9 @@ _BERLIN = ZoneInfo("Europe/Berlin")
 _WEEK = re.compile(r"^(?P<year>[0-9]{4})-W(?P<week>0[1-9]|[1-4][0-9]|5[0-3])$")
 _MONTH = re.compile(r"^(?P<year>[0-9]{4})-(?P<month>0[1-9]|1[0-2])$")
 _YEAR = re.compile(r"^[0-9]{4}$")
+_WEEK_MANIFEST_NAME = re.compile(r"^(?P<period>[0-9]{4}-W(?:0[1-9]|[1-4][0-9]|5[0-3]))\.json$")
 _KIND_ORDER = {TaskKind.WEEK: 0, TaskKind.MONTH: 1, TaskKind.YEAR: 2}
+_MAX_PERIOD_MANIFEST_BYTES = 4 * 1024 * 1024
 
 
 class AggregationError(ValueError):
@@ -129,6 +132,27 @@ class AggregationPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class WeeklyArchiveReference:
+    """One validated current-plan or previously published weekly archive."""
+
+    period: PeriodRef
+    archive_id: str
+    kind: str
+    relative_bundle: str
+    input_fingerprint: str
+    output_sha256: str | None
+    size: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class MonthIndexRendererInput:
+    """Immutable weekly references consumed by monthly index rendering."""
+
+    weekly_archives: tuple[WeeklyArchiveReference, ...]
+    input_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
 class MaterializedPeriodArchive:
     """One archive identity translated from staging to final output."""
 
@@ -188,7 +212,10 @@ def period_ref(kind: TaskKind, value: str) -> PeriodRef:
 
     start, end = _period_dates(kind, value)
     close = datetime.combine(date.fromordinal(end.toordinal() + 1), time.min, _BERLIN)
-    return PeriodRef(kind, value, start, end, int(close.timestamp()))
+    source_date_epoch = int(close.timestamp())
+    if source_date_epoch < 0:
+        raise PeriodSelectionError("Periode liegt vor RKI-Korpus und unterstütztem Unix-Epoch")
+    return PeriodRef(kind, value, start, end, source_date_epoch)
 
 
 def _affected_values(affected_periods: AffectedPeriods) -> Iterable[tuple[TaskKind, str]]:
@@ -687,6 +714,9 @@ def _table_cell(value: str) -> str:
         raise AggregationError("Tabellenwert muss eine Zeichenkette sein")
     return (
         value.replace("&", "&amp;")
+        .replace("\\", "&#92;")
+        .replace("[", "&#91;")
+        .replace("]", "&#93;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
         .replace("|", "&#124;")
@@ -695,27 +725,107 @@ def _table_cell(value: str) -> str:
     )
 
 
-def _week_archive_links(
-    period: PeriodRef, index_path: str, aggregation_plan: AggregationPlan
+def _weekly_reference_fingerprint(
+    references: tuple[WeeklyArchiveReference, ...],
 ) -> str:
-    planned: list[tuple[date, int, str, str]] = []
+    return hashlib.sha256(
+        stable_json_dumps(
+            [
+                {
+                    "period": reference.period.value,
+                    "archive_id": reference.archive_id,
+                    "kind": reference.kind,
+                    "relative_bundle": reference.relative_bundle,
+                    "input_fingerprint": reference.input_fingerprint,
+                    "output_sha256": reference.output_sha256,
+                    "bytes": reference.size,
+                }
+                for reference in references
+            ]
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _weekly_reference_key(reference: WeeklyArchiveReference) -> tuple[date, int]:
+    return (reference.period.start, 0 if reference.kind == "week-pdf" else 1)
+
+
+def _month_index_renderer_input(
+    aggregation_plan: AggregationPlan,
+    historical: tuple[WeeklyArchiveReference, ...] = (),
+) -> MonthIndexRendererInput:
+    references = list(historical)
     for candidate in aggregation_plan.periods:
         if candidate.period.kind is not TaskKind.WEEK:
             continue
-        if candidate.period.start > period.end or candidate.period.end < period.start:
-            continue
         for archive in candidate.archives:
-            if archive.spec.kind == "week-pdf":
-                planned.append((candidate.period.start, 0, "PDF", archive.relative_bundle))
-            elif archive.spec.kind == "week-markdown":
-                planned.append((candidate.period.start, 1, "Markdown", archive.relative_bundle))
+            references.append(
+                WeeklyArchiveReference(
+                    period=candidate.period,
+                    archive_id=archive.spec.archive_id,
+                    kind=archive.spec.kind,
+                    relative_bundle=archive.relative_bundle,
+                    input_fingerprint=archive_input_fingerprint(archive.spec),
+                    output_sha256=None,
+                    size=None,
+                )
+            )
+    ordered = tuple(sorted(references, key=_weekly_reference_key))
+    seen: set[tuple[str, str]] = set()
+    for reference in ordered:
+        if type(reference) is not WeeklyArchiveReference:
+            raise AggregationError("Wochenreferenz ist nicht unveränderlich")
+        format_name = reference.kind.removeprefix("week-")
+        identity = (reference.period.value, format_name)
+        if (
+            reference.period.kind is not TaskKind.WEEK
+            or format_name not in {"pdf", "markdown"}
+            or reference.archive_id
+            != f"rki-week-{reference.period.value.lower()}-{format_name}"
+            or reference.relative_bundle != _bundle_path(reference.period, format_name)
+            or identity in seen
+        ):
+            raise AggregationError("Wochenreferenz ist nicht kanonisch oder eindeutig")
+        seen.add(identity)
+    return MonthIndexRendererInput(
+        weekly_archives=ordered,
+        input_fingerprint=_weekly_reference_fingerprint(ordered),
+    )
+
+
+def _week_archive_links(
+    period: PeriodRef, index_path: str, renderer_input: MonthIndexRendererInput
+) -> str:
+    if type(renderer_input) is not MonthIndexRendererInput or (
+        renderer_input.input_fingerprint
+        != _weekly_reference_fingerprint(renderer_input.weekly_archives)
+    ):
+        raise AggregationError("Monatsindex-Renderer-Input ist nicht kanonisch")
+    planned: list[tuple[date, int, str, str]] = []
+    for reference in renderer_input.weekly_archives:
+        if reference.period.start > period.end or reference.period.end < period.start:
+            continue
+        format_name = reference.kind.removeprefix("week-")
+        planned.append(
+            (
+                reference.period.start,
+                0 if format_name == "pdf" else 1,
+                "PDF" if format_name == "pdf" else "Markdown",
+                reference.relative_bundle,
+            )
+        )
     return " ".join(
         f"[{label}]({_relative_link(index_path, f'{bundle}/archive.zip')})"
         for _start, _format_order, label, bundle in sorted(planned)
     )
 
 
-def render_month_index(period_plan: PeriodPlan, aggregation_plan: AggregationPlan) -> bytes:
+def render_month_index(
+    period_plan: PeriodPlan,
+    aggregation_plan: AggregationPlan,
+    *,
+    renderer_input: MonthIndexRendererInput | None = None,
+) -> bytes:
     """Render one deterministic Markdown index for a monthly period."""
 
     if type(period_plan) is not PeriodPlan:
@@ -743,7 +853,12 @@ def render_month_index(period_plan: PeriodPlan, aggregation_plan: AggregationPla
         "| Datum | Titel | RKI-Handle | Bitstream-ID | DOI | PDF | Markdown | Konvertierung | PDF SHA-256 | Markdown SHA-256 | Wochenarchive |",
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
-    weekly_links = _week_archive_links(period_plan.period, index_path, aggregation_plan)
+    frozen_input = (
+        _month_index_renderer_input(aggregation_plan)
+        if renderer_input is None
+        else renderer_input
+    )
+    weekly_links = _week_archive_links(period_plan.period, index_path, frozen_input)
     for document in documents:
         if type(document) is not PeriodDocument:
             raise AggregationError("Monatsindex enthält kein exaktes PeriodDocument")
@@ -1387,6 +1502,135 @@ def _clear_planned_outputs(stage_fd: int, plan: AggregationPlan) -> None:
         _remove_stage_path(stage_fd, period_plan.manifest_path, directory=False)
 
 
+def _read_stable_regular_at(parent_fd: int, name: str, *, maximum: int) -> bytes:
+    """Read one bounded regular file while holding and rechecking its identity."""
+
+    metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    descriptor = os.open(
+        name,
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+        dir_fd=parent_fd,
+    )
+    try:
+        initial = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(initial.st_mode)
+            or not _same_file_metadata(metadata, initial)
+            or initial.st_size > maximum
+        ):
+            raise AggregationError("Bestehendes Periodenmanifest ist keine sichere reguläre Datei")
+        chunks: list[bytes] = []
+        remaining = initial.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 1024 * 1024))
+            if not chunk:
+                raise AggregationError("Bestehendes Periodenmanifest ist unvollständig")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        final = os.fstat(descriptor)
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if not _same_file_metadata(initial, final) or not _same_file_metadata(final, current):
+            raise AggregationError("Bestehendes Periodenmanifest änderte seine Identität")
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _load_existing_weekly_references(
+    stage_fd: int,
+    stage_root: Path,
+    months: tuple[PeriodRef, ...],
+) -> tuple[WeeklyArchiveReference, ...]:
+    """Load only overlapping, schema- and ZIP-valid weekly references from staging."""
+
+    if not months:
+        return ()
+    try:
+        manifest_fd = open_directory_beneath(
+            stage_fd,
+            ("rki", "Bulletins", "Manifeste", "Archive", "week"),
+        )
+    except FileNotFoundError:
+        return ()
+    references: list[WeeklyArchiveReference] = []
+    try:
+        root_before = os.fstat(manifest_fd)
+        names = tuple(sorted(os.listdir(manifest_fd)))
+        for name in names:
+            match = _WEEK_MANIFEST_NAME.fullmatch(name)
+            if match is None:
+                raise AggregationError("Wochenmanifest-Namensraum enthält unbekannten Eintrag")
+            period = period_ref(TaskKind.WEEK, match["period"])
+            if not any(
+                period.start <= month.end and period.end >= month.start for month in months
+            ):
+                continue
+            value = validate_period_manifest(
+                _read_stable_regular_at(
+                    manifest_fd,
+                    name,
+                    maximum=_MAX_PERIOD_MANIFEST_BYTES,
+                )
+            )
+            if value["kind"] != "week" or value["period"] != period.value:
+                raise AggregationError("Wochenmanifest stimmt nicht mit seinem Dateinamen überein")
+            archives = value["archives"]
+            if type(archives) is not list:
+                raise AggregationError("Wochenmanifest-Archive sind ungültig")
+            for archive in archives:
+                if type(archive) is not dict:
+                    raise AggregationError("Wochenmanifest-Archivreferenz ist ungültig")
+                kind = _string(archive, "kind", label="Wochenarchiv")
+                format_name = kind.removeprefix("week-")
+                relative_bundle = _string(
+                    archive, "relative_bundle", label="Wochenarchiv"
+                )
+                relative = PurePosixPath(
+                    _canonical_path(relative_bundle, label="Wochenarchivpfad")
+                )
+                try:
+                    bundle_fd = open_directory_beneath(stage_fd, relative.parts)
+                except FileNotFoundError as exc:
+                    raise AggregationError("Wochenmanifest verweist auf fehlendes Archiv") from exc
+                try:
+                    build = validate_archive_bundle_fd(
+                        bundle_fd,
+                        display_root=stage_root / relative_bundle,
+                        archive_id=_string(archive, "archive_id", label="Wochenarchiv"),
+                        period=period.value,
+                        kind=kind,
+                        input_fingerprint=_string(
+                            archive, "input_fingerprint", label="Wochenarchiv"
+                        ),
+                        output_sha256=_string(
+                            archive, "output_sha256", label="Wochenarchiv"
+                        ),
+                        size=archive["bytes"],
+                    )
+                finally:
+                    os.close(bundle_fd)
+                references.append(
+                    WeeklyArchiveReference(
+                        period=period,
+                        archive_id=_string(archive, "archive_id", label="Wochenarchiv"),
+                        kind=kind,
+                        relative_bundle=relative_bundle,
+                        input_fingerprint=build.input_fingerprint,
+                        output_sha256=build.output_sha256,
+                        size=build.size,
+                    )
+                )
+        if tuple(sorted(os.listdir(manifest_fd))) != names or not _same_file_metadata(
+            root_before, os.fstat(manifest_fd)
+        ):
+            raise AggregationError("Wochenmanifest-Namensraum änderte sich während des Ladens")
+    except (ArchiveError, OSError, PeriodManifestError, UnsafePathError, ValueError) as exc:
+        raise AggregationError("Ungültige bestehende Wochenreferenz") from exc
+    finally:
+        os.close(manifest_fd)
+    return tuple(sorted(references, key=_weekly_reference_key))
+
+
 def _final_build(build: ArchiveBuild, root: Path, relative_bundle: str) -> ArchiveBuild:
     """Translate a stage-local archive identity to its final immutable path."""
 
@@ -1450,6 +1694,7 @@ def materialize_period_archives(
     pending_events: tuple[tuple[str, str, int], ...] = ()
     staging_state = StagingState()
     stage_signature: tuple[tuple[str, int, int, str], ...] | None = None
+    historical_weekly_archives: tuple[WeeklyArchiveReference, ...] = ()
 
     def validate_published(target_fd: int) -> None:
         if stage_signature is None or _tree_signature_fd(target_fd) != stage_signature:
@@ -1467,6 +1712,15 @@ def materialize_period_archives(
             try:
                 _copy_existing_tree(root, relative, stage_fd)
                 _clear_planned_outputs(stage_fd, plan)
+                historical_weekly_archives = _load_existing_weekly_references(
+                    stage_fd,
+                    stage.resolve(),
+                    tuple(
+                        period_plan.period
+                        for period_plan in plan.periods
+                        if period_plan.period.kind is TaskKind.MONTH
+                    ),
+                )
             finally:
                 os.close(stage_fd)
             stage_root = stage.resolve()
@@ -1494,9 +1748,16 @@ def materialize_period_archives(
             for period_index, period_plan in enumerate(plan.periods):
                 if period_plan.index_path is not None:
                     index_path = _canonical_path(period_plan.index_path, label="Indexpfad")
+                    renderer_input = _month_index_renderer_input(
+                        plan, historical_weekly_archives
+                    )
                     atomic_write_bytes(
                         stage_root / index_path,
-                        render_month_index(period_plan, plan),
+                        render_month_index(
+                            period_plan,
+                            plan,
+                            renderer_input=renderer_input,
+                        ),
                         allowed_root=stage_root,
                     )
                     index_relatives.append(index_path)
@@ -1757,6 +2018,9 @@ def main(argv: list[str] | None = None) -> int:
                 }
             print(stable_json_dumps(evidence), end="")
         return 0
-    except (AggregationError, DueTaskError, OSError, ValueError) as exc:
+    except OSError:
+        print("aggregate: lokaler Ein-/Ausgabefehler", file=sys.stderr)
+        return 2
+    except (AggregationError, DueTaskError, ValueError) as exc:
         print(f"aggregate: {exc}", file=sys.stderr)
         return 2

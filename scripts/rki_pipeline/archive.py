@@ -742,6 +742,74 @@ def _inspect_bundle_fd(
     )
 
 
+def validate_archive_bundle_fd(
+    bundle_fd: int,
+    *,
+    display_root: Path,
+    archive_id: str,
+    period: str,
+    kind: str,
+    input_fingerprint: str,
+    output_sha256: str,
+    size: int,
+    limits: ArchiveLimits = ArchiveLimits(),
+) -> ArchiveBuild:
+    """Validate one published bundle through a caller-held directory descriptor."""
+
+    if type(bundle_fd) is not int or not isinstance(display_root, Path):
+        raise ValueError("bundle_fd und display_root sind ungültig")
+    names = frozenset(os.listdir(bundle_fd))
+    for name in names:
+        metadata = os.stat(name, dir_fd=bundle_fd, follow_symlinks=False)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ArchiveSecurityError(
+                f"Archiv-Bundle-Eintrag {name!r} ist keine reguläre Datei"
+            )
+    if names != _BUNDLE_FILES:
+        raise ArchiveIntegrityError("Archiv-Bundle enthält unbekannte oder fehlende Dateien")
+    try:
+        assert_generated_root_fd(bundle_fd)
+    except UnsafePathError as exc:
+        raise ArchiveSecurityError("Archiv-Bundle-Sentinel ist unsicher") from exc
+    sidecar = _strict_sidecar(
+        _read_bundle_file(
+            bundle_fd,
+            _BUNDLE_MANIFEST,
+            maximum=_sidecar_byte_limit(limits),
+        )
+    )
+    if (
+        sidecar["archive_id"] != archive_id
+        or sidecar["period"] != period
+        or sidecar["kind"] != kind
+        or sidecar["input_fingerprint"] != input_fingerprint
+        or sidecar["output_sha256"] != output_sha256
+    ):
+        raise ArchiveIntegrityError(
+            "Archiv-Sidecar stimmt nicht mit der Periodenreferenz überein"
+        )
+    try:
+        inspection = validate_archive(
+            fd_directory_path(bundle_fd) / _BUNDLE_ZIP,
+            expected_fingerprint=input_fingerprint,
+            expected_output_sha256=output_sha256,
+            limits=limits,
+        )
+    except ArchiveError as exc:
+        raise ArchiveIntegrityError("Bestehendes Archiv im Bundle ist ungültig") from exc
+    if list(inspection.entries) != sidecar["entries"] or inspection.size != size:
+        raise ArchiveIntegrityError(
+            "Archiv, Sidecar und Periodenreferenz enthalten verschiedene Identitäten"
+        )
+    return ArchiveBuild(
+        path=display_root / _BUNDLE_ZIP,
+        input_fingerprint=inspection.input_fingerprint,
+        output_sha256=inspection.output_sha256,
+        size=inspection.size,
+        entries=inspection.entries,
+    )
+
+
 def _strict_sidecar(payload: bytes) -> dict[str, Any]:
     def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         value: dict[str, Any] = {}

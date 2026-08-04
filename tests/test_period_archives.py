@@ -69,6 +69,11 @@ def test_berlin_period_boundaries_have_stable_epochs() -> None:
     )
 
 
+def test_period_before_supported_epoch_fails_closed() -> None:
+    with pytest.raises(PeriodSelectionError, match="RKI-Korpus"):
+        period_ref(TaskKind.YEAR, "1900")
+
+
 def test_due_and_affected_periods_are_unioned_once_and_sorted() -> None:
     affected = AffectedPeriods(
         weeks={"2025-W52", "2025-W50"},
@@ -1091,8 +1096,23 @@ def test_month_index_escapes_backslash_and_pipe_without_markdown_ambiguity(
 
     payload = render_month_index(period, _with_month(aggregation, period))
 
-    assert b"A\\B &#124; C" in payload
-    assert b"A\\B \\| C" not in payload
+    assert b"A&#92;B &#124; C" in payload
+    assert b"A\\B" not in payload
+
+
+def test_month_index_title_cannot_inject_markdown_link_or_image(tmp_path: Path) -> None:
+    aggregation = _month_aggregation(tmp_path)
+    base = _month_from(aggregation)
+    title = r"![evil](javascript:alert(1)) [click](https://evil.invalid) [x]"
+    period = replace(base, documents=(replace(base.documents[0], title=title),))
+
+    payload = render_month_index(period, _with_month(aggregation, period))
+    title_row = next(line for line in payload.splitlines() if b"javascript:alert" in line)
+
+    assert b"!&#91;evil&#93;(javascript:alert(1))" in title_row
+    assert b"&#91;click&#93;(https://evil.invalid)" in title_row
+    assert b"![evil](" not in title_row
+    assert b"[click](" not in title_row
 
 
 def _materialize_authorizer(
@@ -1267,6 +1287,87 @@ def _late_arrival_inputs(tmp_path: Path) -> dict[str, object]:
     )
     inputs["as_of"] = datetime(2027, 1, 2, tzinfo=timezone.utc)
     return inputs
+
+
+def test_month_only_rebuild_preserves_and_links_valid_published_week(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    weekly_inputs = _plan_inputs(tmp_path)
+    weekly_inputs["due_tasks"] = (due(TaskKind.WEEK, "2026-W28"),)
+    weekly_plan, weekly_authorizer = _materialize_authorizer(
+        tmp_path, plan_period_archives(**weekly_inputs), monkeypatch
+    )
+    root = tmp_path / "period-products"
+    first = materialize_period_archives(
+        weekly_plan,
+        root,
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=weekly_authorizer,
+    )
+    weekly_zip = next(item.build.path for item in first.archives if item.archive_id.endswith("-pdf"))
+    weekly_bytes = weekly_zip.read_bytes()
+
+    monthly_inputs = _plan_inputs(tmp_path)
+    monthly_inputs["due_tasks"] = (due(TaskKind.MONTH, "2026-07"),)
+    monthly_plan, monthly_authorizer = _materialize_authorizer(
+        tmp_path, plan_period_archives(**monthly_inputs), monkeypatch
+    )
+    second = materialize_period_archives(
+        monthly_plan,
+        root,
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=monthly_authorizer,
+    )
+
+    assert weekly_zip.read_bytes() == weekly_bytes
+    index = second.index_paths[0].read_bytes()
+    assert b"2026-07-06_bis_2026-07-12-PDF" in index
+    assert b"2026-07-06_bis_2026-07-12-Markdown" in index
+
+
+@pytest.mark.parametrize("mutation", ["corrupt", "missing"])
+def test_month_only_rebuild_fails_closed_on_invalid_published_week(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    weekly_inputs = _plan_inputs(tmp_path)
+    weekly_inputs["due_tasks"] = (due(TaskKind.WEEK, "2026-W28"),)
+    weekly_plan, weekly_authorizer = _materialize_authorizer(
+        tmp_path, plan_period_archives(**weekly_inputs), monkeypatch
+    )
+    root = tmp_path / "period-products"
+    first = materialize_period_archives(
+        weekly_plan,
+        root,
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=weekly_authorizer,
+    )
+    weekly_pdf = next(
+        item.build.path for item in first.archives if item.archive_id.endswith("-pdf")
+    )
+    if mutation == "corrupt":
+        weekly_pdf.write_bytes(b"corrupt")
+    else:
+        weekly_pdf.unlink()
+    before = _tree_fingerprint(root)
+    monthly_inputs = _plan_inputs(tmp_path)
+    monthly_inputs["due_tasks"] = (due(TaskKind.MONTH, "2026-07"),)
+    monthly_plan, monthly_authorizer = _materialize_authorizer(
+        tmp_path, plan_period_archives(**monthly_inputs), monkeypatch
+    )
+
+    with pytest.raises(AggregationError, match="bestehende Wochenreferenz"):
+        materialize_period_archives(
+            monthly_plan,
+            root,
+            temp_root=tmp_path,
+            ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+            authorizer=monthly_authorizer,
+        )
+
+    assert _tree_fingerprint(root) == before
 
 
 def test_late_arrival_changes_only_its_three_historical_periods(
@@ -1736,3 +1837,20 @@ def test_aggregate_cli_rejects_unknown_or_effectful_switches(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "aggregate:" in captured.err
+
+
+def test_aggregate_cli_redacts_oserror_paths(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def fail_fixture(_temp_root: Path, _as_of: datetime) -> None:
+        raise OSError("permission denied: /secret/published/path")
+
+    monkeypatch.setattr(aggregation_module, "_cli_fixture", fail_fixture)
+
+    assert cli.main(
+        ["aggregate", "--as-of", "2026-01-01T05:00:00Z", "--mode", "plan"]
+    ) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "aggregate: lokaler Ein-/Ausgabefehler\n"
+    assert "/secret" not in captured.err
