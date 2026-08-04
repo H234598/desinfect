@@ -169,13 +169,13 @@ def test_cli_rejects_invalid_fixture_with_fixed_stderr(tmp_path: Path, mutation:
 
 def test_fixture_authority_never_mutates_process_default(monkeypatch: pytest.MonkeyPatch) -> None:
     original = rights.DEFAULT_REGISTER_PATH
-    loader = reconciliation._load_isolated_rights_authority
+    loader = reconciliation.load_fixture_rights_authority
 
     def assert_default_then_load(path: Path):
         assert rights.DEFAULT_REGISTER_PATH == original
         return loader(path)
 
-    monkeypatch.setattr(reconciliation, "_load_isolated_rights_authority", assert_default_then_load)
+    monkeypatch.setattr(reconciliation, "load_fixture_rights_authority", assert_default_then_load)
 
     assert reconciliation._reconcile_fixture(reconciliation._fixture_payload(FIXTURE), mode="plan")["conclusion"] == "success"
     assert rights.DEFAULT_REGISTER_PATH == original
@@ -224,9 +224,12 @@ def test_cli_does_not_normalize_unrelated_value_error(monkeypatch: pytest.Monkey
 
 
 def test_cli_leaves_fixture_and_repository_unchanged() -> None:
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("git executable unavailable")
     fixture_before = snapshot(FIXTURE)
     repository_before = subprocess.run(
-        ["git", "status", "--porcelain=v1"], cwd=ROOT, capture_output=True, check=True
+        [git, "status", "--porcelain=v1"], cwd=ROOT, capture_output=True, check=True
     ).stdout
 
     assert run_cli("plan").returncode == 0
@@ -235,7 +238,7 @@ def test_cli_leaves_fixture_and_repository_unchanged() -> None:
     assert snapshot(FIXTURE) == fixture_before
     assert (
         subprocess.run(
-            ["git", "status", "--porcelain=v1"], cwd=ROOT, capture_output=True, check=True
+            [git, "status", "--porcelain=v1"], cwd=ROOT, capture_output=True, check=True
         ).stdout
         == repository_before
     )

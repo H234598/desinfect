@@ -16,17 +16,29 @@ Bei einem P07.3-Finding gilt diese sichere Reihenfolge:
 5. Bei Storage- oder Archivdrift passenden P04-Adapter und Objekt prüfen.
    Produkte über P05/P07 regenerieren; ZIP, Sidecar oder Periodenmanifest
    niemals manuell editieren.
-6. Danach zuerst `plan`, dann `materialize` erneut ausführen:
-
-   ```bash
-   python3 -m scripts.rki_pipeline.cli reconcile --fixture tests/fixtures/reconciliation --mode plan
-   python3 -m scripts.rki_pipeline.cli reconcile --fixture tests/fixtures/reconciliation --mode materialize
-   ```
-
-7. Wasserstand nur nach Ergebnis `success` mit nicht-null `successful_at`
+6. Produktivprüfung über die P05-Orchestrierung vorbereiten: kanonischen
+   Manifestkatalog, auf `from_year` bis `to_year` begrenzten
+   Remotemetadatensnapshot, konfigurierte P04-Storageadapter, `period_root`,
+   `load_rights_authority()` und `load_rights_policy()` aus ihren kanonischen
+   Quellen laden.
+7. `plan_reconciliation(...)` mit explizitem UTC-`as_of` ausführen. Bei
+   `blocked` Findings prüfen; weder Report noch Bestand verändern. Nur ein
+   `success`-Ergebnis darf über `materialize_reconciliation(...)` in den
+   transaktionalen P05-Temporärroot übernommen werden.
+8. Wasserstand nur nach Ergebnis `success` mit nicht-null `successful_at`
    fortschreiben. `blocked` aktualisiert ihn nie.
-8. Unaufgelöste Remote-Löschung oder `orphan` eskalieren. Nicht automatisch
+9. Unaufgelöste Remote-Löschung oder `orphan` eskalieren. Nicht automatisch
    löschen, keine History umschreiben und keine Backendbereinigung ohne
    dokumentierte Freigabe, Retention-Prüfung und Recovery-Plan vornehmen.
+
+## Offline-Drill
+
+Folgende Fixture-Befehle prüfen nur den isolierten, synthetischen CLI-Vertrag.
+Sie inspizieren keinen Produktivbestand und ersetzen die Schritte 6–7 nicht:
+
+```bash
+python3 -m scripts.rki_pipeline.cli reconcile --fixture tests/fixtures/reconciliation --mode plan
+python3 -m scripts.rki_pipeline.cli reconcile --fixture tests/fixtures/reconciliation --mode materialize
+```
 
 Reconciliation ist Diagnose, keine Reparatur- oder Veröffentlichungsoperation.

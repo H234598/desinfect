@@ -476,12 +476,14 @@ def load_rights_authority() -> RightsAuthority:
     return RightsAuthority(register_source, _token=_AUTHORITY_TOKEN)
 
 
-def _load_isolated_rights_authority(path: Path) -> RightsAuthority:
-    """Mint fixture-only authority without changing process-wide defaults."""
+def load_fixture_rights_authority(path: Path) -> RightsAuthority:
+    """Mint offline-fixture authority; isolated mode relaxes canonical-source binding."""
 
     register_source = Path(path).absolute()
     load_rights_register(register_source)
-    return RightsAuthority(register_source, _token=_AUTHORITY_TOKEN, _isolated=True)
+    authority = RightsAuthority(register_source, _token=_AUTHORITY_TOKEN, _isolated=True)
+    assert authority._token is _AUTHORITY_TOKEN and authority._isolated
+    return authority
 
 
 def evaluate_rights(

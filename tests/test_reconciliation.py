@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts.rki_grabber.download import PdfDownloadError
 from scripts.rki_pipeline.reconciliation import (
     FindingCode,
     ReconciliationIntegrityError,
@@ -228,6 +229,20 @@ def test_period_completeness_accepts_available_formats(
     markdown: bool,
 ) -> None:
     graph, root = _period_fixture(tmp_path, monkeypatch, markdown=markdown)
+
+    assert reconcile_periods(graph, root) == ()
+
+
+def test_period_expected_planning_ignores_nonpublication_scratch_collision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph, root = _period_fixture(tmp_path, monkeypatch)
+    logical_key = graph.storage_references[0]["relative_path"]
+    assert type(logical_key) is str
+    collision = root / ".reconciliation-expected" / logical_key
+    collision.parent.mkdir(parents=True)
+    collision.write_bytes(b"unrelated real tree entry")
 
     assert reconcile_periods(graph, root) == ()
 
@@ -537,17 +552,25 @@ def test_period_expected_archive_spec_binds_storage_member_paths(
 
 
 @pytest.mark.parametrize(
-    ("adapters", "failures"),
+    ("adapter_present", "failures"),
     (
-        ({}, {}),
-        ({StorageBackend.LFS: RecordingAdapter(StorageBackend.LFS, (), {})}, {"artifact-a": FileNotFoundError()}),
+        (False, {}),
+        (True, {"artifact-a": FileNotFoundError()}),
     ),
     ids=("adapter-missing", "reference-missing"),
 )
-def test_storage_missing_adapter_or_reference_is_missing_local(adapters, failures) -> None:
+def test_storage_missing_adapter_or_reference_is_missing_local(
+    adapter_present: bool,
+    failures: dict[str, Exception],
+) -> None:
     reference = storage_reference()
-    if adapters:
-        adapters[StorageBackend.LFS].failures.update(failures)
+    adapters: dict[StorageBackend, RecordingAdapter] = {}
+    if adapter_present:
+        adapters[StorageBackend.LFS] = RecordingAdapter(
+            StorageBackend.LFS,
+            (),
+            failures.copy(),
+        )
 
     findings = reconcile_storage(storage_graph(reference), adapters)
 
@@ -1433,9 +1456,10 @@ def test_materialize_reconciliation_preserves_concurrent_different_report(
         original(source, destination, *args, **kwargs)
 
     monkeypatch.setattr(reconciliation.os, "link", create_conflict)
-    with pytest.raises(ReconciliationIntegrityError, match="unveränderlich"):
+    with pytest.raises(ReconciliationIntegrityError, match="unveränderlich") as caught:
         materialize_reconciliation(_successful_reconciliation_result(), temp_root=tmp_path, ledger=ledger)
 
+    assert isinstance(caught.value.__cause__, FileExistsError)
     target = tmp_path / "rki/Bulletins/Manifeste/Reconciliation/reconciliation-20260804T040506Z.json"
     assert target.read_bytes() == b"concurrent different report"
     assert ledger.events == []
@@ -1799,7 +1823,7 @@ def test_candidate_loader_error_is_bounded_changed() -> None:
     matching = remote_record()
 
     def loader(_record: ArtifactRecord) -> PreparedObject:
-        raise RuntimeError("https://secret.invalid/loader-detail")
+        raise PdfDownloadError("https://secret.invalid/loader-detail")
 
     findings = compare_remote_sources(
         remote_catalog(matching),
@@ -1809,6 +1833,31 @@ def test_candidate_loader_error_is_bounded_changed() -> None:
 
     assert [item.code for item in findings] == [FindingCode.CHANGED]
     assert "secret" not in findings[0].message
+
+
+def test_candidate_loader_programmer_error_propagates() -> None:
+    matching = remote_record()
+
+    def loader(_record: ArtifactRecord) -> PreparedObject:
+        raise RuntimeError("programmer error")
+
+    with pytest.raises(RuntimeError, match="programmer error"):
+        compare_remote_sources(
+            remote_catalog(matching),
+            (replace(matching, etag='"new"'),),
+            candidate_loader=loader,
+        )
+
+
+def test_candidate_loader_invalid_return_contract_propagates() -> None:
+    matching = remote_record()
+
+    with pytest.raises(ReconciliationIntegrityError, match="CandidateLoader"):
+        compare_remote_sources(
+            remote_catalog(matching),
+            (replace(matching, etag='"new"'),),
+            candidate_loader=lambda _record: object(),  # type: ignore[arg-type,return-value]
+        )
 
 
 def test_superseded_local_source_is_ignored() -> None:

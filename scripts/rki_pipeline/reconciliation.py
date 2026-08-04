@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import sys
 from tempfile import TemporaryDirectory
 from typing import Callable, Iterable, Mapping, TypeAlias
 import unicodedata
@@ -23,11 +24,12 @@ from scripts.rki_grabber.models import (
     RightsMetadata,
     Scope,
 )
+from scripts.rki_grabber.download import PdfDownloadError
+from scripts.rki_grabber.http import GrabberHttpError
 from scripts.rki_pipeline.aggregation import (
     AggregationError,
     PeriodManifestError,
     PeriodPlan,
-    PeriodPublicationInspection,
     PeriodPublicationMissing,
     materialize_period_archives,
     plan_period_archives,
@@ -62,7 +64,7 @@ from scripts.rki_pipeline.rights import (
     RightsPolicy,
     RightsPolicyError,
     RightsState,
-    _load_isolated_rights_authority,
+    load_fixture_rights_authority,
     load_rights_policy,
     resolve_rights,
 )
@@ -268,7 +270,7 @@ def compare_remote_sources(
         if local is None:
             replacement_key = replacements.get(key)
             if replacement_key is not None:
-                _load_candidate_if_available(candidate_loader, record, local_sources[replacement_key])
+                _load_candidate_if_available(candidate_loader, record)
                 findings.append(
                     _source_finding(
                         FindingCode.CHANGED,
@@ -281,7 +283,7 @@ def compare_remote_sources(
             continue
         if _metadata_drifts(local, record):
             if _candidate_load_is_justified(local, record):
-                _load_candidate_if_available(candidate_loader, record, local)
+                _load_candidate_if_available(candidate_loader, record)
             findings.append(
                 _source_finding(FindingCode.CHANGED, subject_id, "Remote-Metadaten driften")
             )
@@ -545,16 +547,12 @@ def reconcile_periods(
             period_documents[identity] = row
 
     expected_plans = _expected_period_plans(graph, period_root)
-    inspections: dict[tuple[TaskKind, str], PeriodPublicationInspection] = {}
     findings: list[ReconciliationFinding] = []
     for key in sorted(expected, key=lambda item: (item[0].value, item[1])):
         period = periods[key]
         relative_path = _period_manifest_path(period)
         try:
-            inspection = inspections.get(key)
-            if inspection is None:
-                inspection = inspect_period_publication(period_root, period)
-                inspections[key] = inspection
+            inspection = inspect_period_publication(period_root, period)
         except PeriodPublicationMissing as exc:
             findings.extend(
                 _period_findings(
@@ -712,7 +710,13 @@ def _expected_period_plans(
         )
     )
     planning_graph = ManifestGraph(sources, documents, conversions, storage)
-    prepared_root = period_root / ".reconciliation-expected"
+    inspected_root = period_root.resolve()
+    # Synthetic placeholders stay outside the inspected publication tree and are never read.
+    prepared_root = inspected_root.parent / (
+        f".desinfect-reconciliation-expected-{uuid.uuid4().hex}"
+    )
+    if prepared_root.exists() or prepared_root.is_symlink():
+        raise ReconciliationIntegrityError("Synthetische Periodenplanung kollidiert")
     prepared: dict[str, PreparedObject] = {}
     try:
         for reference in planning_graph.storage_references:
@@ -1043,23 +1047,26 @@ def _candidate_load_is_justified(local: dict[str, object], remote: ArtifactRecor
 def _load_candidate_if_available(
     candidate_loader: CandidateLoader | None,
     record: ArtifactRecord,
-    local: dict[str, object],
 ) -> None:
     if candidate_loader is None:
         return
     try:
         candidate = candidate_loader(record)
-        candidate.__post_init__()
-        if (
-            candidate.source_id != record.source_id
-            or candidate.document_id != record.document_id
-            or candidate.source_sha256 != candidate.sha256
-            or not candidate.path.is_file()
-            or candidate.sha256 != local["sha256"]
-        ):
-            return
-    except Exception:
+    except (GrabberHttpError, PdfDownloadError, OSError, StorageError):
         return
+    if type(candidate) is not PreparedObject:
+        raise ReconciliationIntegrityError("CandidateLoader lieferte kein PreparedObject")
+    try:
+        candidate.__post_init__()
+    except (StorageError, ValueError) as exc:
+        raise ReconciliationIntegrityError("CandidateLoader lieferte ungültige Evidenz") from exc
+    if (
+        candidate.source_id != record.source_id
+        or candidate.document_id != record.document_id
+        or candidate.source_sha256 != candidate.sha256
+        or not candidate.path.is_file()
+    ):
+        raise ReconciliationIntegrityError("CandidateLoader lieferte unpassende Evidenz")
 
 
 def _source_finding(
@@ -1493,11 +1500,16 @@ def _write_immutable_report(
                         dst_dir_fd=parent_fd,
                         follow_symlinks=False,
                     )
-                except FileExistsError:
+                except FileExistsError as exc:
                     existing = _read_report_bytes(parent_fd, relative.name)
                     if existing is None:
-                        raise ReconciliationIntegrityError("Reconciliation-Berichtskollision ist unklar")
-                    _require_identical_report(existing, payload)
+                        raise ReconciliationIntegrityError(
+                            "Reconciliation-Berichtskollision ist unklar"
+                        ) from exc
+                    try:
+                        _require_identical_report(existing, payload)
+                    except ReconciliationIntegrityError as conflict:
+                        raise conflict from exc
                     return False
                 try:
                     fsync_directory_fd(parent_fd)
@@ -1717,7 +1729,7 @@ def _fixture_authorizer(root: Path, source_id: str, source_sha256: str) -> tuple
         ),
         encoding="utf-8",
     )
-    authority = _load_isolated_rights_authority(register)
+    authority = load_fixture_rights_authority(register)
     policy = load_rights_policy()
     decision = resolve_rights(source_id, source_sha256, authority=authority, policy=policy)
     return RightsStorageAuthorizer(authority, policy), authority, policy, decision
@@ -1904,7 +1916,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         value = _fixture_payload(Path(args.fixture))
     except FixtureValidationError:
-        print("reconcile: fixture validation failed", file=os.sys.stderr)
+        print("reconcile: fixture validation failed", file=sys.stderr)
         return 1
     try:
         print(stable_json_dumps(_reconcile_fixture(value, mode=args.mode)), end="")
@@ -1924,7 +1936,7 @@ def main(argv: list[str] | None = None) -> int:
         StorageAuthorizationError,
         StorageError,
     ):
-        print("reconcile: reconciliation failed", file=os.sys.stderr)
+        print("reconcile: reconciliation failed", file=sys.stderr)
         return 1
 
 

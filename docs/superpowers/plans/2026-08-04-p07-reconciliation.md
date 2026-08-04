@@ -6,7 +6,7 @@
 
 **Architecture:** Add one manifest-first reconciliation domain module. It consumes a validated manifest catalog, remote metadata snapshot, existing storage adapters, rights authority, and public P07 period inspection; each authority produces deterministic findings that compose into the existing schema-valid 1.0.0 aggregate report. Materialization is temp-root-only and writes an immutable report only on success.
 
-**Tech Stack:** Python 3.14 standard library, existing `jsonschema`, pytest, P04 storage adapters, P06 manifests/rights, P07 archive/aggregation validators, existing EffectLedger/IO primitives.
+**Tech Stack:** Python 3.12 standard library, existing `jsonschema`, pytest, P04 storage adapters, P06 manifests/rights, P07 archive/aggregation validators, existing EffectLedger/IO primitives.
 
 ## Global Constraints
 
