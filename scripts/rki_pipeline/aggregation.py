@@ -78,6 +78,14 @@ class PeriodManifestError(AggregationError):
     """Period-manifest bytes or archive references violate the contract."""
 
 
+class PeriodPublicationMissing(FileNotFoundError):
+    """One bounded manifest or archive-bundle path is absent."""
+
+    def __init__(self, relative_path: str) -> None:
+        super().__init__("Periodenveröffentlichung fehlt")
+        self.relative_path = relative_path
+
+
 @dataclass(frozen=True, slots=True)
 class PeriodRef:
     """One immutable, closed calendar period in Berlin time."""
@@ -1109,6 +1117,9 @@ def inspect_period_publication(
         "Archive",
         period.kind.value,
     )
+    missing_path = (
+        f"rki/Bulletins/Manifeste/Archive/{period.kind.value}/{period.value}.json"
+    )
     try:
         with open_root_directory(root) as root_fd:
             manifest_fd = open_directory_beneath(root_fd, manifest_parts)
@@ -1130,6 +1141,7 @@ def inspect_period_publication(
                 if type(archive) is not dict:
                     raise PeriodManifestError("Periodenmanifest-Archivreferenz ist ungültig")
                 relative_bundle = _string(archive, "relative_bundle", label="Periodenarchiv")
+                missing_path = relative_bundle
                 relative = PurePosixPath(
                     _canonical_path(relative_bundle, label="Periodenarchivpfad")
                 )
@@ -1179,8 +1191,10 @@ def inspect_period_publication(
                         os.close(live_bundle_fd)
                 finally:
                     os.close(bundle_fd)
-    except FileNotFoundError:
+    except PeriodPublicationMissing:
         raise
+    except FileNotFoundError as exc:
+        raise PeriodPublicationMissing(missing_path) from exc
     except (ArchiveError, PeriodManifestError):
         raise
     except (AggregationError, OSError, UnsafePathError) as exc:

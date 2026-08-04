@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from enum import StrEnum
 import hashlib
 import json
@@ -26,14 +26,16 @@ from scripts.rki_grabber.models import (
 from scripts.rki_pipeline.aggregation import (
     AggregationError,
     PeriodManifestError,
+    PeriodPlan,
     PeriodPublicationInspection,
+    PeriodPublicationMissing,
     materialize_period_archives,
     plan_period_archives,
     PeriodRef,
     inspect_period_publication,
     period_ref,
 )
-from scripts.rki_pipeline.archive import ArchiveError
+from scripts.rki_pipeline.archive import ArchiveError, archive_input_fingerprint
 from scripts.rki_pipeline.documents import DocumentIdentityError, bitstream_identity
 from scripts.rki_pipeline.due_tasks import DueTask, TaskKind
 from scripts.rki_pipeline.io_utils import (
@@ -49,6 +51,7 @@ from scripts.rki_pipeline.manifests import (
     LoadedManifestCatalog,
     ManifestGraph,
     ManifestGraphError,
+    RenderedManifestCatalog,
     build_manifest_graph,
     render_manifest_catalog,
     storage_reference_from_manifest,
@@ -91,6 +94,13 @@ _METADATA_FIELDS = (
     ("etag", "etag"),
     ("last_modified", "last_modified"),
     ("publication_date", "publication_date"),
+)
+_CANDIDATE_METADATA_FIELDS = (
+    ("version", "version"),
+    ("source_url", "item_url"),
+    ("bitstream_url", "pdf_url"),
+    ("etag", "etag"),
+    ("last_modified", "last_modified"),
 )
 
 CandidateLoader: TypeAlias = Callable[[ArtifactRecord], PreparedObject]
@@ -232,42 +242,46 @@ def compare_remote_sources(
 ) -> tuple[ReconciliationFinding, ...]:
     """Compare current manifest sources with a remote metadata snapshot."""
 
+    if type(catalog) is not LoadedManifestCatalog or type(remote_records) is not tuple:
+        raise ReconciliationIntegrityError("Remote-Vergleichseingaben sind ungültig")
     local_sources = _current_source_projection(catalog)
-    remote_sources: dict[tuple[str, str], ArtifactRecord] = {}
-    remote_source_counts: dict[str, int] = {}
+    remote_sources = _remote_source_index(remote_records)
     findings: list[ReconciliationFinding] = []
-    replaced_local_keys: set[tuple[str, str]] = set()
-
-    for record in remote_records:
-        bitstream_id = _remote_bitstream_id(record)
-        if bitstream_id is None:
-            continue
-        key = (record.source_id, bitstream_id)
-        if key in remote_sources:
-            raise ValueError("Remote-Source/Bitstream ist doppelt")
-        remote_sources[key] = record
-        remote_source_counts[record.source_id] = remote_source_counts.get(record.source_id, 0) + 1
+    exact_keys = local_sources.keys() & remote_sources.keys()
+    unmatched_local: dict[str, list[tuple[str, str]]] = {}
+    unmatched_remote: dict[str, list[tuple[str, str]]] = {}
+    for key in local_sources.keys() - exact_keys:
+        unmatched_local.setdefault(key[0], []).append(key)
+    for key in remote_sources.keys() - exact_keys:
+        unmatched_remote.setdefault(key[0], []).append(key)
+    replacements: dict[tuple[str, str], tuple[str, str]] = {}
+    for source_id in unmatched_local.keys() & unmatched_remote.keys():
+        local_keys = unmatched_local[source_id]
+        remote_keys = unmatched_remote[source_id]
+        if len(local_keys) == len(remote_keys) == 1:
+            replacements[remote_keys[0]] = local_keys[0]
+    replaced_local_keys = set(replacements.values())
 
     for key, record in remote_sources.items():
         local = local_sources.get(key)
         subject_id = source_subject_id(*key)
         if local is None:
-            replacement_keys = tuple(
-                local_key
-                for local_key in local_sources
-                if local_key[0] == record.source_id and local_key not in replaced_local_keys
-            )
-            if len(replacement_keys) == 1 and remote_source_counts[record.source_id] == 1:
-                replaced_local_keys.add(replacement_keys[0])
-                _load_candidate_if_available(candidate_loader, record, local_sources[replacement_keys[0]])
+            replacement_key = replacements.get(key)
+            if replacement_key is not None:
+                _load_candidate_if_available(candidate_loader, record, local_sources[replacement_key])
                 findings.append(
-                    _source_finding(FindingCode.CHANGED, subject_id, "Remote-Bitstreamidentität driftet")
+                    _source_finding(
+                        FindingCode.CHANGED,
+                        source_subject_id(*replacement_key),
+                        "Remote-Bitstreamidentität driftet",
+                    )
                 )
                 continue
             findings.append(_source_finding(FindingCode.NEW, subject_id, "Remote-Quelle ist neu"))
             continue
         if _metadata_drifts(local, record):
-            _load_candidate_if_available(candidate_loader, record, local)
+            if _candidate_load_is_justified(local, record):
+                _load_candidate_if_available(candidate_loader, record, local)
             findings.append(
                 _source_finding(FindingCode.CHANGED, subject_id, "Remote-Metadaten driften")
             )
@@ -295,18 +309,23 @@ def reconcile_storage(
     findings: list[ReconciliationFinding] = []
 
     for reference in references:
+        owner = _storage_reference_owner(graph, reference)
+        if owner is None:
+            if reference.source_id is None:
+                raise ReconciliationIntegrityError("Storage-Manifest hat keinen kanonischen Owner")
+            continue
         adapter = checked_adapters.get(reference.storage_backend)
         if adapter is None:
-            findings.append(_storage_finding(FindingCode.MISSING_LOCAL, reference))
+            findings.append(_storage_finding(FindingCode.MISSING_LOCAL, reference, owner))
             continue
         try:
             adapter.verify(reference)
         except FileNotFoundError:
-            findings.append(_storage_finding(FindingCode.MISSING_LOCAL, reference))
+            findings.append(_storage_finding(FindingCode.MISSING_LOCAL, reference, owner))
         except StorageAuthorizationError:
-            findings.append(_storage_finding(FindingCode.RIGHTS_CHANGED, reference))
+            findings.append(_storage_finding(FindingCode.RIGHTS_CHANGED, reference, owner))
         except StorageError:
-            findings.append(_storage_finding(FindingCode.CHANGED, reference))
+            findings.append(_storage_finding(FindingCode.CHANGED, reference, owner))
         except Exception as exc:
             raise ReconciliationIntegrityError("Storage-Adapter-Vertrag ist ungültig") from exc
 
@@ -341,7 +360,10 @@ def reconcile_storage(
             ):
                 expected = by_backend_path.get((backend, reference.relative_path))
             if expected is None:
-                findings.append(_storage_finding(FindingCode.ORPHAN, reference))
+                owner = _storage_reference_owner(graph, reference)
+                if reference.source_id is not None and owner is None:
+                    continue
+                findings.append(_storage_finding(FindingCode.ORPHAN, reference, owner))
 
     return tuple(sorted(findings, key=lambda item: item.key))
 
@@ -360,7 +382,8 @@ def reconcile_rights(
     decisions: dict[tuple[str, str], RightsDecision] = {}
     source_changed: dict[tuple[str, str], bool] = {}
 
-    for source in sorted(graph.sources, key=lambda item: (item["source_id"], item["bitstream_id"])):
+    current_sources = _current_source_projection_from_graph(graph)
+    for owner_key, source in sorted(current_sources.items()):
         try:
             source_id = source["source_id"]
             source_sha256 = source["sha256"]
@@ -402,12 +425,15 @@ def reconcile_rights(
             findings.append(
                 _source_finding(
                     FindingCode.RIGHTS_CHANGED,
-                    source_subject_id(source_id, bitstream_id),
+                    source_subject_id(*owner_key),
                     "Aktuelle Rechteentscheidung weicht ab",
                 )
             )
 
     for reference in references:
+        owner = _storage_reference_owner(graph, reference)
+        if owner is None:
+            continue
         if reference.source_id is None or reference.source_sha256 is None:
             raise ReconciliationIntegrityError("Storage-Rechteverknüpfung ist ungültig")
         key = (reference.source_id, reference.source_sha256)
@@ -419,7 +445,7 @@ def reconcile_rights(
             or decision.decision_sha256 != reference.decision_sha256
             or decision.state.value != reference.rights_state
         ):
-            findings.append(_storage_finding(FindingCode.RIGHTS_CHANGED, reference))
+            findings.append(_storage_finding(FindingCode.RIGHTS_CHANGED, reference, owner))
 
     return tuple(sorted(findings, key=lambda item: item.key))
 
@@ -448,6 +474,7 @@ def reconcile_periods(
     ] = {}
     identities: set[tuple[str, str]] = set()
     periods: dict[tuple[TaskKind, str], PeriodRef] = {}
+    owners: dict[tuple[TaskKind, str], set[str]] = {}
     try:
         documents = sorted(
             graph.documents,
@@ -494,11 +521,13 @@ def reconcile_periods(
         for period in document_periods:
             key = (period.kind, period.value)
             periods[key] = period
+            owners.setdefault(key, set()).add(source_subject_id(source_id, bitstream_id))
             period_documents = expected.setdefault(key, {})
             if identity in period_documents:
                 raise ReconciliationIntegrityError("Periodenmitgliedschaft ist doppelt")
             period_documents[identity] = row
 
+    expected_plans = _expected_period_plans(graph, period_root)
     inspections: dict[tuple[TaskKind, str], PeriodPublicationInspection] = {}
     findings: list[ReconciliationFinding] = []
     for key in sorted(expected, key=lambda item: (item[0].value, item[1])):
@@ -509,31 +538,34 @@ def reconcile_periods(
             if inspection is None:
                 inspection = inspect_period_publication(period_root, period)
                 inspections[key] = inspection
-        except FileNotFoundError:
-            findings.append(
-                _period_finding(
+        except PeriodPublicationMissing as exc:
+            findings.extend(
+                _period_findings(
                     FindingCode.MISSING_LOCAL,
-                    period,
-                    relative_path,
+                    owners[key],
+                    exc.relative_path,
                 )
+            )
+            continue
+        except FileNotFoundError:
+            findings.extend(
+                _period_findings(FindingCode.MISSING_LOCAL, owners[key], relative_path)
             )
             continue
         except (ArchiveError, PeriodManifestError):
-            findings.append(
-                _period_finding(
-                    FindingCode.CHANGED,
-                    period,
-                    relative_path,
-                )
+            findings.extend(
+                _period_findings(FindingCode.CHANGED, owners[key], relative_path)
             )
             continue
-        if not _period_membership_matches(inspection.manifest, period, expected[key]):
-            findings.append(
-                _period_finding(
-                    FindingCode.CHANGED,
-                    period,
-                    relative_path,
-                )
+        expected_plan = expected_plans.get(key)
+        matches = (
+            _period_plan_matches(inspection.manifest, expected_plan, expected_plans)
+            if expected_plan is not None
+            else _period_membership_matches(inspection.manifest, period, expected[key])
+        )
+        if not matches:
+            findings.extend(
+                _period_findings(FindingCode.CHANGED, owners[key], relative_path)
             )
     return tuple(sorted(findings, key=lambda item: item.key))
 
@@ -593,22 +625,187 @@ def _period_manifest_path(period: PeriodRef) -> str:
     return f"rki/Bulletins/Manifeste/Archive/{period.kind.value}/{period.value}.json"
 
 
-def _period_finding(
+def _period_findings(
     code: FindingCode,
-    period: PeriodRef,
+    owners: Iterable[str],
     relative_path: str,
-) -> ReconciliationFinding:
+) -> tuple[ReconciliationFinding, ...]:
     messages = {
         FindingCode.MISSING_LOCAL: "Erforderliche Periodenveröffentlichung fehlt lokal",
         FindingCode.CHANGED: "Periodenveröffentlichung oder Archivintegrität weicht ab",
     }
-    return ReconciliationFinding(
-        code=code,
-        subject_kind=SubjectKind.PERIOD,
-        subject_id=f"{period.kind.value}:{period.value}",
-        relative_path=relative_path,
-        message=messages[code],
+    return tuple(
+        ReconciliationFinding(
+            code=code,
+            subject_kind=SubjectKind.PERIOD,
+            subject_id=owner,
+            relative_path=relative_path,
+            message=messages[code],
+        )
+        for owner in sorted(set(owners))
     )
+
+
+def _expected_period_plans(
+    graph: ManifestGraph,
+    period_root: Path,
+) -> dict[tuple[TaskKind, str], PeriodPlan]:
+    documents = tuple(
+        document
+        for document in graph.documents
+        if document.get("superseded_by") is None
+        and type(document.get("publication_date")) is str
+        and type(document.get("paths")) is dict
+        and type(document["paths"].get("pdf")) is str
+    )
+    if not documents:
+        return {}
+    bitstream_ids = {document["bitstream_id"] for document in documents}
+    document_ids = {document["document_id"] for document in documents}
+    paths = {
+        path
+        for document in documents
+        for path in document["paths"].values()
+        if type(path) is str
+    }
+    sources = tuple(
+        source for source in graph.sources if source.get("bitstream_id") in bitstream_ids
+    )
+    conversions = tuple(
+        conversion
+        for conversion in graph.conversions
+        if conversion.get("document_id") in document_ids
+        and conversion.get("bitstream_id") in bitstream_ids
+    )
+    conversion_ids = {
+        conversion["conversion_id"]
+        for conversion in conversions
+        if type(conversion.get("conversion_id")) is str
+    }
+    storage = tuple(
+        reference
+        for reference in graph.storage_references
+        if reference.get("relative_path") in paths
+        and (
+            reference.get("conversion_id") is None
+            or reference.get("conversion_id") in conversion_ids
+        )
+    )
+    planning_graph = ManifestGraph(sources, documents, conversions, storage)
+    prepared_root = period_root / ".reconciliation-expected"
+    prepared: dict[str, PreparedObject] = {}
+    try:
+        for reference in planning_graph.storage_references:
+            required = {
+                "artifact_id",
+                "relative_path",
+                "sha256",
+                "bytes",
+                "source_id",
+                "source_sha256",
+                "decision_sha256",
+                "visibility",
+                "rights_state",
+                "document_id",
+                "conversion_id",
+            }
+            if type(reference) is not dict or not required.issubset(reference):
+                raise ReconciliationIntegrityError("Perioden-Storage hat keine aktuelle Provenienz")
+            relative_path = reference["relative_path"]
+            if type(relative_path) is not str:
+                raise ReconciliationIntegrityError("Perioden-Storage-Pfad ist ungültig")
+            prepared[relative_path] = PreparedObject(
+                artifact_id=reference["artifact_id"],
+                logical_key=relative_path,
+                path=prepared_root / relative_path,
+                temp_root=prepared_root,
+                sha256=reference["sha256"],
+                size=reference["bytes"],
+                source_id=reference["source_id"],
+                source_sha256=reference["source_sha256"],
+                decision_sha256=reference["decision_sha256"],
+                visibility=reference["visibility"],
+                rights_state=reference["rights_state"],
+                document_id=reference["document_id"],
+                conversion_id=reference["conversion_id"],
+            )
+        affected = AffectedPeriods()
+        refs: list[PeriodRef] = []
+        for document in documents:
+            publication_date = document["publication_date"]
+            assert type(publication_date) is str
+            affected.add(publication_date, None)
+            refs.extend(_document_periods(document, publication_date))
+        as_of = datetime.fromtimestamp(
+            max(period.source_date_epoch for period in refs),
+            tz=timezone.utc,
+        )
+        plan = plan_period_archives(
+            as_of=as_of,
+            due_tasks=(),
+            affected_periods=affected,
+            graph=planning_graph,
+            prepared_by_logical_key=prepared,
+        )
+    except (AggregationError, StorageError, ValueError) as exc:
+        raise ReconciliationIntegrityError("Erwartete Periodenplanung ist ungültig") from exc
+    return {(item.period.kind, item.period.value): item for item in plan.periods}
+
+
+def _period_plan_matches(
+    manifest: dict[str, object],
+    expected: PeriodPlan,
+    expected_plans: Mapping[tuple[TaskKind, str], PeriodPlan],
+) -> bool:
+    expected_documents = sorted(
+        (
+            {
+                "document_id": document.document_id,
+                "bitstream_id": document.bitstream_id,
+                "doi": document.doi,
+                "version": document.version,
+                "source_id": document.source_id,
+                "publication_date": document.publication_date,
+                "pdf_artifact_id": None if document.pdf is None else document.pdf.artifact_id,
+                "pdf_sha256": None if document.pdf is None else document.pdf.sha256,
+                "markdown_artifact_id": (
+                    None if document.markdown is None else document.markdown.artifact_id
+                ),
+                "markdown_sha256": None if document.markdown is None else document.markdown.sha256,
+            }
+            for document in expected.documents
+        ),
+        key=lambda item: (item["publication_date"], item["document_id"], item["bitstream_id"]),
+    )
+    if manifest.get("documents") != expected_documents:
+        return False
+    actual_archives = manifest.get("archives")
+    if type(actual_archives) is not list:
+        return False
+    expected_archives = {archive.spec.archive_id: archive for archive in expected.archives}
+    if {archive.get("archive_id") for archive in actual_archives if type(archive) is dict} != set(
+        expected_archives
+    ) or len(actual_archives) != len(expected_archives):
+        return False
+    for archive in actual_archives:
+        if type(archive) is not dict:
+            return False
+        planned = expected_archives[archive["archive_id"]]
+        if (
+            archive.get("kind") != planned.spec.kind
+            or archive.get("relative_bundle") != planned.relative_bundle
+            or archive.get("input_fingerprint") != archive_input_fingerprint(planned.spec)
+        ):
+            return False
+    expected_months = []
+    if expected.period.kind is TaskKind.YEAR:
+        months = sorted({document.publication_date[:7] for document in expected.documents})
+        expected_months = [
+            f"rki/Bulletins/Manifeste/Archive/month/{month}.json" for month in months
+        ]
+        if any((TaskKind.MONTH, month) not in expected_plans for month in months):
+            return False
+    return manifest.get("month_manifests") == expected_months
 
 
 def _period_membership_matches(
@@ -696,6 +893,7 @@ def _storage_adapters(
 def _storage_finding(
     code: FindingCode,
     reference: StorageReference,
+    owner: str | None,
 ) -> ReconciliationFinding:
     messages = {
         FindingCode.CHANGED: "Storage-Artefaktintegrität weicht ab",
@@ -706,18 +904,55 @@ def _storage_finding(
     return ReconciliationFinding(
         code=code,
         subject_kind=SubjectKind.STORAGE,
-        subject_id=reference.artifact_id,
+        subject_id=reference.artifact_id if owner is None else owner,
         relative_path=reference.relative_path,
         message=messages[code],
     )
 
 
+def _storage_reference_owner(
+    graph: ManifestGraph,
+    reference: StorageReference,
+) -> str | None:
+    if reference.source_id is None or reference.document_id is None:
+        return None
+    matches: list[dict[str, object]] = []
+    for document in graph.documents:
+        if (
+            type(document) is dict
+            and document.get("superseded_by") is None
+            and document.get("source_id") == reference.source_id
+            and document.get("document_id") == reference.document_id
+        ):
+            matches.append(document)
+    path_matches = []
+    for document in matches:
+        paths = document.get("paths")
+        if type(paths) is dict and reference.relative_path in paths.values():
+            path_matches.append(document)
+    selected = path_matches if path_matches else matches
+    if not selected:
+        return None
+    if len(selected) != 1:
+        raise ReconciliationIntegrityError("Storage-Owner ist mehrdeutig")
+    bitstream_id = selected[0].get("bitstream_id")
+    if type(bitstream_id) is not str:
+        raise ReconciliationIntegrityError("Storage-Owner ist ungültig")
+    return source_subject_id(reference.source_id, bitstream_id)
+
+
 def _current_source_projection(
     catalog: LoadedManifestCatalog,
 ) -> dict[tuple[str, str], dict[str, object]]:
-    sources = {source["bitstream_id"]: source for source in catalog.graph.sources}
+    return _current_source_projection_from_graph(catalog.graph)
+
+
+def _current_source_projection_from_graph(
+    graph: ManifestGraph,
+) -> dict[tuple[str, str], dict[str, object]]:
+    sources = {source["bitstream_id"]: source for source in graph.sources}
     current: dict[tuple[str, str], dict[str, object]] = {}
-    for document in catalog.graph.documents:
+    for document in graph.documents:
         if document["superseded_by"] is not None:
             continue
         bitstream_id = document["bitstream_id"]
@@ -740,6 +975,25 @@ def _remote_bitstream_id(record: ArtifactRecord) -> str | None:
         ) from exc
 
 
+def _remote_source_index(
+    remote_records: tuple[ArtifactRecord, ...],
+) -> dict[tuple[str, str], ArtifactRecord]:
+    if type(remote_records) is not tuple:
+        raise ReconciliationIntegrityError("Remote-Snapshot ist kein Tupel")
+    result: dict[tuple[str, str], ArtifactRecord] = {}
+    for record in remote_records:
+        if type(record) is not ArtifactRecord:
+            raise ReconciliationIntegrityError("Remote-Snapshot enthält keinen ArtifactRecord")
+        bitstream_id = _remote_bitstream_id(record)
+        if bitstream_id is None:
+            continue
+        key = (record.source_id, bitstream_id)
+        if key in result:
+            raise RemoteSnapshotError("Remote-Source/Bitstream ist doppelt")
+        result[key] = record
+    return result
+
+
 def _claims_downloadable_content(record: ArtifactRecord) -> bool:
     return record.state in _DOWNLOADABLE_STATES or any(
         value is not None for value in (record.sha256, record.bytes, record.relative_path)
@@ -749,7 +1003,21 @@ def _claims_downloadable_content(record: ArtifactRecord) -> bool:
 def _metadata_drifts(local: dict[str, object], remote: ArtifactRecord) -> bool:
     if any(local[local_field] != getattr(remote, remote_field) for local_field, remote_field in _METADATA_FIELDS):
         return True
+    if local.get("rights_evidence") != {
+        "label": remote.rights.label,
+        "license_url": remote.rights.uri,
+        "copyright_notice": remote.rights.copyright_notice,
+        "open_access": remote.rights.open_access,
+    }:
+        return True
     return remote.sha256 is not None and local["sha256"] != remote.sha256
+
+
+def _candidate_load_is_justified(local: dict[str, object], remote: ArtifactRecord) -> bool:
+    return any(
+        local[local_field] != getattr(remote, remote_field)
+        for local_field, remote_field in _CANDIDATE_METADATA_FIELDS
+    ) or (remote.sha256 is not None and local["sha256"] != remote.sha256)
 
 
 def _load_candidate_if_available(
@@ -788,6 +1056,181 @@ def _source_finding(
     )
 
 
+def _validate_clock_and_scope(as_of: datetime, from_year: int, to_year: int) -> None:
+    if (
+        type(as_of) is not datetime
+        or as_of.tzinfo is None
+        or as_of.utcoffset() != timedelta(0)
+    ):
+        raise ValueError("as_of muss UTC-aware sein")
+    if as_of.microsecond != 0:
+        raise ValueError("as_of muss auf ganze Sekunden begrenzt sein")
+    if (
+        type(from_year) is not int
+        or type(to_year) is not int
+        or not 1990 <= from_year <= to_year <= 9999
+    ):
+        raise ValueError("Jahresbereich ist ungültig")
+
+
+def _validate_plan_contract(
+    *,
+    as_of: datetime,
+    from_year: int,
+    to_year: int,
+    catalog: LoadedManifestCatalog,
+    remote_records: tuple[ArtifactRecord, ...],
+    adapters: Mapping[StorageBackend, StorageAdapter],
+    period_root: Path,
+    authority: RightsAuthority,
+    policy: RightsPolicy,
+    candidate_loader: CandidateLoader | None,
+) -> None:
+    _validate_clock_and_scope(as_of, from_year, to_year)
+    if (
+        type(catalog) is not LoadedManifestCatalog
+        or type(catalog.graph) is not ManifestGraph
+        or type(catalog.rendered) is not RenderedManifestCatalog
+    ):
+        raise ReconciliationIntegrityError("Manifestkatalog ist ungültig")
+    _remote_source_index(remote_records)
+    for record in remote_records:
+        _remote_record_year(record)
+    _storage_adapters(adapters)
+    if not isinstance(period_root, Path):
+        raise ReconciliationIntegrityError("Periodenwurzel ist ungültig")
+    try:
+        metadata = period_root.lstat()
+    except FileNotFoundError:
+        metadata = None
+    except OSError as exc:
+        raise ReconciliationIntegrityError("Periodenwurzel ist nicht prüfbar") from exc
+    if metadata is not None and (
+        stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode)
+    ):
+        raise ReconciliationIntegrityError("Periodenwurzel ist kein sicheres Verzeichnis")
+    if type(authority) is not RightsAuthority or type(policy) is not RightsPolicy:
+        raise ReconciliationIntegrityError("Rechteautorität oder -policy ist ungültig")
+    if candidate_loader is not None and not callable(candidate_loader):
+        raise ReconciliationIntegrityError("Kandidatenloader ist nicht aufrufbar")
+
+
+def _remote_record_year(record: ArtifactRecord) -> int | None:
+    if record.publication_date is not None:
+        if type(record.publication_date) is not str:
+            raise RemoteSnapshotError("Remote-Publikationsdatum ist ungültig")
+        try:
+            published = date.fromisoformat(record.publication_date)
+        except ValueError as exc:
+            raise RemoteSnapshotError("Remote-Publikationsdatum ist ungültig") from exc
+        if published.isoformat() != record.publication_date:
+            raise RemoteSnapshotError("Remote-Publikationsdatum ist nicht kanonisch")
+        if type(record.year) is not int or record.year != published.year:
+            raise RemoteSnapshotError("Remote-Publikationsjahr widerspricht dem Datum")
+        return published.year
+    if record.year is not None and type(record.year) is not int:
+        raise RemoteSnapshotError("Remote-Publikationsjahr ist ungültig")
+    return record.year
+
+
+def _document_year(document: dict[str, object]) -> int:
+    publication_date = document.get("publication_date")
+    if publication_date is not None:
+        if type(publication_date) is not str:
+            raise ReconciliationIntegrityError("Dokumentdatum ist ungültig")
+        try:
+            published = date.fromisoformat(publication_date)
+        except ValueError as exc:
+            raise ReconciliationIntegrityError("Dokumentdatum ist ungültig") from exc
+        if published.isoformat() != publication_date:
+            raise ReconciliationIntegrityError("Dokumentdatum ist nicht kanonisch")
+        return published.year
+    canonical = document.get("canonical_periods")
+    year = canonical.get("year") if type(canonical) is dict else document.get("year")
+    if type(year) is not int:
+        raise ReconciliationIntegrityError("Dokumentjahr ist ungültig")
+    return year
+
+
+def _scoped_reconciliation_inputs(
+    catalog: LoadedManifestCatalog,
+    remote_records: tuple[ArtifactRecord, ...],
+    *,
+    from_year: int,
+    to_year: int,
+) -> tuple[LoadedManifestCatalog, tuple[ArtifactRecord, ...]]:
+    selected_documents: list[dict[str, object]] = []
+    selected_bitstreams: set[str] = set()
+    selected_document_ids: set[str] = set()
+    selected_paths: set[str] = set()
+    for document in catalog.graph.documents:
+        if type(document) is not dict:
+            raise ReconciliationIntegrityError("Dokumentmanifest ist ungültig")
+        if document.get("superseded_by") is not None:
+            continue
+        if not from_year <= _document_year(document) <= to_year:
+            continue
+        bitstream_id = document.get("bitstream_id")
+        document_id = document.get("document_id")
+        if type(bitstream_id) is not str or type(document_id) is not str:
+            raise ReconciliationIntegrityError("Dokumentidentität ist ungültig")
+        selected_documents.append(document)
+        selected_bitstreams.add(bitstream_id)
+        selected_document_ids.add(document_id)
+        paths = document.get("paths")
+        if type(paths) is dict:
+            selected_paths.update(path for path in paths.values() if type(path) is str)
+
+    selected_sources = tuple(
+        source
+        for source in catalog.graph.sources
+        if source.get("bitstream_id") in selected_bitstreams
+    )
+    selected_source_ids = {
+        source["source_id"] for source in selected_sources if type(source.get("source_id")) is str
+    }
+    selected_conversions = tuple(
+        conversion
+        for conversion in catalog.graph.conversions
+        if conversion.get("document_id") in selected_document_ids
+        and conversion.get("bitstream_id") in selected_bitstreams
+    )
+    selected_conversion_ids = {
+        conversion["conversion_id"]
+        for conversion in selected_conversions
+        if type(conversion.get("conversion_id")) is str
+    }
+    selected_storage = tuple(
+        reference
+        for reference in catalog.graph.storage_references
+        if reference.get("relative_path") in selected_paths
+        and (
+            reference.get("conversion_id") is None
+            or reference.get("conversion_id") in selected_conversion_ids
+        )
+    )
+    scoped_graph = ManifestGraph(
+        sources=selected_sources,
+        documents=tuple(selected_documents),
+        conversions=selected_conversions,
+        storage_references=selected_storage,
+    )
+    scoped_catalog = LoadedManifestCatalog(graph=scoped_graph, rendered=catalog.rendered)
+    scoped_keys = set(_current_source_projection(scoped_catalog))
+    scoped_remote: list[ArtifactRecord] = []
+    for record in remote_records:
+        bitstream_id = _remote_bitstream_id(record)
+        key = None if bitstream_id is None else (record.source_id, bitstream_id)
+        year = _remote_record_year(record)
+        if (
+            (year is not None and from_year <= year <= to_year)
+            or key in scoped_keys
+            or record.source_id in selected_source_ids
+        ):
+            scoped_remote.append(record)
+    return scoped_catalog, tuple(scoped_remote)
+
+
 def build_reconciliation_result(
     *,
     as_of: datetime,
@@ -796,24 +1239,13 @@ def build_reconciliation_result(
     source_manifest_sha256: str,
     findings: Iterable[ReconciliationFinding],
 ) -> ReconciliationResult:
-    if (
-        type(as_of) is not datetime
-        or as_of.tzinfo is None
-        or as_of.utcoffset() != timedelta(0)
-    ):
-        raise ValueError("as_of muss UTC-aware sein")
-    if (
-        type(from_year) is not int
-        or type(to_year) is not int
-        or not 1990 <= from_year <= to_year <= 9999
-    ):
-        raise ValueError("Jahresbereich ist ungültig")
+    _validate_clock_and_scope(as_of, from_year, to_year)
     if type(source_manifest_sha256) is not str or _SHA256.fullmatch(source_manifest_sha256) is None:
         raise ValueError("source_manifest_sha256 muss ein kleingeschriebener SHA-256 sein")
 
     ordered: list[ReconciliationFinding] = []
     keys: set[tuple[str, str, str, str]] = set()
-    source_states: dict[str, set[FindingCode]] = {}
+    subject_states: dict[str, set[FindingCode]] = {}
     counts = {
         "ok": 0,
         "changed": 0,
@@ -830,8 +1262,7 @@ def build_reconciliation_result(
             raise ValueError("Finding-Key ist doppelt")
         keys.add(item.key)
         ordered.append(item)
-        if item.subject_kind is SubjectKind.SOURCE:
-            source_states.setdefault(item.subject_id.partition("#")[0], set()).add(item.code)
+        subject_states.setdefault(item.subject_id, set()).add(item.code)
         if item.code is FindingCode.NEW:
             counts["missing_local"] += 1
         else:
@@ -839,7 +1270,7 @@ def build_reconciliation_result(
         if item.code is not FindingCode.OK:
             counts["unresolved"] += 1
 
-    if any(FindingCode.OK in codes and len(codes) > 1 for codes in source_states.values()):
+    if any(FindingCode.OK in codes and len(codes) > 1 for codes in subject_states.values()):
         raise ValueError("ok darf nicht mit offenem Finding derselben Quelle gemischt werden")
 
     result_counts = ReconciliationCounts(**counts)
@@ -882,27 +1313,54 @@ def plan_reconciliation(
 ) -> ReconciliationResult:
     """Compose deterministic findings from every reconciliation boundary."""
 
+    _validate_plan_contract(
+        as_of=as_of,
+        from_year=from_year,
+        to_year=to_year,
+        catalog=catalog,
+        remote_records=remote_records,
+        adapters=adapters,
+        period_root=period_root,
+        authority=authority,
+        policy=policy,
+        candidate_loader=candidate_loader,
+    )
+    scoped_catalog, scoped_remote_records = _scoped_reconciliation_inputs(
+        catalog,
+        remote_records,
+        from_year=from_year,
+        to_year=to_year,
+    )
+    checked_adapters = _storage_adapters(adapters)
     component_findings = (
-        compare_remote_sources(catalog, remote_records, candidate_loader=candidate_loader),
-        reconcile_storage(catalog.graph, adapters),
-        reconcile_rights(catalog.graph, authority=authority, policy=policy),
-        reconcile_periods(catalog.graph, period_root),
+        compare_remote_sources(
+            scoped_catalog,
+            scoped_remote_records,
+            candidate_loader=candidate_loader,
+        ),
+        reconcile_storage(scoped_catalog.graph, checked_adapters),
+        reconcile_rights(scoped_catalog.graph, authority=authority, policy=policy),
+        reconcile_periods(scoped_catalog.graph, period_root),
     )
     findings_by_key: dict[tuple[str, str, str, str], ReconciliationFinding] = {}
     for findings in component_findings:
         for item in findings:
-            findings_by_key.setdefault(item.key, item)
+            if item.key in findings_by_key:
+                raise ReconciliationIntegrityError("Finding-Key ist doppelt")
+            findings_by_key[item.key] = item
 
-    open_source_subjects = {
+    open_subjects = {
         item.subject_id
         for item in findings_by_key.values()
-        if item.code is not FindingCode.OK and item.subject_kind is SubjectKind.SOURCE
+        if item.code is not FindingCode.OK
     }
-    for source_id, bitstream_id in _current_source_projection(catalog):
+    for source_id, bitstream_id in _current_source_projection(scoped_catalog):
         subject_id = source_subject_id(source_id, bitstream_id)
-        if subject_id not in open_source_subjects:
+        if subject_id not in open_subjects:
             item = _source_finding(FindingCode.OK, subject_id, "Quelle stimmt mit allen Prüfungen überein")
-            findings_by_key.setdefault(item.key, item)
+            if item.key in findings_by_key:
+                raise ReconciliationIntegrityError("Finding-Key ist doppelt")
+            findings_by_key[item.key] = item
 
     source_files = [
         payload
@@ -1107,42 +1565,65 @@ class _FixtureAdapter:
         return (self.reference,)
 
 
+def _fixture_root_read_hook(_root: Path, _root_fd: int) -> None:
+    """Test seam for deterministic fixture replacement races."""
+
+
 def _fixture_payload(root: Path) -> dict[str, object]:
     fixture = Path(root)
     try:
-        metadata = fixture.lstat()
-        if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-            raise FixtureValidationError("Fixture-Verzeichnis ist ungültig")
-        names = {entry.name for entry in fixture.iterdir()}
-        if names != {"fixture.json"}:
-            raise FixtureValidationError("Fixture-Verzeichnis ist nicht strikt")
-        path = fixture / "fixture.json"
-        metadata = path.lstat()
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-            raise FixtureValidationError("Fixture-Datei ist ungültig")
-        descriptor = os.open(
-            path,
-            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
-        )
-        try:
-            opened = os.fstat(descriptor)
-            if not stat.S_ISREG(opened.st_mode):
+        with open_root_directory(fixture) as root_fd:
+            root_initial = os.fstat(root_fd)
+            if set(os.listdir(root_fd)) != {"fixture.json"}:
+                raise FixtureValidationError("Fixture-Verzeichnis ist nicht strikt")
+            initial = os.stat("fixture.json", dir_fd=root_fd, follow_symlinks=False)
+            if stat.S_ISLNK(initial.st_mode) or not stat.S_ISREG(initial.st_mode):
                 raise FixtureValidationError("Fixture-Datei ist ungültig")
-            if opened.st_size > _FIXTURE_MAX_BYTES:
-                raise FixtureValidationError("Fixture-Datei ist zu groß")
-            chunks: list[bytes] = []
-            size = 0
-            while True:
-                chunk = os.read(descriptor, min(8192, _FIXTURE_MAX_BYTES + 1 - size))
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                size += len(chunk)
-                if size > _FIXTURE_MAX_BYTES:
+            _fixture_root_read_hook(fixture, root_fd)
+            descriptor = os.open(
+                "fixture.json",
+                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=root_fd,
+            )
+            try:
+                opened = os.fstat(descriptor)
+                if not stat.S_ISREG(opened.st_mode):
+                    raise FixtureValidationError("Fixture-Datei ist ungültig")
+                if (opened.st_dev, opened.st_ino) != (initial.st_dev, initial.st_ino):
+                    raise FixtureValidationError("Fixture-Datei änderte sich beim Lesen")
+                if opened.st_size > _FIXTURE_MAX_BYTES:
                     raise FixtureValidationError("Fixture-Datei ist zu groß")
-            payload = b"".join(chunks)
-        finally:
-            os.close(descriptor)
+                chunks: list[bytes] = []
+                size = 0
+                while True:
+                    chunk = os.read(descriptor, min(8192, _FIXTURE_MAX_BYTES + 1 - size))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size > _FIXTURE_MAX_BYTES:
+                        raise FixtureValidationError("Fixture-Datei ist zu groß")
+                payload = b"".join(chunks)
+                opened_final = os.fstat(descriptor)
+            finally:
+                os.close(descriptor)
+            final = os.stat("fixture.json", dir_fd=root_fd, follow_symlinks=False)
+            compared_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            if any(getattr(value, field) != getattr(initial, field) for value in (opened_final, final) for field in compared_fields):
+                raise FixtureValidationError("Fixture-Datei änderte sich beim Lesen")
+            if set(os.listdir(root_fd)) != {"fixture.json"}:
+                raise FixtureValidationError("Fixture-Verzeichnis änderte sich beim Lesen")
+            root_final = os.fstat(root_fd)
+            live_root = os.stat(fixture, follow_symlinks=False)
+            if (
+                not stat.S_ISDIR(live_root.st_mode)
+                or stat.S_ISLNK(live_root.st_mode)
+                or (root_initial.st_dev, root_initial.st_ino)
+                != (root_final.st_dev, root_final.st_ino)
+                or (root_initial.st_dev, root_initial.st_ino)
+                != (live_root.st_dev, live_root.st_ino)
+            ):
+                raise FixtureValidationError("Fixture-Verzeichnis änderte sich beim Lesen")
     except (OSError, ValueError) as exc:
         raise FixtureValidationError("Fixture-Datei ist nicht lesbar") from exc
     if len(payload) > _FIXTURE_MAX_BYTES:

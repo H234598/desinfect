@@ -196,6 +196,26 @@ def test_fixture_loader_reads_to_eof_after_short_reads(monkeypatch: pytest.Monke
     assert calls > 1
 
 
+def test_fixture_loader_rejects_root_swap_during_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = tmp_path / "fixture"
+    replacement = tmp_path / "replacement"
+    moved = tmp_path / "moved"
+    shutil.copytree(FIXTURE, fixture)
+    shutil.copytree(FIXTURE, replacement)
+
+    def swap_root(root: Path, _root_fd: int) -> None:
+        root.rename(moved)
+        replacement.rename(root)
+
+    monkeypatch.setattr(reconciliation, "_fixture_root_read_hook", swap_root, raising=False)
+
+    with pytest.raises(reconciliation.FixtureValidationError):
+        reconciliation._fixture_payload(fixture)
+
+
 def test_cli_does_not_normalize_unrelated_value_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(reconciliation, "_reconcile_fixture", lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bug")))
 

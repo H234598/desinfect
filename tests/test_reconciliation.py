@@ -167,7 +167,14 @@ def storage_graph(
                 "rights": {"state": rights_state},
             },
         ),
-        documents=(),
+        documents=(
+            {
+                "source_id": _RECONCILIATION_SOURCE_ID,
+                "document_id": _RECONCILIATION_DOCUMENT_ID,
+                "bitstream_id": _RECONCILIATION_BITSTREAM_ID,
+                "superseded_by": None,
+            },
+        ),
         conversions=(),
         storage_references=tuple(reference.to_dict() for reference in references),
     )
@@ -307,8 +314,17 @@ def test_period_completeness_emits_one_canonical_finding_per_affected_period(
     findings = reconcile_periods(partial_graph, root)
 
     assert [(item.code, item.subject_id) for item in findings] == [
-        (FindingCode.MISSING_LOCAL, "year:2026"),
+        (FindingCode.MISSING_LOCAL, source_subject_id(partial["source_id"], partial["bitstream_id"])),
+        (FindingCode.MISSING_LOCAL, source_subject_id(second["source_id"], second["bitstream_id"])),
     ]
+    result = build_reconciliation_result(
+        as_of=_RECONCILIATION_AS_OF,
+        from_year=2026,
+        to_year=2026,
+        source_manifest_sha256="a" * 64,
+        findings=findings,
+    )
+    assert result.counts.missing_local == result.counts.unresolved == 2
 
 
 @pytest.mark.parametrize(
@@ -366,6 +382,7 @@ def test_period_completeness_classifies_missing_and_changed_publications(
         manifest = json.loads(week.read_bytes())
         bundle = root / manifest["archives"][0]["relative_bundle"]
         if mutation == "missing-bundle":
+            relative_path = manifest["archives"][0]["relative_bundle"]
             bundle.rename(tmp_path / "missing-bundle")
         elif mutation == "corrupt-bundle":
             (bundle / "archive.zip").write_bytes(b"corrupt")
@@ -396,11 +413,93 @@ def test_period_completeness_classifies_missing_and_changed_publications(
         (
             code,
             SubjectKind.PERIOD,
-            f"{Path(relative_path).parent.name}:{Path(relative_path).stem}",
+            source_subject_id(graph.documents[-1]["source_id"], graph.documents[-1]["bitstream_id"]),
             relative_path,
         )
     ]
     assert str(tmp_path) not in findings[0].message
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("version", "doi", "publication-date-and-month-link"),
+)
+def test_period_expected_document_rows_reject_coherent_manifest_tampering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    graph, root = _period_fixture(tmp_path, monkeypatch)
+    year = _period_manifest(root, "year", "2026")
+
+    def tamper(manifest: dict[str, object]) -> None:
+        row = manifest["documents"][0]
+        if mutation == "version":
+            row["version"] += 1
+        elif mutation == "doi":
+            row["doi"] = "10.1234/coherent-tamper"
+        else:
+            row["publication_date"] = "2026-08-10"
+            manifest["month_manifests"] = [
+                "rki/Bulletins/Manifeste/Archive/month/2026-08.json"
+            ]
+
+    _rewrite_period_manifest(year, tamper)
+
+    findings = reconcile_periods(graph, root)
+
+    owner = source_subject_id(
+        graph.documents[-1]["source_id"],
+        graph.documents[-1]["bitstream_id"],
+    )
+    assert [(item.code, item.subject_id, item.relative_path) for item in findings] == [
+        (
+            FindingCode.CHANGED,
+            owner,
+            "rki/Bulletins/Manifeste/Archive/year/2026.json",
+        ),
+    ]
+
+
+def test_period_expected_archive_spec_binds_storage_member_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph, root = _period_fixture(tmp_path, monkeypatch)
+    current = graph.documents[-1]
+    old_pdf_path = current["paths"]["pdf"]
+    new_pdf_path = str(Path(old_pdf_path).with_name("renamed-source.pdf"))
+    changed_document = {
+        **current,
+        "paths": {**current["paths"], "pdf": new_pdf_path},
+    }
+    changed_references = tuple(
+        {
+            **reference,
+            "relative_path": new_pdf_path,
+        }
+        if reference["relative_path"] == old_pdf_path
+        else reference
+        for reference in graph.storage_references
+    )
+    changed_graph = ManifestGraph(
+        sources=graph.sources,
+        documents=(*graph.documents[:-1], changed_document),
+        conversions=graph.conversions,
+        storage_references=changed_references,
+    )
+
+    findings = reconcile_periods(changed_graph, root)
+
+    owner = source_subject_id(current["source_id"], current["bitstream_id"])
+    assert {(item.code, item.subject_id) for item in findings} == {
+        (FindingCode.CHANGED, owner),
+    }
+    assert {item.relative_path for item in findings} == {
+        "rki/Bulletins/Manifeste/Archive/week/2026-W28.json",
+        "rki/Bulletins/Manifeste/Archive/month/2026-07.json",
+        "rki/Bulletins/Manifeste/Archive/year/2026.json",
+    }
 
 
 @pytest.mark.parametrize(
@@ -419,7 +518,10 @@ def test_storage_missing_adapter_or_reference_is_missing_local(adapters, failure
     findings = reconcile_storage(storage_graph(reference), adapters)
 
     assert [(item.code, item.subject_id) for item in findings] == [
-        (FindingCode.MISSING_LOCAL, "artifact-a"),
+        (
+            FindingCode.MISSING_LOCAL,
+            source_subject_id(_RECONCILIATION_SOURCE_ID, _RECONCILIATION_BITSTREAM_ID),
+        ),
     ]
 
 
@@ -446,8 +548,89 @@ def test_storage_inventory_extra_reference_is_orphan() -> None:
     findings = reconcile_storage(storage_graph(reference), {StorageBackend.LFS: adapter})
 
     assert [(item.code, item.subject_id) for item in findings] == [
+        (
+            FindingCode.ORPHAN,
+            source_subject_id(_RECONCILIATION_SOURCE_ID, _RECONCILIATION_BITSTREAM_ID),
+        ),
+    ]
+
+
+def test_storage_ownerless_orphan_uses_artifact_identity() -> None:
+    reference = storage_reference()
+    extra = replace(
+        storage_reference("orphan-a"),
+        source_id=None,
+        source_sha256=None,
+        document_id=None,
+        decision_sha256=None,
+        provenance_state="legacy_needs_review",
+    )
+    adapter = RecordingAdapter(StorageBackend.LFS, (extra,), {})
+
+    findings = reconcile_storage(storage_graph(reference), {StorageBackend.LFS: adapter})
+
+    assert [(item.code, item.subject_id) for item in findings] == [
         (FindingCode.ORPHAN, "orphan-a"),
     ]
+
+
+def test_storage_failures_emit_one_finding_per_compound_owner() -> None:
+    first = storage_reference("artifact-a")
+    second = replace(
+        storage_reference("artifact-b"),
+        source_id="rki:176904/900000002",
+        source_sha256="e" * 64,
+        document_id="rki-176904-900000002-v1",
+    )
+    graph = ManifestGraph(
+        sources=(
+            storage_graph().sources[0],
+            {
+                "source_id": second.source_id,
+                "sha256": second.source_sha256,
+                "bitstream_id": "rki-bitstream-" + "e" * 64,
+                "decision_sha256": second.decision_sha256,
+                "rights": {"state": second.rights_state},
+            },
+        ),
+        documents=(
+            storage_graph().documents[0],
+            {
+                "source_id": second.source_id,
+                "document_id": second.document_id,
+                "bitstream_id": "rki-bitstream-" + "e" * 64,
+                "superseded_by": None,
+            },
+        ),
+        conversions=(),
+        storage_references=(first.to_dict(), second.to_dict()),
+    )
+    adapter = RecordingAdapter(
+        StorageBackend.LFS,
+        (),
+        {first.artifact_id: StorageError("first"), second.artifact_id: StorageError("second")},
+    )
+
+    findings = reconcile_storage(graph, {StorageBackend.LFS: adapter})
+
+    assert [(item.code, item.subject_id) for item in findings] == [
+        (
+            FindingCode.CHANGED,
+            source_subject_id(_RECONCILIATION_SOURCE_ID, _RECONCILIATION_BITSTREAM_ID),
+        ),
+        (
+            FindingCode.CHANGED,
+            source_subject_id(second.source_id, "rki-bitstream-" + "e" * 64),
+        ),
+    ]
+    result = build_reconciliation_result(
+        as_of=_RECONCILIATION_AS_OF,
+        from_year=2026,
+        to_year=2026,
+        source_manifest_sha256="a" * 64,
+        findings=findings,
+    )
+    assert result.counts.changed == result.counts.unresolved == 2
 
 
 def test_storage_reconciliation_matches_legacy_lfs_inventory_by_path(
@@ -614,6 +797,41 @@ def test_rights_unchanged_approved_decision_has_no_finding(
     ) == ()
 
 
+def test_rights_ignores_historical_superseded_sources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority, policy, decision = _rights_authority(
+        tmp_path, monkeypatch, state=RightsState.APPROVED
+    )
+    assert decision.decision_sha256 is not None
+    current = storage_graph(
+        storage_reference(decision_sha256=decision.decision_sha256),
+        decision_sha256=decision.decision_sha256,
+    )
+    historical_source = {
+        "source_id": "rki:176904/900000099",
+        "sha256": "9" * 64,
+        "bitstream_id": "rki-bitstream-" + "9" * 64,
+        "decision_sha256": "f" * 64,
+        "rights": {"state": "approved"},
+    }
+    historical_document = {
+        "source_id": historical_source["source_id"],
+        "document_id": "rki-176904-900000099-v1",
+        "bitstream_id": historical_source["bitstream_id"],
+        "superseded_by": "rki-176904-900000099-v2",
+    }
+    graph = ManifestGraph(
+        sources=(*current.sources, historical_source),
+        documents=(*current.documents, historical_document),
+        conversions=(),
+        storage_references=current.storage_references,
+    )
+
+    assert reconcile_rights(graph, authority=authority, policy=policy) == ()
+
+
 def test_rights_contract_error_is_path_free_integrity_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -732,6 +950,17 @@ def test_result_rejects_noncanonical_metadata(
             findings=(finding(FindingCode.OK, "source-a"),),
         )
 
+
+def test_result_rejects_fractional_utc_timestamp() -> None:
+    with pytest.raises(ValueError, match="Sekunden"):
+        build_reconciliation_result(
+            as_of=datetime(2026, 8, 4, 4, 0, 0, 1, tzinfo=timezone.utc),
+            from_year=1996,
+            to_year=2026,
+            source_manifest_sha256="a" * 64,
+            findings=(finding(FindingCode.OK, "source-a"),),
+        )
+
 def test_result_rejects_duplicate_finding_keys() -> None:
     item = finding(FindingCode.OK, "source-a")
 
@@ -745,7 +974,24 @@ def test_result_rejects_duplicate_finding_keys() -> None:
         )
 
 
-def test_result_rejects_ok_mixed_with_unresolved_finding_for_source() -> None:
+def test_result_groups_ok_conflicts_by_full_compound_subject() -> None:
+    first = source_subject_id("source-a", "bitstream-a")
+    second = source_subject_id("source-a", "bitstream-b")
+
+    result = build_reconciliation_result(
+        as_of=datetime(2026, 8, 4, 4, 0, tzinfo=timezone.utc),
+        from_year=1996,
+        to_year=2026,
+        source_manifest_sha256="a" * 64,
+        findings=(
+            finding(FindingCode.OK, first),
+            finding(FindingCode.CHANGED, second),
+        ),
+    )
+
+    assert result.counts.ok == 1
+    assert result.counts.changed == 1
+
     with pytest.raises(ValueError, match="ok"):
         build_reconciliation_result(
             as_of=datetime(2026, 8, 4, 4, 0, tzinfo=timezone.utc),
@@ -753,8 +999,8 @@ def test_result_rejects_ok_mixed_with_unresolved_finding_for_source() -> None:
             to_year=2026,
             source_manifest_sha256="a" * 64,
             findings=(
-                finding(FindingCode.OK, source_subject_id("source-a", "bitstream-a")),
-                finding(FindingCode.CHANGED, source_subject_id("source-a", "bitstream-b")),
+                finding(FindingCode.OK, first),
+                finding(FindingCode.CHANGED, first),
             ),
         )
 
@@ -824,8 +1070,8 @@ def test_plan_reconciliation_composes_empty_consistent_snapshot(tmp_path: Path) 
 
     result = plan_reconciliation(
         as_of=_RECONCILIATION_AS_OF,
-        from_year=1996,
-        to_year=1996,
+        from_year=2026,
+        to_year=2026,
         catalog=catalog,
         remote_records=(),
         adapters={},
@@ -842,7 +1088,7 @@ def test_plan_reconciliation_composes_empty_consistent_snapshot(tmp_path: Path) 
     ).hexdigest()
 
 
-def test_plan_reconciliation_composes_deduplicated_component_findings(
+def test_plan_reconciliation_rejects_duplicate_component_finding_keys(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -878,35 +1124,18 @@ def test_plan_reconciliation_composes_deduplicated_component_findings(
     monkeypatch.setattr(reconciliation, "reconcile_rights", lambda *_args, **_kwargs: (rights_finding,))
     monkeypatch.setattr(reconciliation, "reconcile_periods", lambda *_args, **_kwargs: (period_finding,))
 
-    result = plan_reconciliation(
-        as_of=_RECONCILIATION_AS_OF,
-        from_year=1996,
-        to_year=1996,
-        catalog=catalog,
-        remote_records=(),
-        adapters={},
-        period_root=tmp_path / "periods",
-        authority=load_rights_authority(),
-        policy=load_rights_policy(),
-    )
-
-    assert [(item.code, item.subject_kind, item.subject_id) for item in result.findings] == [
-        (FindingCode.CHANGED, SubjectKind.SOURCE, source),
-        (FindingCode.CHANGED, SubjectKind.STORAGE, "artifact-a"),
-        (FindingCode.MISSING_LOCAL, SubjectKind.PERIOD, "year:2026"),
-        (FindingCode.RIGHTS_CHANGED, SubjectKind.SOURCE, source),
-    ]
-    assert result.counts == ReconciliationCounts(
-        ok=0,
-        changed=2,
-        missing_remote=0,
-        missing_local=1,
-        orphan=0,
-        rights_changed=1,
-        unresolved=4,
-    )
-    assert result.conclusion == "blocked"
-    assert result.successful_at is None
+    with pytest.raises(ReconciliationIntegrityError, match="doppelt"):
+        plan_reconciliation(
+            as_of=_RECONCILIATION_AS_OF,
+            from_year=2026,
+            to_year=2026,
+            catalog=catalog,
+            remote_records=(),
+            adapters={},
+            period_root=tmp_path / "periods",
+            authority=load_rights_authority(),
+            policy=load_rights_policy(),
+        )
 
 
 def test_plan_reconciliation_adds_ok_for_current_source_without_open_finding(
@@ -924,8 +1153,8 @@ def test_plan_reconciliation_adds_ok_for_current_source_without_open_finding(
 
     result = plan_reconciliation(
         as_of=_RECONCILIATION_AS_OF,
-        from_year=1996,
-        to_year=1996,
+        from_year=2026,
+        to_year=2026,
         catalog=catalog,
         remote_records=(),
         adapters={},
@@ -939,6 +1168,50 @@ def test_plan_reconciliation_adds_ok_for_current_source_without_open_finding(
             FindingCode.OK,
             source,
         ),
+    ]
+
+
+def test_plan_suppresses_ok_for_findings_from_every_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from scripts.rki_pipeline import reconciliation
+
+    catalog = remote_catalog(remote_record())
+    owner = source_subject_id(
+        _RECONCILIATION_SOURCE_ID,
+        catalog.graph.sources[0]["bitstream_id"],
+    )
+    storage_finding = ReconciliationFinding(
+        code=FindingCode.CHANGED,
+        subject_kind=SubjectKind.STORAGE,
+        subject_id=owner,
+        relative_path="rki/Bulletins/Jahre/2026/PDF/artifact-a.pdf",
+        message="storage changed",
+    )
+    monkeypatch.setattr(reconciliation, "compare_remote_sources", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(
+        reconciliation,
+        "reconcile_storage",
+        lambda *_args, **_kwargs: (storage_finding,),
+    )
+    monkeypatch.setattr(reconciliation, "reconcile_rights", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(reconciliation, "reconcile_periods", lambda *_args, **_kwargs: ())
+
+    result = plan_reconciliation(
+        as_of=_RECONCILIATION_AS_OF,
+        from_year=2026,
+        to_year=2026,
+        catalog=catalog,
+        remote_records=(),
+        adapters={},
+        period_root=tmp_path / "periods",
+        authority=load_rights_authority(),
+        policy=load_rights_policy(),
+    )
+
+    assert [(item.code, item.subject_kind, item.subject_id) for item in result.findings] == [
+        (FindingCode.CHANGED, SubjectKind.STORAGE, owner),
     ]
 
 
@@ -1162,6 +1435,9 @@ def remote_record(
         "https://edoc.rki.de/bitstream/handle/176904/900000001/source.pdf?sequence=1"
     ),
     sha256: str | None = LOCAL_SOURCE_SHA256,
+    publication_date: str = "2026-07-10",
+    year: int = 2026,
+    rights: RightsMetadata | None = None,
 ) -> ArtifactRecord:
     version = 2 if item_handle.endswith(".2") else 1
     document_number = item_handle.split("/", 1)[1].split(".", 1)[0]
@@ -1173,10 +1449,11 @@ def remote_record(
         item_handle=item_handle,
         item_url=f"https://edoc.rki.de/handle/{item_handle}",
         title="Synthetic remote bulletin",
-        publication_date="2026-07-10",
-        year=2026,
+        publication_date=publication_date,
+        year=year,
         doi=None,
-        rights=RightsMetadata(
+        rights=rights
+        or RightsMetadata(
             label="Synthetic fixture",
             uri="https://example.invalid/license",
             copyright_notice=None,
@@ -1302,8 +1579,50 @@ def test_remote_bitstream_identity_replacement_is_bounded_changed(tmp_path: Path
     assert [(item.code, item.subject_id) for item in findings] == [
         (
             FindingCode.CHANGED,
-            source_subject_id(replacement.source_id, bitstream_identity(replacement.pdf_url).bitstream_id),
+            source_subject_id(matching.source_id, bitstream_identity(matching.pdf_url).bitstream_id),
         )
+    ]
+
+
+def test_remote_partial_bitstream_replacement_preserves_exact_match_and_changes_unmatched(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from scripts.rki_pipeline import reconciliation
+
+    first = remote_record()
+    second = replace(first, pdf_url=first.pdf_url.replace("sequence=1", "sequence=2"))
+    replacement = replace(first, pdf_url=first.pdf_url.replace("sequence=1", "sequence=3"))
+    calls: list[str] = []
+
+    def loader(record: ArtifactRecord) -> PreparedObject:
+        calls.append(record.pdf_url or "")
+        return candidate_prepared_object(tmp_path, record=record)
+
+    monkeypatch.setattr(reconciliation, "reconcile_storage", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(reconciliation, "reconcile_rights", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(reconciliation, "reconcile_periods", lambda *_args, **_kwargs: ())
+    catalog = remote_catalog(first, second)
+
+    result = plan_reconciliation(
+        as_of=_RECONCILIATION_AS_OF,
+        from_year=2026,
+        to_year=2026,
+        catalog=catalog,
+        remote_records=(first, replacement),
+        adapters={},
+        period_root=tmp_path / "periods",
+        authority=load_rights_authority(),
+        policy=load_rights_policy(),
+        candidate_loader=loader,
+    )
+
+    first_subject = source_subject_id(first.source_id, bitstream_identity(first.pdf_url).bitstream_id)
+    second_subject = source_subject_id(second.source_id, bitstream_identity(second.pdf_url).bitstream_id)
+    assert calls == [replacement.pdf_url]
+    assert [(item.code, item.subject_id) for item in result.findings] == [
+        (FindingCode.CHANGED, second_subject),
+        (FindingCode.OK, first_subject),
     ]
 
 
@@ -1346,10 +1665,11 @@ def test_duplicate_remote_source_bitstream_is_rejected() -> None:
         lambda record: replace(record, version=2),
         lambda record: replace(record, item_url="https://edoc.rki.de/handle/176904/900000001?x=1"),
         lambda record: replace(record, pdf_url=f"{record.pdf_url}&isAllowed=y"),
+        lambda record: replace(record, etag='"changed"'),
         lambda record: replace(record, last_modified="Sat, 11 Jul 2026 00:00:00 GMT"),
         lambda record: replace(record, sha256="a" * 64),
     ),
-    ids=("version", "source-url", "bitstream-url", "last-modified", "supplied-hash"),
+    ids=("version", "source-url", "bitstream-url", "etag", "last-modified", "supplied-hash"),
 )
 def test_remote_metadata_drift_is_changed(tmp_path: Path, changed) -> None:
     matching = remote_record()
@@ -1364,6 +1684,40 @@ def test_remote_metadata_drift_is_changed(tmp_path: Path, changed) -> None:
     findings = compare_remote_sources(catalog, (candidate,), candidate_loader=loader)
 
     assert calls == [candidate.source_id]
+    assert [item.code for item in findings] == [FindingCode.CHANGED]
+
+
+@pytest.mark.parametrize(
+    "changed",
+    (
+        lambda record: replace(record, publication_date="2026-07-11"),
+        lambda record: replace(
+            record,
+            rights=RightsMetadata(
+                label=record.rights.label,
+                uri=record.rights.uri,
+                copyright_notice="Changed notice",
+                open_access=record.rights.open_access,
+            ),
+        ),
+    ),
+    ids=("publication-date", "rights-evidence"),
+)
+def test_metadata_only_drift_does_not_load_candidate(tmp_path: Path, changed) -> None:
+    matching = remote_record()
+    calls: list[str] = []
+
+    def loader(record: ArtifactRecord) -> PreparedObject:
+        calls.append(record.source_id)
+        return candidate_prepared_object(tmp_path, record=record)
+
+    findings = compare_remote_sources(
+        remote_catalog(matching),
+        (changed(matching),),
+        candidate_loader=loader,
+    )
+
+    assert calls == []
     assert [item.code for item in findings] == [FindingCode.CHANGED]
 
 
@@ -1454,3 +1808,160 @@ def test_remote_no_pdf_record_without_content_claim_is_ignored() -> None:
     remote = remote_record(pdf_url=None, sha256=None)
 
     assert compare_remote_sources(remote_catalog(), (remote,)) == ()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("as_of", datetime(2026, 8, 4, 4, 0, 0, 1, tzinfo=timezone.utc)),
+        ("from_year", 2027),
+        ("catalog", object()),
+        ("remote_records", []),
+        ("adapters", []),
+        ("period_root", "periods"),
+        ("authority", object()),
+        ("policy", object()),
+        ("candidate_loader", object()),
+    ),
+)
+def test_plan_rejects_every_malformed_top_level_input_before_callbacks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    from scripts.rki_pipeline import reconciliation
+
+    callbacks: list[str] = []
+
+    def called(*_args, **_kwargs):
+        callbacks.append("called")
+        return ()
+
+    monkeypatch.setattr(reconciliation, "compare_remote_sources", called)
+    monkeypatch.setattr(reconciliation, "reconcile_storage", called)
+    monkeypatch.setattr(reconciliation, "reconcile_rights", called)
+    monkeypatch.setattr(reconciliation, "reconcile_periods", called)
+    arguments = {
+        "as_of": _RECONCILIATION_AS_OF,
+        "from_year": 2026,
+        "to_year": 2026,
+        "catalog": remote_catalog(),
+        "remote_records": (),
+        "adapters": {},
+        "period_root": tmp_path / "periods",
+        "authority": load_rights_authority(),
+        "policy": load_rights_policy(),
+        "candidate_loader": None,
+    }
+    arguments[field] = value
+
+    with pytest.raises((ValueError, TypeError)):
+        plan_reconciliation(**arguments)
+
+    assert callbacks == []
+
+
+def test_plan_rejects_invalid_remote_snapshot_before_adapters(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from scripts.rki_pipeline import reconciliation
+
+    record = remote_record()
+    callbacks: list[str] = []
+    monkeypatch.setattr(
+        reconciliation,
+        "reconcile_storage",
+        lambda *_args, **_kwargs: callbacks.append("storage") or (),
+    )
+
+    with pytest.raises(ValueError, match="doppelt"):
+        plan_reconciliation(
+            as_of=_RECONCILIATION_AS_OF,
+            from_year=2026,
+            to_year=2026,
+            catalog=remote_catalog(record),
+            remote_records=(record, record),
+            adapters={},
+            period_root=tmp_path / "periods",
+            authority=load_rights_authority(),
+            policy=load_rights_policy(),
+        )
+
+    assert callbacks == []
+
+
+def test_plan_scope_excludes_out_of_scope_graph_remote_drift_and_candidate_load(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from scripts.rki_pipeline import reconciliation
+
+    current = remote_record()
+    excluded = remote_record(
+        item_handle="176904/900000002",
+        pdf_url="https://edoc.rki.de/bitstream/handle/176904/900000002/source.pdf?sequence=1",
+        publication_date="2025-07-10",
+        year=2025,
+    )
+    catalog = remote_catalog(current, excluded)
+    references = tuple(
+        replace(
+            storage_reference(record.document_id),
+            relative_path=document["paths"]["pdf"],
+            source_id=record.source_id,
+            source_sha256=record.sha256 or "0" * 64,
+            document_id=record.document_id,
+        )
+        for record, document in zip(
+            (current, excluded),
+            catalog.graph.documents,
+            strict=True,
+        )
+    )
+    graph = ManifestGraph(
+        sources=catalog.graph.sources,
+        documents=catalog.graph.documents,
+        conversions=catalog.graph.conversions,
+        storage_references=tuple(reference.to_dict() for reference in references),
+    )
+    catalog = LoadedManifestCatalog(graph=graph, rendered=render_manifest_catalog(graph))
+    storage_graphs: list[ManifestGraph] = []
+    rights_graphs: list[ManifestGraph] = []
+    monkeypatch.setattr(
+        reconciliation,
+        "reconcile_storage",
+        lambda scoped, *_args, **_kwargs: storage_graphs.append(scoped) or (),
+    )
+    monkeypatch.setattr(
+        reconciliation,
+        "reconcile_rights",
+        lambda scoped, *_args, **_kwargs: rights_graphs.append(scoped) or (),
+    )
+    monkeypatch.setattr(reconciliation, "reconcile_periods", lambda *_args, **_kwargs: ())
+    calls: list[str] = []
+
+    result = plan_reconciliation(
+        as_of=_RECONCILIATION_AS_OF,
+        from_year=2026,
+        to_year=2026,
+        catalog=catalog,
+        remote_records=(current, replace(excluded, etag='"drift"')),
+        adapters={},
+        period_root=tmp_path / "periods",
+        authority=load_rights_authority(),
+        policy=load_rights_policy(),
+        candidate_loader=lambda record: calls.append(record.source_id),
+    )
+
+    assert result.conclusion == "success"
+    assert result.counts == ReconciliationCounts(1, 0, 0, 0, 0, 0, 0)
+    assert calls == []
+    assert len(storage_graphs) == len(rights_graphs) == 1
+    for scoped in (*storage_graphs, *rights_graphs):
+        assert [document["document_id"] for document in scoped.documents] == [current.document_id]
+        assert [source["source_id"] for source in scoped.sources] == [current.source_id]
+        assert [reference["document_id"] for reference in scoped.storage_references] == [
+            current.document_id
+        ]

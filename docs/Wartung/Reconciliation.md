@@ -20,10 +20,14 @@ Periodenmanifeste.
 5. P07-Periodenmanifest- und Archivvalidatoren: Woche, Monat, Jahr,
    Bundle-Sidecar, ZIP, Checksummen, Fingerprint und Mitgliedsidentitäten.
 
-Die Vergleichskomposition ruft diese Grenzen exakt in dieser Reihenfolge auf:
-Remotequellen, Storage, Rechte, Perioden/Archive. Erst danach werden `ok`-
-Findings ergänzt und Report/Zähler gebaut. Doppelte, unsichere oder
-inkonsistente Eingaben brechen fail-closed ab, bevor ein Vergleich startet.
+Zeit, Bereich, Top-Level-Typen, Remotesnapshot und Periodenroot werden zuerst
+vollständig validiert. Danach wird der Manifestgraph auf aktuelle,
+nicht-supersedierte Dokumente im angeforderten Jahresbereich eingeschränkt;
+zugehörige Quellen, Konvertierungen, Storage-Referenzen und Remoteeinträge
+folgen dieser Auswahl. Erst dann ruft die Komposition Remotequellen, Storage,
+Rechte und Perioden/Archive in dieser Reihenfolge auf. Ungültige Eingaben
+brechen damit vor Loadern oder Adaptern fail-closed ab. Doppelte Findings aus
+Komponenten brechen beim Zusammenführen ebenfalls fail-closed ab.
 
 ## Findings und Zählung
 
@@ -45,10 +49,12 @@ Subject-Kind, Subject-ID, relativer Pfad. Quellenbezogene Subjects verwenden
 ## Remote- und lokale Prüfung
 
 Remote und lokale aktuelle Quellen verbinden sich exakt über
-`(source_id, bitstream_id)`. Kandidatbytes werden nur geladen, wenn eine bekannte
-Remotequelle in Version, Bitstreamidentität, URL, ETag, Last-Modified,
-Publikationsdatum oder geliefertem Hash driften kann. Stabile Metadaten rufen
-keinen Kandidatenloader auf: Der Spy-Test
+`(source_id, bitstream_id)`. Kandidatbytes werden nur bei byte-relevantem Drift
+einer bekannten Remotequelle geladen: Version, Quell- oder Bitstream-URL,
+Bitstreamidentität, ETag, Last-Modified oder gelieferter SHA-256. Abweichendes
+Publikationsdatum oder abweichende Rechte-Evidenz bleibt Metadaten-`changed` und
+lädt keine Bytes. Stabile Metadaten rufen ebenfalls keinen Kandidatenloader auf:
+Der Spy-Test
 `test_remote_metadata_avoids_blind_candidate_load` belegt dieses
 No-Blind-Download-Verhalten. Auch passende Kandidatbytes heben ein
 Metadaten-`changed` nicht auf.

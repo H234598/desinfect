@@ -279,7 +279,7 @@ _METADATA_FIELDS = (
 )
 ```
 
-Only drifted known records call the loader. Validate returned `PreparedObject.source_id`, `source_sha256`, `document_id`, size, hash, and temp-root containment through its existing type contract. Always retain `changed` for metadata drift even when candidate bytes match.
+Only byte-relevant drift on known records calls the loader: version, source or bitstream URL, bitstream identity, ETag, Last-Modified, or supplied SHA-256. Publication-date and rights-evidence drift never loads candidate bytes. Validate returned `PreparedObject.source_id`, `source_sha256`, `document_id`, size, hash, and temp-root containment through its existing type contract. Always retain `changed` for metadata drift even when candidate bytes match.
 
 Use bounded generic messages such as `"Remote-Metadaten driften"`; never include URL or loader exception text.
 
@@ -628,7 +628,7 @@ assert result.report["source_manifest_sha256"] == hashlib.sha256(
 ).hexdigest()
 ```
 
-Add a single finding from each component and assert exact de-duplication, order, counts, `blocked`, and `successful_at is None`.
+Add a single finding from each component and assert order, counts, `blocked`, and `successful_at is None`. Add an exact duplicate finding key from two components and assert fail-closed rejection.
 
 - [ ] **Step 2: Run composition tests and confirm RED**
 
@@ -802,7 +802,7 @@ git commit -m "feat(p07): add offline reconciliation CLI"
 **Files:**
 - Create: `docs/Wartung/Reconciliation.md`
 - Create: `runbooks/RKI-SOURCE-CHANGED.md`
-- Modify: `.github/workflows/baseline.yml`
+- Modify: `.github/workflows/p00-baseline.yml`
 - Modify: `scripts/validate_all_baseline.py`
 - Modify: `docs/IMPLEMENTIERUNGSPLAN-STEUERUNG.md` only after feature merge, in separate governance PR
 - Modify: `docs/implementation-status.json` only after feature merge, in separate governance PR
@@ -887,7 +887,7 @@ Expected: all pass and worktree contains only intended P07.3 files.
 - [ ] **Step 5: Commit Task 7**
 
 ```bash
-git add docs/Wartung/Reconciliation.md runbooks/RKI-SOURCE-CHANGED.md .github/workflows/baseline.yml scripts/validate_all_baseline.py
+git add docs/Wartung/Reconciliation.md runbooks/RKI-SOURCE-CHANGED.md .github/workflows/p00-baseline.yml scripts/validate_all_baseline.py
 git commit -m "docs(p07): document reconciliation operations"
 ```
 
