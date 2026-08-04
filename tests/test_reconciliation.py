@@ -11,6 +11,7 @@ from scripts.rki_pipeline.reconciliation import (
     FindingCode,
     ReconciliationCounts,
     ReconciliationFinding,
+    RemoteSnapshotError,
     SubjectKind,
     build_reconciliation_result,
     compare_remote_sources,
@@ -469,3 +470,36 @@ def test_remote_downloadable_record_needs_canonical_pdf_identity() -> None:
 
     with pytest.raises(ValueError, match="Bitstream"):
         compare_remote_sources(remote_catalog(remote_record()), (remote,))
+
+
+@pytest.mark.parametrize(
+    "state",
+    (RecordState.PLANNED, RecordState.EXISTING, RecordState.DOWNLOADED, RecordState.RESUMED),
+)
+def test_remote_download_claim_without_pdf_url_is_rejected(state: RecordState) -> None:
+    remote = replace(remote_record(pdf_url=None, sha256=None), state=state)
+
+    with pytest.raises(RemoteSnapshotError, match="PDF"):
+        compare_remote_sources(remote_catalog(), (remote,))
+
+
+@pytest.mark.parametrize(
+    "claim",
+    (
+        {"sha256": LOCAL_SOURCE_SHA256},
+        {"bytes": 0},
+        {"relative_path": "Jahre/2026/PDF/source.pdf"},
+    ),
+    ids=("hash", "bytes", "path"),
+)
+def test_remote_content_claim_without_pdf_url_is_rejected(claim: dict[str, object]) -> None:
+    remote = replace(remote_record(pdf_url=None, sha256=None), **claim)
+
+    with pytest.raises(RemoteSnapshotError, match="PDF"):
+        compare_remote_sources(remote_catalog(), (remote,))
+
+
+def test_remote_no_pdf_record_without_content_claim_is_ignored() -> None:
+    remote = remote_record(pdf_url=None, sha256=None)
+
+    assert compare_remote_sources(remote_catalog(), (remote,)) == ()

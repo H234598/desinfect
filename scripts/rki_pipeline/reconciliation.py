@@ -9,7 +9,7 @@ import re
 from typing import Callable, Iterable, TypeAlias
 import unicodedata
 
-from scripts.rki_grabber.models import ArtifactRecord
+from scripts.rki_grabber.models import ArtifactRecord, RecordState
 from scripts.rki_pipeline.documents import DocumentIdentityError, bitstream_identity
 from scripts.rki_pipeline.io_utils import normalize_posix_path, stable_json_dumps
 from scripts.rki_pipeline.manifests import LoadedManifestCatalog
@@ -28,6 +28,18 @@ _METADATA_FIELDS = (
 )
 
 CandidateLoader: TypeAlias = Callable[[ArtifactRecord], PreparedObject]
+_DOWNLOADABLE_STATES = frozenset(
+    {
+        RecordState.PLANNED,
+        RecordState.EXISTING,
+        RecordState.DOWNLOADED,
+        RecordState.RESUMED,
+    }
+)
+
+
+class RemoteSnapshotError(ValueError):
+    """A remote record cannot be compared safely."""
 
 
 class FindingCode(StrEnum):
@@ -197,11 +209,21 @@ def _current_source_projection(
 
 def _remote_bitstream_id(record: ArtifactRecord) -> str | None:
     if record.pdf_url is None:
+        if _claims_downloadable_content(record):
+            raise RemoteSnapshotError("Remote-Record mit Downloadanspruch hat keine PDF-URL")
         return None
     try:
         return bitstream_identity(record.pdf_url).bitstream_id
     except DocumentIdentityError as exc:
-        raise ValueError("Remote-Record hat keine kanonische PDF-Bitstream-Identität") from exc
+        raise RemoteSnapshotError(
+            "Remote-Record hat keine kanonische PDF-Bitstream-Identität"
+        ) from exc
+
+
+def _claims_downloadable_content(record: ArtifactRecord) -> bool:
+    return record.state in _DOWNLOADABLE_STATES or any(
+        value is not None for value in (record.sha256, record.bytes, record.relative_path)
+    )
 
 
 def _metadata_drifts(local: dict[str, object], remote: ArtifactRecord) -> bool:
