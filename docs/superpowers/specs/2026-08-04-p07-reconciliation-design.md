@@ -62,6 +62,8 @@ Inputs outside the requested year scope are ignored. Duplicate remote identities
 
 A `ReconciliationFinding` has a stable code, subject kind, subject ID, optional canonical relative path, and bounded diagnostic message. Findings sort by code, subject kind, subject ID, then path. Payload bytes, tokens, absolute paths, and remote response bodies never enter a finding.
 
+Every finding tied to a known source/bitstream uses the same canonical subject ID `<source_id>#<bitstream_id>`, including its storage, rights, period, and archive findings. An orphan without a graph owner uses its artifact ID. This lets composition emit exactly one `ok` finding only when the complete source/bitstream has no finding from any authority.
+
 Stable detail codes:
 
 - `new`: remote source/bitstream does not exist in the local manifest graph;
