@@ -10,7 +10,7 @@ P08.1 plant interne Bark-Statusupdates. Es erzeugt weder Git-Commits noch Issues
 
 ## Fälligkeit und Cooldown
 
-`WATCHDOG_INTERVAL_DAYS` muss zwischen 7 und 55 liegen; Betriebsdefault ist 45. `last_reset_at` und `next_bark_at` werden gemeinsam gesetzt. Vor `next_bark_at` entsteht kein Plan. Ab Fälligkeit entsteht genau ein Plan; dessen Projektion setzt `next_bark_at` auf Auswertungszeit plus Intervall. Dadurch entstehen weder tägliche Wiederholungen noch nachgeholte Bark-Bursts.
+Das in `status.json` persistierte `watchdog.interval_days` muss zwischen 7 und 55 liegen und ist für P08.1 maßgeblich; Reset-Default ist 45. `last_reset_at` und `next_bark_at` werden gemeinsam gesetzt. Vor `next_bark_at` entsteht kein Plan. Ab Fälligkeit entsteht genau ein Plan; dessen Projektion setzt `next_bark_at` auf Auswertungszeit plus Intervall. Dadurch entstehen weder tägliche Wiederholungen noch nachgeholte Bark-Bursts.
 
 ## Reset
 
@@ -39,4 +39,4 @@ Ungültige Intervalle, Zeitstempel, teilweise initialisierte Zustände, Zukunfts
 
 ## Benutzeraktion
 
-Repositoryvariable `WATCHDOG_INTERVAL_DAYS=45` setzen. Abweichende Werte nur innerhalb 7–55 verwenden. GitHub-App- und Cloudflare-Konfiguration folgen in P09.
+Für P08.1 ist keine Repositoryvariable zu setzen. Der persistierte Statuswert ist maßgeblich; `WATCHDOG_INTERVAL_DAYS` darf erst als wirksam dokumentiert werden, wenn ein späterer ausführbarer Aufrufer ihn tatsächlich einliest. GitHub-App- und Cloudflare-Konfiguration bleiben P09 vorbehalten.

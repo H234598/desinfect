@@ -85,7 +85,7 @@ All functions validate input and returned status documents. They return deep cop
 
 `interval_days` must be a real integer in inclusive range 7–55. Boolean values are rejected. The persisted status value is authoritative while planning.
 
-An unarmed watchdog has both `last_reset_at` and `next_bark_at` null. Planning returns `None`. A partially armed pair is invalid. For an armed watchdog, `next_bark_at` must equal `last_reset_at + interval_days`; inconsistent persisted state fails closed.
+An unarmed watchdog has both `last_reset_at` and `next_bark_at` null. Planning returns `None`. A partially armed pair is invalid. For an armed watchdog, the schedule anchor is `last_bark_at` when it is non-null and at or after `last_reset_at`; otherwise the anchor is `last_reset_at`. `next_bark_at` must equal that anchor plus `interval_days`; inconsistent persisted state fails closed.
 
 Planning returns `None` while `as_of < next_bark_at`. It returns exactly one `BarkPlan` when `as_of >= next_bark_at`. The plan advances the next deadline to `as_of + interval_days`, not to the old deadline plus repeated intervals; one delayed evaluation therefore creates one bark, never a catch-up burst.
 
@@ -97,7 +97,7 @@ At a due evaluation, each pipeline clock is reported independently in stable ord
 
 A non-null clock is stale when it is older than `as_of - interval_days`. Future timestamps fail closed. If no clock is missing or stale but the persisted watchdog deadline is due, cause is `scheduled_keepalive`.
 
-`repeated` is true only when a prior `last_bark_at` exists at or after the latest reset. A bark before the latest reset is historical and does not count as repeated escalation.
+`repeated` uses the same anchor condition: it is true only when a prior `last_bark_at` exists at or after the latest reset. A bark before the latest reset is historical and does not count as repeated escalation.
 
 ## Commit message plan
 

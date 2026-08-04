@@ -84,6 +84,19 @@ def test_watchdog_does_not_bark_after_44_days_and_barks_at_deadline() -> None:
     assert plan.repeated is False
 
 
+def test_applied_bark_schedules_repeated_bark_one_interval_later() -> None:
+    value = armed_status()
+    first_plan = plan_watchdog(value, as_of=DUE)
+    assert first_plan is not None
+    applied = apply_bark(value, first_plan)
+
+    second_plan = plan_watchdog(applied, as_of=first_plan.next_bark_at)
+
+    assert second_plan is not None
+    assert second_plan.repeated is True
+    assert second_plan.next_bark_at == "2026-12-02T04:31:12Z"
+
+
 def test_fractional_due_plan_round_trips_through_apply() -> None:
     due = "2026-09-03T04:31:12.500000Z"
     value = armed_status()
@@ -135,10 +148,11 @@ def test_missing_and_stale_clocks_are_reported_in_stable_order() -> None:
 
 
 def test_prior_bark_after_reset_marks_repeated_escalation() -> None:
-    plan = plan_watchdog(
-        armed_status(last_bark_at="2026-08-01T00:00:00Z"),
-        as_of=DUE,
-    )
+    value = armed_status(last_bark_at="2026-08-01T00:00:00Z")
+    value["watchdog"]["next_bark_at"] = "2026-09-15T00:00:00Z"
+
+    plan = plan_watchdog(value, as_of="2026-09-15T00:00:00Z")
+
     assert plan is not None
     assert plan.repeated is True
 
@@ -147,7 +161,7 @@ def test_prior_bark_after_reset_marks_repeated_escalation() -> None:
 def test_interval_outside_safe_range_is_rejected(interval_days: object) -> None:
     value = armed_status()
     value["watchdog"]["interval_days"] = interval_days
-    with pytest.raises(WatchdogError, match="7..55"):
+    with pytest.raises(WatchdogError, match=r"7\.\.55"):
         plan_watchdog(value, as_of=DUE)
 
 

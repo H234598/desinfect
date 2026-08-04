@@ -183,13 +183,14 @@ def plan_watchdog(status: dict[str, Any], *, as_of: str) -> BarkPlan | None:
         raise WatchdogError("last_reset_at und next_bark_at müssen gemeinsam gesetzt sein")
     reset = _utc(reset_raw, "last_reset_at")
     deadline = _utc(next_raw, "next_bark_at")
-    if deadline != _shift_days(reset, interval):
+    repeated = bark is not None and bark >= reset
+    anchor = bark if repeated else reset
+    if deadline != _shift_days(anchor, interval):
         raise WatchdogError("next_bark_at stimmt nicht mit Reset und Intervall überein")
     if reset > now or deadline > now:
         if reset > now:
             raise WatchdogError("last_reset_at liegt in der Zukunft")
         return None
-    repeated = bark is not None and bark >= reset
     causes = _clock_causes(pipeline_clocks, now=now, interval=interval)
     next_bark_at = _format_utc(_shift_days(now, interval))
     title, body = _commit_text(
