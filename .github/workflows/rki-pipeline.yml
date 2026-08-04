@@ -64,6 +64,9 @@ jobs:
         with:
           node-version: "24"
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            cloudflare/watchdog/package-lock.json
 
       - name: Install locked dependencies
         shell: bash
@@ -75,6 +78,7 @@ jobs:
           python3 -m pip check
           python3 -m pip install --no-deps --no-build-isolation --editable .
           npm ci --ignore-scripts
+          npm --prefix cloudflare/watchdog ci --ignore-scripts
 
       - name: Install reviewed Poppler runtime
         shell: bash
@@ -154,6 +158,11 @@ jobs:
           python3 -m unittest discover -s tests -p "test_*.py"
           python3 -m pytest -q
           npm test
+          npm --prefix cloudflare/watchdog test
+          npm --prefix cloudflare/watchdog run typecheck
+          npm --prefix cloudflare/watchdog run types:check
+          npm --prefix cloudflare/watchdog run deploy:dry-run
+          npm --prefix cloudflare/watchdog audit --audit-level=high
 
       - name: Require explicit apply confirmation
         if: steps.transaction.outputs.commit_required == 'true'

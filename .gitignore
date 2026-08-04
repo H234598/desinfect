@@ -8,6 +8,10 @@ __pycache__/
 
 # Node
 node_modules/
+.wrangler/
+.dev.vars*
+.env*
+!.env.example
 
 # Generated and local outputs
 build/

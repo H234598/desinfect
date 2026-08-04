@@ -1,0 +1,36 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "desinfect-watchdog",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-04",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "GITHUB_OWNER": "H234598",
+    "GITHUB_REPO": "desinfect",
+    "GITHUB_WORKFLOW_FILE": "rki-dispatcher.yml",
+    "WATCHDOG_INTERVAL_DAYS": "45",
+    "WATCHDOG_GRACE_HOURS": "12",
+    "DISPATCH_COOLDOWN_HOURS": "24"
+  },
+  "triggers": {
+    "crons": ["0 2 * * *"]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "WATCHDOG_COORDINATOR",
+        "class_name": "WatchdogCoordinator"
+      }
+    ]
+  },
+  "exports": {
+    "WatchdogCoordinator": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}
