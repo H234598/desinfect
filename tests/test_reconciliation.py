@@ -4,6 +4,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import os
 from typing import NoReturn
 from pathlib import Path
 
@@ -1012,6 +1013,31 @@ def test_materialize_reconciliation_rejects_different_existing_report(tmp_path: 
     assert ledger.events == []
 
 
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda report: report.update(conclusion="blocked"),
+        lambda report: report.update(as_of="2026-08-04T04:05:07Z"),
+        lambda report: report["counts"].update(ok=2),
+        lambda report: report.update(source_manifest_sha256="b" * 64),
+    ),
+    ids=("conclusion", "as-of", "counts", "source-hash"),
+)
+def test_materialize_reconciliation_rejects_report_inconsistent_with_result(
+    tmp_path: Path,
+    mutate,
+) -> None:
+    result = _successful_reconciliation_result()
+    mutate(result.report)
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+
+    with pytest.raises(ReconciliationIntegrityError, match="Bericht"):
+        materialize_reconciliation(result, temp_root=tmp_path, ledger=ledger)
+
+    assert not (tmp_path / "rki").exists()
+    assert ledger.events == []
+
+
 def test_materialize_reconciliation_rolls_back_atomic_write_error(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1032,6 +1058,62 @@ def test_materialize_reconciliation_rolls_back_atomic_write_error(
 
     assert old.read_bytes() == b"prior report"
     assert not (old.parent / "reconciliation-20260804T040506Z.json").exists()
+    assert ledger.events == []
+
+
+def test_materialize_reconciliation_removes_report_after_postwrite_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from scripts.rki_pipeline import reconciliation
+
+    old = tmp_path / "rki/Bulletins/Manifeste/Reconciliation/reconciliation-20260803T040506Z.json"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"prior report")
+    original = reconciliation.atomic_write_bytes
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+
+    def write_then_fail(*args, **kwargs) -> None:
+        original(*args, **kwargs)
+        raise OSError("injected post-write error")
+
+    monkeypatch.setattr(reconciliation, "atomic_write_bytes", write_then_fail)
+    with pytest.raises(OSError, match="post-write"):
+        materialize_reconciliation(_successful_reconciliation_result(), temp_root=tmp_path, ledger=ledger)
+
+    assert old.read_bytes() == b"prior report"
+    assert not (old.parent / "reconciliation-20260804T040506Z.json").exists()
+    assert ledger.events == []
+
+
+def test_materialize_reconciliation_preserves_concurrent_different_report(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from scripts.rki_pipeline import reconciliation
+
+    original = reconciliation.os.link
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+
+    def create_conflict(source, destination, *args, **kwargs) -> None:
+        descriptor = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o644,
+            dir_fd=kwargs["dst_dir_fd"],
+        )
+        try:
+            os.write(descriptor, b"concurrent different report")
+        finally:
+            os.close(descriptor)
+        original(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(reconciliation.os, "link", create_conflict)
+    with pytest.raises(ReconciliationIntegrityError, match="unveränderlich"):
+        materialize_reconciliation(_successful_reconciliation_result(), temp_root=tmp_path, ledger=ledger)
+
+    target = tmp_path / "rki/Bulletins/Manifeste/Reconciliation/reconciliation-20260804T040506Z.json"
+    assert target.read_bytes() == b"concurrent different report"
     assert ledger.events == []
 
 

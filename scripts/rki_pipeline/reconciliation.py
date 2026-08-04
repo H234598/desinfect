@@ -6,11 +6,13 @@ from datetime import date, datetime, timedelta
 from enum import StrEnum
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import stat
 from typing import Callable, Iterable, Mapping, TypeAlias
 import unicodedata
+import uuid
 
 from scripts.rki_grabber.models import ArtifactRecord, RecordState
 from scripts.rki_pipeline.aggregation import (
@@ -25,8 +27,11 @@ from scripts.rki_pipeline.documents import DocumentIdentityError, bitstream_iden
 from scripts.rki_pipeline.due_tasks import TaskKind
 from scripts.rki_pipeline.io_utils import (
     atomic_write_bytes,
-    ensure_within,
+    fsync_directory_fd,
     normalize_posix_path,
+    open_directory_beneath,
+    open_root_directory,
+    relative_path_beneath,
     stable_json_dumps,
 )
 from scripts.rki_pipeline.manifests import (
@@ -903,33 +908,143 @@ def materialize_reconciliation(
         or result.successful_at.utcoffset() != timedelta(0)
     ):
         raise ReconciliationIntegrityError("Erfolgszeitpunkt muss UTC-aware sein")
-    validate_document("reconciliation-report", result.report)
+    payload = _reconciliation_report_payload(result)
+    root = temp_root.resolve()
     timestamp = result.successful_at.strftime("%Y%m%dT%H%M%SZ")
-    target = temp_root / (
+    target = root / (
         "rki/Bulletins/Manifeste/Reconciliation/"
         f"reconciliation-{timestamp}.json"
     )
-    target = ensure_within(target, temp_root, allow_missing_parents=True)
-    payload = stable_json_dumps(result.report).encode("utf-8") + b"\n"
-    try:
-        metadata = target.stat(follow_symlinks=False)
-    except FileNotFoundError:
-        metadata = None
-    if metadata is not None:
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ReconciliationIntegrityError("Reconciliation-Bericht ist keine reguläre Datei")
-        if target.read_bytes() != payload:
-            raise ReconciliationIntegrityError("Reconciliation-Bericht ist unveränderlich")
-        return ReconciliationMaterialization(result, target, False)
+    changed = _write_immutable_report(target, root=root, payload=payload, ledger=ledger)
+    return ReconciliationMaterialization(result, target, changed)
 
-    atomic_write_bytes(target, payload, allowed_root=temp_root)
-    ledger.record(
-        EffectKind.TEMP_FILE,
-        target.absolute().as_posix(),
-        sha256=hashlib.sha256(payload).hexdigest(),
-        size=len(payload),
+
+def _reconciliation_report_payload(result: ReconciliationResult) -> bytes:
+    validate_document("reconciliation-report", result.report)
+    try:
+        scope = result.report["scope"]
+        from_year = scope["from_year"]
+        to_year = scope["to_year"]
+    except (KeyError, TypeError) as exc:
+        raise ReconciliationIntegrityError("Reconciliation-Bericht ist ungültig") from exc
+    expected = build_reconciliation_result(
+        as_of=result.successful_at,
+        from_year=from_year,
+        to_year=to_year,
+        source_manifest_sha256=result.source_manifest_sha256,
+        findings=result.findings,
     )
-    return ReconciliationMaterialization(result, target, True)
+    if (
+        result.counts != expected.counts
+        or result.conclusion != expected.conclusion
+        or result.successful_at != expected.successful_at
+    ):
+        raise ReconciliationIntegrityError("Reconciliation-Ergebnis ist widersprüchlich")
+    if result.report != expected.report:
+        raise ReconciliationIntegrityError("Reconciliation-Bericht widerspricht dem Ergebnis")
+    return stable_json_dumps(expected.report).encode("utf-8") + b"\n"
+
+
+def _write_immutable_report(
+    target: Path,
+    *,
+    root: Path,
+    payload: bytes,
+    ledger: EffectLedger,
+) -> bool:
+    relative = relative_path_beneath(target, root)
+    with open_root_directory(root, create=True) as root_fd:
+        parent_fd = open_directory_beneath(root_fd, relative.parts[:-1], create=True)
+        try:
+            existing = _read_report_bytes(parent_fd, relative.name)
+            if existing is not None:
+                _require_identical_report(existing, payload)
+                return False
+            temporary_name = f".{relative.name}.{uuid.uuid4().hex}.part"
+            temporary_path = target.with_name(temporary_name)
+            try:
+                atomic_write_bytes(temporary_path, payload, allowed_root=root)
+                try:
+                    os.link(
+                        temporary_name,
+                        relative.name,
+                        src_dir_fd=parent_fd,
+                        dst_dir_fd=parent_fd,
+                        follow_symlinks=False,
+                    )
+                except FileExistsError:
+                    existing = _read_report_bytes(parent_fd, relative.name)
+                    if existing is None:
+                        raise ReconciliationIntegrityError("Reconciliation-Berichtskollision ist unklar")
+                    _require_identical_report(existing, payload)
+                    return False
+                try:
+                    fsync_directory_fd(parent_fd)
+                    ledger.record(
+                        EffectKind.TEMP_FILE,
+                        target.absolute().as_posix(),
+                        sha256=hashlib.sha256(payload).hexdigest(),
+                        size=len(payload),
+                    )
+                except BaseException:
+                    _remove_linked_report(parent_fd, temporary_name, relative.name)
+                    raise
+                return True
+            finally:
+                try:
+                    os.unlink(temporary_name, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    pass
+        finally:
+            os.close(parent_fd)
+
+
+def _read_report_bytes(parent_fd: int, name: str) -> bytes | None:
+    try:
+        initial = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(initial.st_mode):
+        raise ReconciliationIntegrityError("Reconciliation-Bericht ist keine reguläre Datei")
+    descriptor = os.open(
+        name,
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+        dir_fd=parent_fd,
+    )
+    try:
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (initial.st_dev, initial.st_ino):
+            raise ReconciliationIntegrityError("Reconciliation-Bericht änderte sich beim Lesen")
+        with os.fdopen(descriptor, "rb", closefd=True) as handle:
+            descriptor = -1
+            payload = handle.read()
+        final = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns)
+            != (initial.st_dev, initial.st_ino, initial.st_size, initial.st_mtime_ns)
+        ):
+            raise ReconciliationIntegrityError("Reconciliation-Bericht änderte sich beim Lesen")
+        return payload
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _require_identical_report(existing: bytes, payload: bytes) -> None:
+    if existing != payload:
+        raise ReconciliationIntegrityError("Reconciliation-Bericht ist unveränderlich")
+
+
+def _remove_linked_report(parent_fd: int, temporary_name: str, target_name: str) -> None:
+    temporary = os.stat(temporary_name, dir_fd=parent_fd, follow_symlinks=False)
+    current = os.stat(target_name, dir_fd=parent_fd, follow_symlinks=False)
+    if (temporary.st_dev, temporary.st_ino) != (current.st_dev, current.st_ino):
+        raise ReconciliationIntegrityError("Reconciliation-Berichtskollision ist unklar")
+    os.unlink(target_name, dir_fd=parent_fd)
+    try:
+        fsync_directory_fd(parent_fd)
+    except OSError:
+        pass
 
 
 def _has_control_character(value: str) -> bool:
