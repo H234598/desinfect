@@ -1,6 +1,7 @@
 """Deterministic reconciliation findings and report contract."""
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import StrEnum
@@ -10,21 +11,31 @@ import os
 from pathlib import Path
 import re
 import stat
+from tempfile import TemporaryDirectory
 from typing import Callable, Iterable, Mapping, TypeAlias
 import unicodedata
 import uuid
 
-from scripts.rki_grabber.models import ArtifactRecord, RecordState
+from scripts.rki_grabber.models import (
+    AffectedPeriods,
+    ArtifactRecord,
+    RecordState,
+    RightsMetadata,
+    Scope,
+)
+from scripts.rki_pipeline import rights as rights_module
 from scripts.rki_pipeline.aggregation import (
     PeriodManifestError,
     PeriodPublicationInspection,
+    materialize_period_archives,
+    plan_period_archives,
     PeriodRef,
     inspect_period_publication,
     period_ref,
 )
 from scripts.rki_pipeline.archive import ArchiveError
 from scripts.rki_pipeline.documents import DocumentIdentityError, bitstream_identity
-from scripts.rki_pipeline.due_tasks import TaskKind
+from scripts.rki_pipeline.due_tasks import DueTask, TaskKind
 from scripts.rki_pipeline.io_utils import (
     atomic_write_bytes,
     fsync_directory_fd,
@@ -37,6 +48,8 @@ from scripts.rki_pipeline.io_utils import (
 from scripts.rki_pipeline.manifests import (
     LoadedManifestCatalog,
     ManifestGraph,
+    build_manifest_graph,
+    render_manifest_catalog,
     storage_reference_from_manifest,
 )
 from scripts.rki_pipeline.rights import (
@@ -45,21 +58,30 @@ from scripts.rki_pipeline.rights import (
     RightsPolicy,
     RightsPolicyError,
     RightsState,
+    load_rights_authority,
+    load_rights_policy,
     resolve_rights,
 )
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 from scripts.rki_pipeline.schema_registry import validate_document
 from scripts.rki_pipeline.storage.base import (
     PreparedObject,
+    RightsStorageAuthorizer,
     StorageAdapter,
     StorageAuthorizationError,
     StorageBackend,
     StorageError,
     StorageReference,
 )
+from scripts.rki_pipeline.source_manifest import (
+    build_document_manifest,
+    build_source_manifests,
+)
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_FIXTURE_MAX_BYTES = 64 * 1024
+_FIXTURE_AS_OF = "2026-08-04T04:00:00Z"
 _METADATA_FIELDS = (
     ("version", "version"),
     ("source_url", "item_url"),
@@ -1049,3 +1071,317 @@ def _remove_linked_report(parent_fd: int, temporary_name: str, target_name: str)
 
 def _has_control_character(value: str) -> bool:
     return any(unicodedata.category(character) == "Cc" for character in value)
+
+
+class FixtureValidationError(ValueError):
+    """Offline reconciliation fixture is malformed or unsafe."""
+
+
+@dataclass(frozen=True, slots=True)
+class _FixtureAdapter:
+    backend: StorageBackend
+    reference: StorageReference
+
+    def verify(self, reference: StorageReference) -> None:
+        if reference != self.reference:
+            raise StorageError("Fixture-Storage-Referenz stimmt nicht überein")
+
+    def list_references(self) -> tuple[StorageReference, ...]:
+        return (self.reference,)
+
+
+def _fixture_payload(root: Path) -> dict[str, object]:
+    fixture = Path(root)
+    try:
+        metadata = fixture.lstat()
+        if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise FixtureValidationError("Fixture-Verzeichnis ist ungültig")
+        names = {entry.name for entry in fixture.iterdir()}
+        if names != {"fixture.json"}:
+            raise FixtureValidationError("Fixture-Verzeichnis ist nicht strikt")
+        path = fixture / "fixture.json"
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise FixtureValidationError("Fixture-Datei ist ungültig")
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise FixtureValidationError("Fixture-Datei ist ungültig")
+            payload = os.read(descriptor, _FIXTURE_MAX_BYTES + 1)
+        finally:
+            os.close(descriptor)
+    except (OSError, ValueError) as exc:
+        raise FixtureValidationError("Fixture-Datei ist nicht lesbar") from exc
+    if len(payload) > _FIXTURE_MAX_BYTES:
+        raise FixtureValidationError("Fixture-Datei ist zu groß")
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise FixtureValidationError("Fixture-JSON ist ungültig") from exc
+    if type(value) is not dict or set(value) != {
+        "schema_version", "as_of", "scope", "source", "payload"
+    }:
+        raise FixtureValidationError("Fixture-Felder sind ungültig")
+    if value["schema_version"] != "1.0.0" or value["as_of"] != _FIXTURE_AS_OF:
+        raise FixtureValidationError("Fixture-Version oder Zeitpunkt ist ungültig")
+    scope = value["scope"]
+    source = value["source"]
+    if (
+        type(scope) is not dict
+        or scope != {"from_year": 2025, "to_year": 2025}
+        or type(source) is not dict
+        or set(source) != {"handle", "publication_date", "title", "pdf_url"}
+        or type(value["payload"]) is not str
+        or not value["payload"]
+        or any(type(source[name]) is not str for name in source)
+    ):
+        raise FixtureValidationError("Fixture-Form ist ungültig")
+    try:
+        document = bitstream_identity(source["pdf_url"])
+        if document.canonical_url != source["pdf_url"]:
+            raise ValueError("Bitstream-URL ist nicht kanonisch")
+        if source["handle"] != "176904/900000001" or source["publication_date"] != "2025-12-12":
+            raise ValueError("Fixture-Quelle weicht ab")
+        date.fromisoformat(source["publication_date"])
+    except (DocumentIdentityError, ValueError) as exc:
+        raise FixtureValidationError("Fixture-Quelle ist nicht kanonisch") from exc
+    return value
+
+
+def _fixture_authorizer(root: Path, source_id: str, source_sha256: str) -> tuple[
+    RightsStorageAuthorizer, RightsAuthority, RightsPolicy, RightsDecision
+]:
+    register = root / "rights.yml"
+    register.write_text(
+        "\n".join(
+            (
+                "schema_version: 1",
+                "decisions:",
+                f"  - source_id: {source_id}",
+                f"    source_sha256: {source_sha256}",
+                "    state: approved",
+                "    basis: Synthetic reviewed fixture",
+                "    reviewed_by: Fixture",
+                '    reviewed_at: "2026-08-04T04:00:00Z"',
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    rights_module.DEFAULT_REGISTER_PATH = register
+    authority = load_rights_authority()
+    policy = load_rights_policy()
+    decision = resolve_rights(source_id, source_sha256, authority=authority, policy=policy)
+    return RightsStorageAuthorizer(authority, policy), authority, policy, decision
+
+
+def _fixture_record(value: dict[str, object], source_sha256: str) -> ArtifactRecord:
+    source = value["source"]
+    assert type(source) is dict
+    handle = source["handle"]
+    publication_date = source["publication_date"]
+    pdf_url = source["pdf_url"]
+    title = source["title"]
+    assert all(type(item) is str for item in (handle, publication_date, pdf_url, title))
+    return ArtifactRecord(
+        scope=Scope.ISSUES,
+        document_id="rki-176904-900000001-v1",
+        source_id="rki:176904/900000001",
+        version=1,
+        item_handle=handle,
+        item_url=f"https://edoc.rki.de/handle/{handle}",
+        title=title,
+        publication_date=publication_date,
+        year=2025,
+        doi=None,
+        rights=RightsMetadata(open_access=True),
+        pdf_url=pdf_url,
+        source_filename="source.pdf",
+        relative_path=None,
+        state=RecordState.DOWNLOADED,
+        bytes=len(value["payload"].encode("utf-8")),
+        sha256=source_sha256,
+        etag=None,
+        last_modified=None,
+    )
+
+
+def _reconcile_fixture_once(value: dict[str, object], *, mode: str) -> dict[str, object]:
+    source_bytes = value["payload"].encode("utf-8")
+    source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+    record = _fixture_record(value, source_sha256)
+    as_of = datetime.fromisoformat(_FIXTURE_AS_OF.replace("Z", "+00:00"))
+    with TemporaryDirectory(prefix="desinfect-reconcile-") as temporary:
+        root = Path(temporary)
+        authorizer, authority, policy, decision = _fixture_authorizer(
+            root, record.source_id, source_sha256
+        )
+        sources = build_source_manifests(
+            (record,), rights_decisions={(record.source_id, source_sha256): decision}
+        )
+        documents = (build_document_manifest(record),)
+        logical_key = documents[0]["paths"]["pdf"]
+        assert type(logical_key) is str
+        source_path = root / logical_key
+        source_path.parent.mkdir(parents=True)
+        source_path.write_bytes(source_bytes)
+        prepared = PreparedObject(
+            artifact_id="fixture-pdf",
+            logical_key=logical_key,
+            path=source_path,
+            temp_root=root,
+            sha256=source_sha256,
+            size=len(source_bytes),
+            source_id=record.source_id,
+            source_sha256=source_sha256,
+            decision_sha256=decision.decision_sha256,
+            visibility="repository_authorized",
+            rights_state="approved",
+            document_id=record.document_id,
+        )
+        reference = StorageReference(
+            artifact_id=prepared.artifact_id,
+            relative_path=prepared.logical_key,
+            storage_backend=StorageBackend.LFS,
+            storage_object_id=f"sha256:{source_sha256}",
+            sha256=source_sha256,
+            size=len(source_bytes),
+            source_id=record.source_id,
+            source_sha256=source_sha256,
+            document_id=record.document_id,
+            conversion_id=None,
+            decision_sha256=decision.decision_sha256,
+            provenance_state="current",
+            visibility="repository_authorized",
+            rights_state="approved",
+            public_reference=None,
+        )
+        graph = build_manifest_graph(
+            sources=sources,
+            documents=documents,
+            conversions=(),
+            storage_references=(reference.to_dict(),),
+            authorizer=authorizer,
+        )
+        catalog = LoadedManifestCatalog(graph=graph, rendered=render_manifest_catalog(graph))
+        due_tasks = tuple(
+            DueTask(
+                task_id=f"{kind.value}:{period}",
+                kind=kind,
+                period=period,
+                reason="fixture",
+                due_at=_FIXTURE_AS_OF,
+            )
+            for kind, period in (
+                (TaskKind.WEEK, "2025-W50"),
+                (TaskKind.MONTH, "2025-12"),
+                (TaskKind.YEAR, "2025"),
+            )
+        )
+        aggregation = plan_period_archives(
+            as_of=as_of,
+            due_tasks=due_tasks,
+            affected_periods=AffectedPeriods(),
+            graph=graph,
+            prepared_by_logical_key={logical_key: prepared},
+        )
+        products = materialize_period_archives(
+            aggregation,
+            root / "period-products",
+            temp_root=root,
+            ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=root),
+            authorizer=authorizer,
+        )
+        result = plan_reconciliation(
+            as_of=as_of,
+            from_year=2025,
+            to_year=2025,
+            catalog=catalog,
+            remote_records=(record,),
+            adapters={StorageBackend.LFS: _FixtureAdapter(StorageBackend.LFS, reference)},
+            period_root=products.root,
+            authority=authority,
+            policy=policy,
+        )
+        report_path: str | None = None
+        changed = False
+        if mode == "materialize":
+            materialized = materialize_reconciliation(
+                result,
+                temp_root=root,
+                ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=root),
+            )
+            report_path = (
+                None
+                if materialized.path is None
+                else materialized.path.relative_to(root).as_posix()
+            )
+            changed = materialized.changed
+        return {
+            "mode": mode,
+            "conclusion": result.conclusion,
+            "counts": result.counts.to_dict(),
+            "source_manifest_sha256": result.source_manifest_sha256,
+            "findings": [
+                {
+                    "code": finding.code.value,
+                    "subject_kind": finding.subject_kind.value,
+                    "subject_id": finding.subject_id,
+                    "relative_path": finding.relative_path,
+                    "message": finding.message,
+                }
+                for finding in result.findings
+            ],
+            "report_path": report_path,
+            "changed": changed,
+        }
+
+
+def _reconcile_fixture(value: dict[str, object], *, mode: str) -> dict[str, object]:
+    previous = rights_module.DEFAULT_REGISTER_PATH
+    try:
+        return _reconcile_fixture_once(value, mode=mode)
+    finally:
+        rights_module.DEFAULT_REGISTER_PATH = previous
+
+
+def _fixture_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="reconcile")
+    parser.add_argument("--fixture", required=True)
+    parser.add_argument("--mode", choices=("plan", "materialize"), required=True)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        args = _fixture_parser().parse_args(argv)
+    except SystemExit as exc:
+        return int(exc.code)
+    try:
+        value = _fixture_payload(Path(args.fixture))
+    except FixtureValidationError:
+        print("reconcile: fixture validation failed", file=os.sys.stderr)
+        return 1
+    try:
+        print(stable_json_dumps(_reconcile_fixture(value, mode=args.mode)), end="")
+        return 0
+    except (
+        ArchiveError,
+        OSError,
+        PeriodManifestError,
+        ReconciliationIntegrityError,
+        RemoteSnapshotError,
+        RightsPolicyError,
+        StorageAuthorizationError,
+        StorageError,
+        ValueError,
+    ):
+        print("reconcile: reconciliation failed", file=os.sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

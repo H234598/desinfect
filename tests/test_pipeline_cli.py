@@ -12,8 +12,28 @@ from scripts.rki_pipeline.io_utils import stable_json_dumps
 from scripts.rki_pipeline.pipeline_cli import main
 from scripts.rki_pipeline.run_modes import RunMode
 from scripts.rki_pipeline.storage.base import StorageBackend
+from scripts.rki_pipeline import cli
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_domain_router_keeps_existing_commands_and_adds_reconcile(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(cli.conversion_cli, "main", lambda args: calls.append(("convert", args)) or 10)
+    monkeypatch.setattr(cli.archive, "main", lambda args: calls.append(("build-archive", args)) or 11)
+    monkeypatch.setattr(cli.aggregation, "main", lambda args: calls.append(("aggregate", args)) or 12)
+    monkeypatch.setattr(cli.reconciliation, "main", lambda args: calls.append(("reconcile", args)) or 13)
+
+    assert cli.main(["convert", "--fixture", "a"]) == 10
+    assert cli.main(["build-archive", "--fixture", "b"]) == 11
+    assert cli.main(["aggregate", "--fixture", "c"]) == 12
+    assert cli.main(["reconcile", "--fixture", "d"]) == 13
+    assert calls == [
+        ("convert", ["--fixture", "a"]),
+        ("build-archive", ["--fixture", "b"]),
+        ("aggregate", ["--fixture", "c"]),
+        ("reconcile", ["--fixture", "d"]),
+    ]
 
 
 def git(root: Path, *args: str) -> str:
