@@ -301,6 +301,7 @@ def _claim_owned_target(
     if not entry_exists(parent_fd, target_name):
         return None
     _rename_noreplace(parent_fd, target_name, quarantine_name)
+    fsync_directory_fd(parent_fd)
     descriptor = _open_child_directory(parent_fd, quarantine_name)
     try:
         if _directory_identity(descriptor) == identity:
@@ -311,6 +312,7 @@ def _claim_owned_target(
     os.close(descriptor)
     try:
         _rename_noreplace(parent_fd, quarantine_name, target_name)
+        fsync_directory_fd(parent_fd)
     except StagingError as exc:
         raise StagingConflictError("Fremdes Ziel konnte nach Quarantäne-Claim nicht zurückgestellt werden") from exc
     raise StagingConflictError("Target-Name wurde durch eine fremde Generation ersetzt")
