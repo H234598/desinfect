@@ -318,9 +318,13 @@ jobs:
           GH_TOKEN: ${{ steps.incident-token.outputs.token }}
           INCIDENT_FAILURE_THRESHOLD: ${{ vars.INCIDENT_FAILURE_THRESHOLD || '2' }}
         run: |
-          python3 -m scripts.rki_pipeline.incident_issue \
-            --mode apply \
-            --status status.json \
-            --run-manifest build/pipeline/transaction-result.json \
-            --job-status "${{ job.status }}" \
+          arguments=(
+            --mode apply
+            --status status.json
+            --job-status "${{ job.status }}"
             --threshold "$INCIDENT_FAILURE_THRESHOLD"
+          )
+          if [[ -f build/pipeline/transaction-result.json ]]; then
+            arguments+=(--run-manifest build/pipeline/transaction-result.json)
+          fi
+          python3 -m scripts.rki_pipeline.incident_issue "${arguments[@]}"

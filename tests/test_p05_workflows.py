@@ -164,4 +164,5 @@ def test_incident_issue_uses_separate_minimal_app_token_when_enabled() -> None:
     assert "--mode apply" in maintain["run"]
     assert "--status status.json" in maintain["run"]
     assert "--run-manifest build/pipeline/transaction-result.json" in maintain["run"]
+    assert "if [[ -f build/pipeline/transaction-result.json ]]" in maintain["run"]
     assert '--job-status "${{ job.status }}"' in maintain["run"]
