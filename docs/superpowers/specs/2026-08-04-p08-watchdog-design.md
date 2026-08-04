@@ -182,7 +182,7 @@ Existing status-schema, runtime-status, dispatcher, baseline, and full test suit
 
 ## Documentation and CI
 
-- Add `docs/Wartung/Wachhund.md` with three-clock semantics, arming/reset conditions, deadline/cooldown behavior, commit-message contract, recovery, and operator-owned `WATCHDOG_INTERVAL_DAYS` setup.
+- Add `docs/Wartung/Wachhund.md` with three-clock semantics, arming/reset conditions, deadline/cooldown behavior, commit-message contract, recovery, and persisted interval authority. P08.1 has no repository-variable action until an executable caller wires one.
 - Add the focused watchdog test and read-only CLI smoke to the existing baseline workflow.
 - Keep `status.json` unchanged because P02 already provisioned the complete P08.1 persistence shape with interval 45 and an intentionally unarmed initial state.
 

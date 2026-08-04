@@ -287,6 +287,20 @@ def test_successful_apply_commit_resets_without_touching_pipeline_clocks() -> No
     assert projected["updated_at"] == "2026-09-04T00:00:00Z"
 
 
+def test_reset_rejects_time_before_existing_bark() -> None:
+    value = armed_status(last_bark_at="2026-09-05T00:00:00Z")
+
+    with pytest.raises(WatchdogError, match="last_bark_at liegt in der Zukunft"):
+        reset_watchdog(
+            value,
+            now="2026-09-04T00:00:00Z",
+            reset_by="weekly_ingest",
+            run_mode="apply",
+            run_status="success",
+            commit_created=True,
+        )
+
+
 @pytest.mark.parametrize(
     ("run_mode", "run_status", "commit_created"),
     [

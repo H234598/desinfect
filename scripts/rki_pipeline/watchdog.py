@@ -259,6 +259,7 @@ def reset_watchdog(
     ):
         raise WatchdogError("reset_by muss 1..120 druckbare Zeichen enthalten")
     reset = _utc(now, "now")
+    _observed_clock(current["watchdog"]["last_bark_at"], "last_bark_at", now=reset)
     reset_at = _format_utc(reset)
     result = deepcopy(current)
     result["updated_at"] = reset_at
