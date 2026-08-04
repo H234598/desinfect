@@ -1,6 +1,6 @@
 ---
 title: Implementierungsplan V3 – Steuerung
-status: P07.3 abgeschlossen; P08.1 als nächste Phase
+status: P08.1 abgeschlossen; P08.2 als nächste Phase
 source_plan_sha256: aa50863cde1313a7039691b4ca596c1ab498d0fab0008da324de5cb69f12ffc4
 repository: H234598/desinfect
 branch: main
@@ -36,11 +36,13 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 - **P07.2-Gate:** geprüfter Head `490d5a2`; GitHub Actions `30875762790` sowie Nach-Merge-Lauf `30875875161` erfolgreich; CodeRabbit und qlty erfolgreich; alle fünf Reviewthreads aufgelöst; 1014 Pytest-, 9 Unittest- und 2 Node-Tests erfolgreich; materialisierter Archiv-Smoke und Aggregationsplan erfolgreich.
 - **P07.3:** PR #23, Merge `cf756854964cd4be1b092bb19bfd61c9a3e0ac1e`
 - **P07.3-Gate:** geprüfter Head `96de454`; GitHub Actions `30893991569` sowie Nach-Merge-Lauf `30894298026` erfolgreich; CodeRabbit und qlty erfolgreich; alle acht Reviewthreads aufgelöst; 1167 Pytest-, 9 Unittest- und 2 Node-Tests erfolgreich; Offline-Reconciliation in `plan` und `materialize` erfolgreich.
-- **Fortschritt:** 27 von 60 Arbeitspaketen umgesetzt; 33 offen; 0 in Arbeit; 0 im Review; 0 blockiert.
+- **P08.1:** PR #25, Merge `6fccb8d0ce42f27dd5dca9f47ff2cd169323b0c0`
+- **P08.1-Gate:** geprüfter Head `54a6d1e`; GitHub Actions `30901827480` sowie Nach-Merge-Lauf `30902077612` erfolgreich; CodeRabbit und qlty erfolgreich; alle drei Reviewthreads aufgelöst; 1210 Pytest-, 9 Unittest- und 2 Node-Tests sowie Wachhund-CLI im Planmodus erfolgreich.
+- **Fortschritt:** 28 von 60 Arbeitspaketen umgesetzt; 32 offen; 0 in Arbeit; 0 im Review; 0 blockiert.
 
-## Nächste Phase P08
+## Nächste Phase P08.2
 
-P07.1 bis P07.3 sind umgesetzt. P08.1 bleibt `offen`, bis Implementierungsbranch und planmäßige Evidenz vorliegen. P08.1 ergänzt den internen Wachhund und trennt Commitzeit, letzten erfolgreichen Lauf sowie letzten erfolgreichen Schreiblauf als eigenständige Uhren.
+P08.1 ist umgesetzt. P08.2 bleibt `offen`, bis Implementierungsbranch und planmäßige Evidenz vorliegen. P08.2 ergänzt Job Summary, Diagnoseartefakte und ein dedupliziertes Rolling Issue.
 
 ## Arbeitspakete
 
@@ -71,7 +73,7 @@ P07.1 bis P07.3 sind umgesetzt. P08.1 bleibt `offen`, bis Implementierungsbranch
 - [x] **P07.1** Deterministischer ZIP-Builder _(umgesetzt, PR #19, Merge `cb378bec67ccacd3d3b426e6a8661eeb06ddfe08`)_
 - [x] **P07.2** Wochen-, Monats-, Jahresarchive und Nachzügler _(umgesetzt, PR #21, Merge `5cf540d6d9918ae0cab1eb5b2dcfcc6cad521e61`)_
 - [x] **P07.3** Quartals-Reconciliation _(umgesetzt, PR #23, Merge `cf756854964cd4be1b092bb19bfd61c9a3e0ac1e`)_
-- [ ] **P08.1** Interner Wachhund und getrennte Uhren
+- [x] **P08.1** Interner Wachhund und getrennte Uhren _(umgesetzt, PR #25, Merge `6fccb8d0ce42f27dd5dca9f47ff2cd169323b0c0`)_
 - [ ] **P08.2** Job Summary, Diagnoseartefakte und Rolling Issue
 - [ ] **P09.1** Cloudflare-Worker-/DO-Projektfundament
 - [ ] **P09.2** GitHub-App-JWT und feste API-Operationen
