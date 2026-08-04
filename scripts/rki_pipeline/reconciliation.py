@@ -23,8 +23,8 @@ from scripts.rki_grabber.models import (
     RightsMetadata,
     Scope,
 )
-from scripts.rki_pipeline import rights as rights_module
 from scripts.rki_pipeline.aggregation import (
+    AggregationError,
     PeriodManifestError,
     PeriodPublicationInspection,
     materialize_period_archives,
@@ -48,6 +48,7 @@ from scripts.rki_pipeline.io_utils import (
 from scripts.rki_pipeline.manifests import (
     LoadedManifestCatalog,
     ManifestGraph,
+    ManifestGraphError,
     build_manifest_graph,
     render_manifest_catalog,
     storage_reference_from_manifest,
@@ -58,12 +59,12 @@ from scripts.rki_pipeline.rights import (
     RightsPolicy,
     RightsPolicyError,
     RightsState,
-    load_rights_authority,
+    _load_isolated_rights_authority,
     load_rights_policy,
     resolve_rights,
 )
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
-from scripts.rki_pipeline.schema_registry import validate_document
+from scripts.rki_pipeline.schema_registry import SchemaContractError, validate_document
 from scripts.rki_pipeline.storage.base import (
     PreparedObject,
     RightsStorageAuthorizer,
@@ -74,6 +75,7 @@ from scripts.rki_pipeline.storage.base import (
     StorageReference,
 )
 from scripts.rki_pipeline.source_manifest import (
+    ManifestBuildError,
     build_document_manifest,
     build_source_manifests,
 )
@@ -1108,9 +1110,22 @@ def _fixture_payload(root: Path) -> dict[str, object]:
             os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
         )
         try:
-            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode):
                 raise FixtureValidationError("Fixture-Datei ist ungültig")
-            payload = os.read(descriptor, _FIXTURE_MAX_BYTES + 1)
+            if opened.st_size > _FIXTURE_MAX_BYTES:
+                raise FixtureValidationError("Fixture-Datei ist zu groß")
+            chunks: list[bytes] = []
+            size = 0
+            while True:
+                chunk = os.read(descriptor, min(8192, _FIXTURE_MAX_BYTES + 1 - size))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+                if size > _FIXTURE_MAX_BYTES:
+                    raise FixtureValidationError("Fixture-Datei ist zu groß")
+            payload = b"".join(chunks)
         finally:
             os.close(descriptor)
     except (OSError, ValueError) as exc:
@@ -1118,8 +1133,8 @@ def _fixture_payload(root: Path) -> dict[str, object]:
     if len(payload) > _FIXTURE_MAX_BYTES:
         raise FixtureValidationError("Fixture-Datei ist zu groß")
     try:
-        value = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        value = json.loads(payload.decode("utf-8"), object_pairs_hook=_fixture_object)
+    except (FixtureValidationError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise FixtureValidationError("Fixture-JSON ist ungültig") from exc
     if type(value) is not dict or set(value) != {
         "schema_version", "as_of", "scope", "source", "payload"
@@ -1131,6 +1146,8 @@ def _fixture_payload(root: Path) -> dict[str, object]:
     source = value["source"]
     if (
         type(scope) is not dict
+        or set(scope) != {"from_year", "to_year"}
+        or any(type(scope[name]) is not int for name in scope)
         or scope != {"from_year": 2025, "to_year": 2025}
         or type(source) is not dict
         or set(source) != {"handle", "publication_date", "title", "pdf_url"}
@@ -1148,6 +1165,15 @@ def _fixture_payload(root: Path) -> dict[str, object]:
         date.fromisoformat(source["publication_date"])
     except (DocumentIdentityError, ValueError) as exc:
         raise FixtureValidationError("Fixture-Quelle ist nicht kanonisch") from exc
+    return value
+
+
+def _fixture_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise FixtureValidationError("Fixture enthält doppelte Felder")
+        value[key] = item
     return value
 
 
@@ -1171,8 +1197,7 @@ def _fixture_authorizer(root: Path, source_id: str, source_sha256: str) -> tuple
         ),
         encoding="utf-8",
     )
-    rights_module.DEFAULT_REGISTER_PATH = register
-    authority = load_rights_authority()
+    authority = _load_isolated_rights_authority(register)
     policy = load_rights_policy()
     decision = resolve_rights(source_id, source_sha256, authority=authority, policy=policy)
     return RightsStorageAuthorizer(authority, policy), authority, policy, decision
@@ -1341,11 +1366,7 @@ def _reconcile_fixture_once(value: dict[str, object], *, mode: str) -> dict[str,
 
 
 def _reconcile_fixture(value: dict[str, object], *, mode: str) -> dict[str, object]:
-    previous = rights_module.DEFAULT_REGISTER_PATH
-    try:
-        return _reconcile_fixture_once(value, mode=mode)
-    finally:
-        rights_module.DEFAULT_REGISTER_PATH = previous
+    return _reconcile_fixture_once(value, mode=mode)
 
 
 def _fixture_parser() -> argparse.ArgumentParser:
@@ -1370,14 +1391,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except (
         ArchiveError,
+        AggregationError,
+        DocumentIdentityError,
+        ManifestBuildError,
+        ManifestGraphError,
         OSError,
         PeriodManifestError,
         ReconciliationIntegrityError,
         RemoteSnapshotError,
         RightsPolicyError,
+        SchemaContractError,
         StorageAuthorizationError,
         StorageError,
-        ValueError,
     ):
         print("reconcile: reconciliation failed", file=os.sys.stderr)
         return 1

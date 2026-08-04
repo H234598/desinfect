@@ -12,6 +12,7 @@ import sys
 import pytest
 
 from scripts.rki_pipeline.documents import bitstream_identity
+from scripts.rki_pipeline import reconciliation, rights
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +34,15 @@ def run_cli(mode: str, fixture: Path = FIXTURE, *, env: dict[str, str] | None = 
         ],
         cwd=ROOT,
         env=values,
+        capture_output=True,
+        check=False,
+    )
+
+
+def run_command(*arguments: str) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        [sys.executable, "-m", "scripts.rki_pipeline.cli", "reconcile", *arguments],
+        cwd=ROOT,
         capture_output=True,
         check=False,
     )
@@ -98,7 +108,17 @@ def test_cli_rejects_invalid_mode_without_traceback(mode: str) -> None:
     assert b"Traceback" not in result.stderr
 
 
-@pytest.mark.parametrize("mutation", ("unknown", "oversized", "symlink", "noncanonical", "as_of"))
+def test_cli_rejects_missing_mode_without_traceback() -> None:
+    result = run_command("--fixture", str(FIXTURE))
+
+    assert result.returncode == 2
+    assert b"Traceback" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("unknown", "oversized", "symlink", "noncanonical", "as_of", "malformed", "duplicate", "float", "bool"),
+)
 def test_cli_rejects_invalid_fixture_with_fixed_stderr(tmp_path: Path, mutation: str) -> None:
     fixture = tmp_path / "fixture"
     shutil.copytree(FIXTURE, fixture)
@@ -120,14 +140,67 @@ def test_cli_rejects_invalid_fixture_with_fixed_stderr(tmp_path: Path, mutation:
         path.write_text(json.dumps(value), encoding="utf-8")
     else:
         value = json.loads(path.read_text(encoding="utf-8"))
-        value["as_of"] = "2026-08-04T04:00:01Z"
-        path.write_text(json.dumps(value), encoding="utf-8")
+        if mutation == "as_of":
+            value["as_of"] = "2026-08-04T04:00:01Z"
+            path.write_text(json.dumps(value), encoding="utf-8")
+        elif mutation == "float":
+            value["scope"]["from_year"] = 2025.0
+            path.write_text(json.dumps(value), encoding="utf-8")
+        elif mutation == "bool":
+            value["scope"]["to_year"] = True
+            path.write_text(json.dumps(value), encoding="utf-8")
+        elif mutation == "malformed":
+            path.write_text("{", encoding="utf-8")
+        else:
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    '"schema_version": "1.0.0",',
+                    '"schema_version": "1.0.0", "schema_version": "1.0.0",',
+                ),
+                encoding="utf-8",
+            )
 
     result = run_cli("plan", fixture)
 
     assert result.returncode == 1
     assert result.stdout == b""
     assert result.stderr == b"reconcile: fixture validation failed\n"
+
+
+def test_fixture_authority_never_mutates_process_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = rights.DEFAULT_REGISTER_PATH
+    loader = reconciliation._load_isolated_rights_authority
+
+    def assert_default_then_load(path: Path):
+        assert rights.DEFAULT_REGISTER_PATH == original
+        return loader(path)
+
+    monkeypatch.setattr(reconciliation, "_load_isolated_rights_authority", assert_default_then_load)
+
+    assert reconciliation._reconcile_fixture(reconciliation._fixture_payload(FIXTURE), mode="plan")["conclusion"] == "success"
+    assert rights.DEFAULT_REGISTER_PATH == original
+
+
+def test_fixture_loader_reads_to_eof_after_short_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    read = reconciliation.os.read
+    calls = 0
+
+    def short_read(descriptor: int, size: int) -> bytes:
+        nonlocal calls
+        calls += 1
+        return read(descriptor, min(size, 7))
+
+    monkeypatch.setattr(reconciliation.os, "read", short_read)
+
+    assert reconciliation._fixture_payload(FIXTURE)["schema_version"] == "1.0.0"
+    assert calls > 1
+
+
+def test_cli_does_not_normalize_unrelated_value_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(reconciliation, "_reconcile_fixture", lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bug")))
+
+    with pytest.raises(ValueError, match="bug"):
+        reconciliation.main(["--fixture", str(FIXTURE), "--mode", "plan"])
 
 
 def test_cli_leaves_fixture_and_repository_unchanged() -> None:

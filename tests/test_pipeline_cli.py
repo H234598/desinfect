@@ -36,6 +36,29 @@ def test_domain_router_keeps_existing_commands_and_adds_reconcile(monkeypatch: p
     ]
 
 
+def test_domain_router_executes_reconcile_materialize_fixture() -> None:
+    result = subprocess.run(
+        [
+            "python3",
+            "-m",
+            "scripts.rki_pipeline.cli",
+            "reconcile",
+            "--fixture",
+            "tests/fixtures/reconciliation",
+            "--mode",
+            "materialize",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert json.loads(result.stdout)["mode"] == "materialize"
+
+
 def git(root: Path, *args: str) -> str:
     return subprocess.run(
         ["git", "-C", root, *args],
