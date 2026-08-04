@@ -1,6 +1,6 @@
 ---
 title: Implementierungsplan V3 – Steuerung
-status: P07.2 abgeschlossen; P07.3 als nächste Phase
+status: P07.3 abgeschlossen; P08.1 als nächste Phase
 source_plan_sha256: aa50863cde1313a7039691b4ca596c1ab498d0fab0008da324de5cb69f12ffc4
 repository: H234598/desinfect
 branch: main
@@ -34,11 +34,13 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 - **P07.1-Gate:** geprüfter Head `5ce347e`; GitHub Actions `30855764141` sowie Nach-Merge-Lauf `30855957537` erfolgreich; CodeRabbit und qlty erfolgreich; beide Reviewthreads aufgelöst; 892 Pytest-, 9 Unittest- und 2 Node-Tests erfolgreich; deterministischer Doppel-CLI-Smoke bytegleich.
 - **P07.2:** PR #21, Merge `5cf540d6d9918ae0cab1eb5b2dcfcc6cad521e61`
 - **P07.2-Gate:** geprüfter Head `490d5a2`; GitHub Actions `30875762790` sowie Nach-Merge-Lauf `30875875161` erfolgreich; CodeRabbit und qlty erfolgreich; alle fünf Reviewthreads aufgelöst; 1014 Pytest-, 9 Unittest- und 2 Node-Tests erfolgreich; materialisierter Archiv-Smoke und Aggregationsplan erfolgreich.
-- **Fortschritt:** 26 von 60 Arbeitspaketen umgesetzt; 34 offen; 0 in Arbeit; 0 im Review; 0 blockiert.
+- **P07.3:** PR #23, Merge `cf756854964cd4be1b092bb19bfd61c9a3e0ac1e`
+- **P07.3-Gate:** geprüfter Head `96de454`; GitHub Actions `30893991569` sowie Nach-Merge-Lauf `30894298026` erfolgreich; CodeRabbit und qlty erfolgreich; alle acht Reviewthreads aufgelöst; 1167 Pytest-, 9 Unittest- und 2 Node-Tests erfolgreich; Offline-Reconciliation in `plan` und `materialize` erfolgreich.
+- **Fortschritt:** 27 von 60 Arbeitspaketen umgesetzt; 33 offen; 0 in Arbeit; 0 im Review; 0 blockiert.
 
-## Nächste Phase P07
+## Nächste Phase P08
 
-P07.1 und P07.2 sind umgesetzt. P07.3 bleibt `offen`, bis Implementierungsbranch und planmäßige Evidenz vorliegen. P07.3 ergänzt die quartalsweise Reconciliation für Quellen, Versionen, Prüfsummen, LFS-Objekte und Archivvollständigkeit.
+P07.1 bis P07.3 sind umgesetzt. P08.1 bleibt `offen`, bis Implementierungsbranch und planmäßige Evidenz vorliegen. P08.1 ergänzt den internen Wachhund und trennt Commitzeit, letzten erfolgreichen Lauf sowie letzten erfolgreichen Schreiblauf als eigenständige Uhren.
 
 ## Arbeitspakete
 
@@ -68,7 +70,7 @@ P07.1 und P07.2 sind umgesetzt. P07.3 bleibt `offen`, bis Implementierungsbranch
 - [x] **P06.4** Dokument-, Konvertierungs- und Storage-Manifeste _(umgesetzt, PR #17, Merge `71f8a58b5c737ad5034da55aad908b7bd2b91080`)_
 - [x] **P07.1** Deterministischer ZIP-Builder _(umgesetzt, PR #19, Merge `cb378bec67ccacd3d3b426e6a8661eeb06ddfe08`)_
 - [x] **P07.2** Wochen-, Monats-, Jahresarchive und Nachzügler _(umgesetzt, PR #21, Merge `5cf540d6d9918ae0cab1eb5b2dcfcc6cad521e61`)_
-- [ ] **P07.3** Quartals-Reconciliation
+- [x] **P07.3** Quartals-Reconciliation _(umgesetzt, PR #23, Merge `cf756854964cd4be1b092bb19bfd61c9a3e0ac1e`)_
 - [ ] **P08.1** Interner Wachhund und getrennte Uhren
 - [ ] **P08.2** Job Summary, Diagnoseartefakte und Rolling Issue
 - [ ] **P09.1** Cloudflare-Worker-/DO-Projektfundament
