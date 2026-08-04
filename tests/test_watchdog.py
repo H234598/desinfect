@@ -294,3 +294,21 @@ def test_watchdog_cli_reports_invalid_status_without_traceback(
     assert captured.out == ""
     assert captured.err.startswith("watchdog:")
     assert "Traceback" not in captured.err
+
+
+def test_watchdog_cli_reports_invalid_utf8_without_traceback(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    status_path = tmp_path / "status.json"
+    status_path.write_bytes(b"\xff")
+
+    result = watchdog_main(
+        ["--as-of", DUE, "--mode", "plan", "--status", str(status_path)]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.out == ""
+    assert captured.err.startswith("watchdog:")
+    assert "Traceback" not in captured.err

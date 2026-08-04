@@ -247,7 +247,7 @@ def reset_watchdog(
 def _load_status(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise WatchdogError("Statusdatei ist nicht lesbar") from exc
     if not isinstance(value, dict):
         raise WatchdogError("Status muss ein JSON-Objekt sein")
