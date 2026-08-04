@@ -212,8 +212,9 @@ def _validate_workflows() -> None:
     dispatcher_triggers = _triggers(dispatcher)
     if set(dispatcher_triggers) != {"schedule", "workflow_dispatch"}:
         raise P05ValidationError("Dispatcher braucht schedule und workflow_dispatch")
-    if dispatcher.get("permissions") != {"contents": "read"}:
-        raise P05ValidationError("Dispatcher muss contents: read verwenden")
+    read_permissions = {"actions": "read", "contents": "read"}
+    if dispatcher.get("permissions") != read_permissions:
+        raise P05ValidationError("Dispatcher braucht nur contents/actions: read")
     dispatcher_steps = _steps(dispatcher, "plan")
     _validate_pinned_actions(dispatcher_steps, dispatcher_path.name)
     pipeline_call = dispatcher["jobs"].get("pipeline")
@@ -226,8 +227,8 @@ def _validate_workflows() -> None:
     pipeline_path, pipeline = _workflow("rki-pipeline.yml")
     if set(_triggers(pipeline)) != {"workflow_call", "workflow_dispatch"}:
         raise P05ValidationError("Pipeline braucht workflow_call und workflow_dispatch")
-    if pipeline.get("permissions") != {"contents": "read"}:
-        raise P05ValidationError("Pipeline muss standardmäßig contents: read verwenden")
+    if pipeline.get("permissions") != read_permissions:
+        raise P05ValidationError("Pipeline braucht nur contents/actions: read")
     if pipeline.get("concurrency") != {
         "group": "desinfect-repository-writer",
         "cancel-in-progress": False,
@@ -266,6 +267,18 @@ def _validate_workflows() -> None:
         or steps[upload].get("continue-on-error") is not True
     ):
         raise P05ValidationError("Summary und Diagnoseartefakt müssen immer laufen")
+    summary_run = steps[summary].get("run")
+    fallback_contract = (
+        "'## RKI-Pipeline'",
+        "'- Status: Diagnosemanifest nicht verfügbar'",
+        "'- Nächste sichere Aktion: fehlgeschlagenen Schritt und Artefakte prüfen'",
+        'echo "summary_available=false" >> "$GITHUB_OUTPUT"',
+        'echo "retention_days=90" >> "$GITHUB_OUTPUT"',
+    )
+    if not isinstance(summary_run, str) or any(
+        expected not in summary_run for expected in fallback_contract
+    ):
+        raise P05ValidationError("Summary-Fallbackvertrag driftet")
     enabled = "always() && vars.ROLLING_ISSUE_ENABLED == 'true'"
     incident_token_step = steps[incident_token]
     expected_incident_scope = {
@@ -286,6 +299,9 @@ def _validate_workflows() -> None:
     incident_step = steps[incident]
     if incident_step.get("if") != enabled or incident_step.get("continue-on-error") is not True:
         raise P05ValidationError("Rolling Issue darf den fachlichen Pipeline-Exit nicht verändern")
+    incident_env = incident_step.get("env")
+    if not isinstance(incident_env, dict) or incident_env.get("ACTIONS_TOKEN") != "${{ github.token }}":
+        raise P05ValidationError("Rolling Issue braucht nur read-only Actions-Historie")
     pipeline_text = pipeline_path.read_text(encoding="utf-8")
     for forbidden in ("--force", "--force-with-lease", "GITHUB_TOKEN"):
         if forbidden in pipeline_text:
@@ -296,8 +312,8 @@ def _validate_workflows() -> None:
     backfill_path, backfill = _workflow("rki-backfill.yml")
     if set(_triggers(backfill)) != {"workflow_dispatch"}:
         raise P05ValidationError("Backfill muss ausschließlich manuell auslösbar sein")
-    if backfill.get("permissions") != {"contents": "read"}:
-        raise P05ValidationError("Backfill muss contents: read verwenden")
+    if backfill.get("permissions") != read_permissions:
+        raise P05ValidationError("Backfill braucht nur contents/actions: read")
     backfill_steps = _steps(backfill, "plan")
     _validate_pinned_actions(backfill_steps, backfill_path.name)
     inputs = _triggers(backfill)["workflow_dispatch"].get("inputs")

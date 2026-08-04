@@ -38,7 +38,7 @@ CLI input may be a run manifest or a transaction envelope containing `run_manife
 
 Stable marker: `<!-- desinfect:rki-pipeline-incident:v1 -->`. Dedicated label: `pipeline-incident`. Title prefix and repository are constants. Body contains only redacted status fields and deterministic recovery guidance.
 
-Small stdlib HTTP adapter uses GitHub REST with fixed host/repository routes, API-version/Accept headers, bounded response sizes, timeouts, bounded pagination, and injected transport tests. Token is accepted only through an argument/environment boundary and never rendered.
+Small stdlib HTTP adapter uses GitHub REST with fixed host/repository routes, API-version/Accept headers, bounded response sizes, timeouts, bounded pagination, and injected transport tests. For CI failures, a separate built-in token with `actions:read` derives the persistent streak from completed `main` runs of the same caller workflow; the Issues App token remains limited to `issues:write`. Tokens are accepted only through environment boundaries and never rendered.
 
 ### Workflow integration
 
@@ -65,4 +65,3 @@ Reusable pipeline workflow:
 - Incident tests for create/update/reopen/heal/no-op, threshold bounds, duplicate marker rejection, fixed routes, and token non-disclosure.
 - CLI regression proving failed transaction output is written while exit remains non-zero.
 - Workflow contract proving `if: always()`, time-limited artifact, fixed permissions, short-lived App token, and no effect on blocking exit.
-

@@ -33,7 +33,7 @@ def test_repository_has_exactly_one_schedule() -> None:
 def test_dispatcher_is_read_only_and_calls_reusable_pipeline() -> None:
     path, data = load("rki-dispatcher.yml")
     assert set(triggers(data)) == {"schedule", "workflow_dispatch"}
-    assert data["permissions"] == {"contents": "read"}
+    assert data["permissions"] == {"actions": "read", "contents": "read"}
     pipeline = data["jobs"]["pipeline"]
     assert pipeline["uses"] == "./.github/workflows/rki-pipeline.yml"
     assert pipeline["secrets"] == {
@@ -47,7 +47,7 @@ def test_dispatcher_is_read_only_and_calls_reusable_pipeline() -> None:
 def test_pipeline_owns_the_only_writer_concurrency_and_never_cancels() -> None:
     path, data = load("rki-pipeline.yml")
     assert set(triggers(data)) == {"workflow_call", "workflow_dispatch"}
-    assert data["permissions"] == {"contents": "read"}
+    assert data["permissions"] == {"actions": "read", "contents": "read"}
     assert triggers(data)["workflow_call"]["secrets"] == {
         "WACHHUND_APP_PRIVATE_KEY": {"required": True},
     }
@@ -121,6 +121,14 @@ def test_pipeline_always_renders_and_uploads_redacted_diagnostics() -> None:
     assert "scripts.rki_pipeline.ci_summary" in summary["run"]
     assert "GITHUB_STEP_SUMMARY" in summary["run"]
     assert '--job-status "${{ job.status }}"' in summary["run"]
+    assert "'## RKI-Pipeline'" in summary["run"]
+    assert "'- Status: Diagnosemanifest nicht verfügbar'" in summary["run"]
+    assert (
+        "'- Nächste sichere Aktion: fehlgeschlagenen Schritt und Artefakte prüfen'"
+        in summary["run"]
+    )
+    assert 'echo "summary_available=false" >> "$GITHUB_OUTPUT"' in summary["run"]
+    assert 'echo "retention_days=90" >> "$GITHUB_OUTPUT"' in summary["run"]
     assert steps.index(summary) < steps.index(upload)
     assert upload["if"] == "always()"
     assert upload["continue-on-error"] is True
@@ -155,6 +163,7 @@ def test_incident_issue_uses_separate_minimal_app_token_when_enabled() -> None:
     }
     assert maintain["if"] == enabled
     assert maintain["env"] == {
+        "ACTIONS_TOKEN": "${{ github.token }}",
         "GH_TOKEN": "${{ steps.incident-token.outputs.token }}",
         "INCIDENT_FAILURE_THRESHOLD": (
             "${{ vars.INCIDENT_FAILURE_THRESHOLD || '2' }}"

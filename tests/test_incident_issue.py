@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from io import BytesIO
 import json
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 
 import pytest
@@ -27,6 +29,7 @@ from scripts.rki_pipeline.runtime_status import new_run, update_run
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = "github_pat_abcdefghijklmnopqrstuvwxyz"
+ACTIONS_TOKEN = "ghs_actions_read_only_abcdefghijklmnopqrstuvwxyz"
 
 
 def public_status(
@@ -120,6 +123,7 @@ class FakeTransport:
 def marker_issue(number: int, state: str = "open") -> dict[str, object]:
     return {
         "body": f"{MARKER}\nexisting",
+        "labels": [],
         "number": number,
         "state": state,
         "title": TITLE_PREFIX,
@@ -205,12 +209,18 @@ def test_client_revalidates_frozen_plan_before_transport(
     value: object,
 ) -> None:
     status = public_status(failures=2, state="degraded")
-    plan = plan_incident_issue(status, (IssueMatch(number=7, state="open"),))
+    matches = (IssueMatch(number=7, state="open"),)
+    plan = plan_incident_issue(status, matches)
     object.__setattr__(plan, field, value)
     transport = FakeTransport([])
 
     with pytest.raises(IncidentIssueError, match="Plan"):
-        GitHubRestClient(TOKEN, transport=transport).apply(plan, status=status)
+        GitHubRestClient(TOKEN, transport=transport).apply(
+            plan,
+            status=status,
+            matches=matches,
+            threshold=DEFAULT_THRESHOLD,
+        )
 
     assert transport.calls == []
 
@@ -227,20 +237,56 @@ def test_client_rejects_valid_shaped_forged_body_before_transport(action: str) -
     object.__setattr__(plan, "body", f"{MARKER}\nsecret=forged-but-bounded")
     transport = FakeTransport([])
 
-    with pytest.raises(IncidentIssueError, match="Status"):
-        GitHubRestClient(TOKEN, transport=transport).apply(plan, status=status)
+    with pytest.raises(IncidentIssueError, match="neu berechnet"):
+        GitHubRestClient(TOKEN, transport=transport).apply(
+            plan,
+            status=status,
+            matches=matches,
+            threshold=DEFAULT_THRESHOLD,
+        )
 
     assert transport.calls == []
 
 
 def test_client_rejects_bounded_arbitrary_heal_comment_before_transport() -> None:
     status = public_status()
-    plan = plan_incident_issue(status, (IssueMatch(number=7, state="open"),))
+    matches = (IssueMatch(number=7, state="open"),)
+    plan = plan_incident_issue(status, matches)
     object.__setattr__(plan, "comment", "bounded forged healing comment")
     transport = FakeTransport([])
 
-    with pytest.raises(IncidentIssueError, match="Status"):
-        GitHubRestClient(TOKEN, transport=transport).apply(plan, status=status)
+    with pytest.raises(IncidentIssueError, match="neu berechnet"):
+        GitHubRestClient(TOKEN, transport=transport).apply(
+            plan,
+            status=status,
+            matches=matches,
+            threshold=DEFAULT_THRESHOLD,
+        )
+
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("action", "reopen"), ("issue_number", 8)],
+)
+def test_client_rejects_plan_different_from_replanned_matches_before_transport(
+    field: str,
+    value: object,
+) -> None:
+    status = public_status(failures=2, state="degraded")
+    matches = (IssueMatch(number=7, state="open"),)
+    plan = plan_incident_issue(status, matches)
+    object.__setattr__(plan, field, value)
+    transport = FakeTransport([])
+
+    with pytest.raises(IncidentIssueError, match="neu berechnet"):
+        GitHubRestClient(TOKEN, transport=transport).apply(
+            plan,
+            status=status,
+            matches=matches,
+            threshold=DEFAULT_THRESHOLD,
+        )
 
     assert transport.calls == []
 
@@ -270,6 +316,34 @@ def test_create_plan_uses_fixed_identity_and_redacted_deterministic_body() -> No
     assert "user:password" not in first.body
     assert "\x1b" not in first.body
     assert "[boom]*" not in first.body
+
+
+def test_markdown_sanitizes_ansi_before_redacting_split_token_and_escapes_tilde() -> None:
+    message = "token=ghp_abcd\x1b[31mefghijklmnop\x1b[0m ~literal~"
+
+    plan = plan_incident_issue(
+        public_status(failures=DEFAULT_THRESHOLD, state="degraded", message=message),
+        (),
+    )
+
+    assert plan.body is not None
+    assert "ghp_abcdefghijklmnop" not in plan.body
+    assert "ghp_" not in plan.body
+    assert "\x1b" not in plan.body
+    assert r"\~literal\~" in plan.body
+
+
+def test_markdown_sanitizes_control_before_redacting_split_token() -> None:
+    message = "token=ghp_abcd\x08efghijklmnop"
+
+    plan = plan_incident_issue(
+        public_status(failures=DEFAULT_THRESHOLD, state="degraded", message=message),
+        (),
+    )
+
+    assert plan.body is not None
+    assert "ghp_" not in plan.body
+    assert "\x08" not in plan.body
 
 
 @pytest.mark.parametrize("threshold", [1, 101, True])
@@ -365,7 +439,7 @@ def test_client_lists_marker_with_fixed_route_headers_timeout_and_pagination() -
     for page, (request, timeout) in enumerate(transport.calls, start=1):
         assert request.full_url == (
             "https://api.github.com/repos/H234598/desinfect/issues"
-            f"?state=all&labels=pipeline-incident&per_page=100&page={page}"
+            f"?state=all&per_page=100&page={page}"
         )
         assert request.method == "GET"
         assert request.get_header("Authorization") == f"Bearer {TOKEN}"
@@ -394,10 +468,162 @@ def test_client_rejects_oversized_response() -> None:
         GitHubRestClient(TOKEN, transport=transport).list_issue_matches()
 
 
+def test_client_counts_previous_consecutive_failures_for_current_workflow() -> None:
+    transport = FakeTransport(
+        [
+            FakeResponse(
+                {
+                    "head_branch": "main",
+                    "id": 900,
+                    "repository": {"full_name": REPOSITORY},
+                    "run_number": 10,
+                    "workflow_id": 42,
+                }
+            ),
+            FakeResponse(
+                {
+                    "workflow_runs": [
+                        {
+                            "conclusion": "cancelled",
+                            "id": 899,
+                            "run_number": 9,
+                            "status": "completed",
+                        },
+                        {
+                            "conclusion": "failure",
+                            "id": 898,
+                            "run_number": 8,
+                            "status": "completed",
+                        },
+                        {
+                            "conclusion": "success",
+                            "id": 897,
+                            "run_number": 7,
+                            "status": "completed",
+                        },
+                    ]
+                }
+            ),
+        ]
+    )
+
+    count = GitHubRestClient(
+        ACTIONS_TOKEN,
+        transport=transport,
+    ).previous_consecutive_failures(900, threshold=4)
+
+    assert count == 2
+    assert [request.method for request, _timeout in transport.calls] == ["GET", "GET"]
+    assert [request.full_url for request, _timeout in transport.calls] == [
+        "https://api.github.com/repos/H234598/desinfect/actions/runs/900",
+        (
+            "https://api.github.com/repos/H234598/desinfect/actions/workflows/42/runs"
+            "?branch=main&status=completed&per_page=100&page=1"
+        ),
+    ]
+    assert all(
+        request.get_header("Authorization") == f"Bearer {ACTIONS_TOKEN}"
+        for request, _timeout in transport.calls
+    )
+
+
+@pytest.mark.parametrize(
+    "current",
+    [
+        {"head_branch": "feature", "id": 900, "repository": {"full_name": REPOSITORY}, "run_number": 10, "workflow_id": 42},
+        {"head_branch": "main", "id": 901, "repository": {"full_name": REPOSITORY}, "run_number": 10, "workflow_id": 42},
+        {"head_branch": "main", "id": 900, "repository": {"full_name": "attacker/repo"}, "run_number": 10, "workflow_id": 42},
+    ],
+)
+def test_client_rejects_untrusted_current_run_identity(current: dict[str, object]) -> None:
+    transport = FakeTransport([FakeResponse(current)])
+
+    with pytest.raises(IncidentIssueError, match="Workflow-Lauf"):
+        GitHubRestClient(
+            ACTIONS_TOKEN,
+            transport=transport,
+        ).previous_consecutive_failures(900, threshold=2)
+
+    assert len(transport.calls) == 1
+
+
+def test_client_rejects_nonfinal_history_entry() -> None:
+    transport = FakeTransport(
+        [
+            FakeResponse(
+                {
+                    "head_branch": "main",
+                    "id": 900,
+                    "repository": {"full_name": REPOSITORY},
+                    "run_number": 10,
+                    "workflow_id": 42,
+                }
+            ),
+            FakeResponse(
+                {
+                    "workflow_runs": [
+                        {
+                            "conclusion": None,
+                            "id": 899,
+                            "run_number": 9,
+                            "status": "in_progress",
+                        }
+                    ]
+                }
+            ),
+        ]
+    )
+
+    with pytest.raises(IncidentIssueError, match="Workflow-Historie"):
+        GitHubRestClient(
+            ACTIONS_TOKEN,
+            transport=transport,
+        ).previous_consecutive_failures(900, threshold=2)
+
+
+def test_client_rejects_nonstring_history_conclusion() -> None:
+    transport = FakeTransport(
+        [
+            FakeResponse(
+                {
+                    "head_branch": "main",
+                    "id": 900,
+                    "repository": {"full_name": REPOSITORY},
+                    "run_number": 10,
+                    "workflow_id": 42,
+                }
+            ),
+            FakeResponse(
+                {
+                    "workflow_runs": [
+                        {
+                            "conclusion": [],
+                            "id": 899,
+                            "run_number": 9,
+                            "status": "completed",
+                        }
+                    ]
+                }
+            ),
+        ]
+    )
+
+    with pytest.raises(IncidentIssueError, match="Workflow-Historie"):
+        GitHubRestClient(
+            ACTIONS_TOKEN,
+            transport=transport,
+        ).previous_consecutive_failures(900, threshold=2)
+
+
 @pytest.mark.parametrize(
     ("matches", "status", "methods", "paths"),
     [
-        ((), public_status(failures=2, state="degraded"), ["POST"], ["/issues"]),
+        (
+            (),
+            public_status(failures=2, state="degraded"),
+            ["GET", "POST"],
+            ["/labels/pipeline-incident", "/issues"],
+        ),
         (
             (IssueMatch(number=7, state="open"),),
             public_status(failures=2, state="degraded"),
@@ -425,16 +651,28 @@ def test_client_uses_exact_mutation_routes(
     paths: list[str],
 ) -> None:
     plan = plan_incident_issue(status, matches)
-    transport = FakeTransport([FakeResponse({}) for _ in methods])
+    responses = [FakeResponse({}) for _ in methods]
+    if plan.action == "create":
+        responses[0] = FakeResponse({"name": LABEL})
+    transport = FakeTransport(responses)
 
-    GitHubRestClient(TOKEN, transport=transport).apply(plan, status=status)
+    GitHubRestClient(TOKEN, transport=transport).apply(
+        plan,
+        status=status,
+        matches=matches,
+        threshold=DEFAULT_THRESHOLD,
+    )
 
     assert [request.method for request, _timeout in transport.calls] == methods
     assert [
         urlsplit(request.full_url).path.removeprefix("/repos/H234598/desinfect")
         for request, _timeout in transport.calls
     ] == paths
-    payloads = [json.loads(request.data) for request, _timeout in transport.calls]
+    payloads = [
+        json.loads(request.data)
+        for request, _timeout in transport.calls
+        if request.data is not None
+    ]
     if plan.action == "create":
         assert payloads == [
             {"body": plan.body, "labels": [LABEL], "title": TITLE_PREFIX}
@@ -454,6 +692,62 @@ def test_client_uses_exact_mutation_routes(
         ]
     else:
         assert payloads == [{"body": plan.comment}, {"state": "closed"}]
+
+
+def test_client_creates_missing_label_before_issue() -> None:
+    status = public_status(failures=2, state="degraded")
+    plan = plan_incident_issue(status, ())
+    transport = FakeTransport(
+        [
+            HTTPError(
+                "https://api.github.com/repos/H234598/desinfect/labels/pipeline-incident",
+                404,
+                "Not Found",
+                {},
+                BytesIO(b"{}"),
+            ),
+            FakeResponse({"name": LABEL}),
+            FakeResponse({"number": 17}),
+        ]
+    )
+
+    GitHubRestClient(TOKEN, transport=transport).apply(
+        plan,
+        status=status,
+        matches=(),
+        threshold=DEFAULT_THRESHOLD,
+    )
+
+    assert [request.method for request, _timeout in transport.calls] == [
+        "GET",
+        "POST",
+        "POST",
+    ]
+    assert [
+        urlsplit(request.full_url).path.removeprefix("/repos/H234598/desinfect")
+        for request, _timeout in transport.calls
+    ] == ["/labels/pipeline-incident", "/labels", "/issues"]
+    assert json.loads(transport.calls[1][0].data) == {
+        "color": "B60205",
+        "description": "Automatisch verwalteter RKI-Pipeline-Incident",
+        "name": LABEL,
+    }
+
+
+def test_client_fails_closed_when_label_lookup_is_invalid() -> None:
+    status = public_status(failures=2, state="degraded")
+    plan = plan_incident_issue(status, ())
+    transport = FakeTransport([FakeResponse({"name": "other"})])
+
+    with pytest.raises(IncidentIssueError, match="Label"):
+        GitHubRestClient(TOKEN, transport=transport).apply(
+            plan,
+            status=status,
+            matches=(),
+            threshold=DEFAULT_THRESHOLD,
+        )
+
+    assert len(transport.calls) == 1
 
 
 def test_transport_failure_never_renders_token() -> None:
@@ -484,6 +778,101 @@ def test_plan_cli_is_offline_and_does_not_mutate_status(
     assert result == 0
     assert json.loads(capsys.readouterr().out)["action"] == "create"
     assert json.loads(path.read_text(encoding="utf-8")) == original
+
+
+def test_plan_cli_rejects_symlink_status_file(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    target = tmp_path / "target.json"
+    link = tmp_path / "status.json"
+    target.write_text(stable_json_dumps(public_status()), encoding="utf-8")
+    link.symlink_to(target)
+
+    result = incident_main(["--mode", "plan", "--status", str(link)])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "reguläre Datei" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_plan_cli_fails_closed_without_o_nofollow(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "status.json"
+    path.write_text(stable_json_dumps(public_status()), encoding="utf-8")
+    monkeypatch.delattr("scripts.rki_pipeline.incident_issue.os.O_NOFOLLOW")
+
+    result = incident_main(["--mode", "plan", "--status", str(path)])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "O_NOFOLLOW" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_plan_cli_rejects_directory_status_path(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    directory = tmp_path / "status"
+    directory.mkdir()
+
+    result = incident_main(["--mode", "plan", "--status", str(directory)])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "reguläre Datei" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_plan_cli_rejects_oversized_status_before_read(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "status.json"
+    path.write_bytes(b"x" * (2 * 1024 * 1024 + 1))
+
+    def forbidden_read(*_args: object, **_kwargs: object) -> bytes:
+        raise AssertionError("oversized file must be rejected before os.read")
+
+    monkeypatch.setattr("scripts.rki_pipeline.incident_issue.os.read", forbidden_read)
+    result = incident_main(["--mode", "plan", "--status", str(path)])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "Größenlimit" in captured.err
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [
+        (b"{\"value\":\xff}", "UTF-8"),
+        (b'{"value":1,"value":2}', "doppelten Schlüssel"),
+        (b'{"value":NaN}', "nichtendlichen Wert"),
+        (b'{"value":1e9999}', "nichtendlichen Wert"),
+    ],
+)
+def test_plan_cli_rejects_noncanonical_json_input(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    raw: bytes,
+    message: str,
+) -> None:
+    path = tmp_path / "status.json"
+    path.write_bytes(raw)
+
+    result = incident_main(["--mode", "plan", "--status", str(path)])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert message in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_plan_cli_projects_transaction_envelope_in_memory(
@@ -630,7 +1019,13 @@ def test_apply_cli_lists_then_creates_without_rendering_token(
         encoding="utf-8",
     )
     monkeypatch.setenv("GH_TOKEN", TOKEN)
-    transport = FakeTransport([FakeResponse([]), FakeResponse({"number": 17})])
+    transport = FakeTransport(
+        [
+            FakeResponse([]),
+            FakeResponse({"name": LABEL}),
+            FakeResponse({"number": 17}),
+        ]
+    )
 
     result = incident_main(
         ["--mode", "apply", "--status", str(status_path)],
@@ -640,6 +1035,108 @@ def test_apply_cli_lists_then_creates_without_rendering_token(
     captured = capsys.readouterr()
     assert result == 0
     assert json.loads(captured.out)["action"] == "create"
-    assert [request.method for request, _timeout in transport.calls] == ["GET", "POST"]
+    assert [request.method for request, _timeout in transport.calls] == [
+        "GET",
+        "GET",
+        "POST",
+    ]
     assert TOKEN not in captured.out
     assert TOKEN not in captured.err
+
+
+def test_apply_cli_uses_actions_history_for_repeated_job_failure(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    status_path = tmp_path / "status.json"
+    status_path.write_text(stable_json_dumps(public_status()), encoding="utf-8")
+    monkeypatch.setenv("GH_TOKEN", TOKEN)
+    monkeypatch.setenv("ACTIONS_TOKEN", ACTIONS_TOKEN)
+    monkeypatch.setenv("GITHUB_RUN_ID", "900")
+    transport = FakeTransport(
+        [
+            FakeResponse(
+                {
+                    "head_branch": "main",
+                    "id": 900,
+                    "repository": {"full_name": REPOSITORY},
+                    "run_number": 10,
+                    "workflow_id": 42,
+                }
+            ),
+            FakeResponse(
+                {
+                    "workflow_runs": [
+                        {
+                            "conclusion": "failure",
+                            "id": 899,
+                            "run_number": 9,
+                            "status": "completed",
+                        },
+                        {
+                            "conclusion": "success",
+                            "id": 898,
+                            "run_number": 8,
+                            "status": "completed",
+                        },
+                    ]
+                }
+            ),
+            FakeResponse([]),
+            FakeResponse({"name": LABEL}),
+            FakeResponse({"number": 17}),
+        ]
+    )
+
+    result = incident_main(
+        [
+            "--mode",
+            "apply",
+            "--status",
+            str(status_path),
+            "--job-status",
+            "failure",
+            "--threshold",
+            "2",
+        ],
+        transport=transport,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    payload = json.loads(captured.out)
+    assert payload["action"] == "create"
+    assert "Aufeinanderfolgende Fehler: `2`" in payload["body"]
+    assert ACTIONS_TOKEN not in captured.out
+    assert ACTIONS_TOKEN not in captured.err
+
+
+def test_apply_cli_job_failure_requires_actions_history_token(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    status_path = tmp_path / "status.json"
+    status_path.write_text(stable_json_dumps(public_status()), encoding="utf-8")
+    monkeypatch.setenv("GH_TOKEN", TOKEN)
+    monkeypatch.delenv("ACTIONS_TOKEN", raising=False)
+    monkeypatch.setenv("GITHUB_RUN_ID", "900")
+    transport = FakeTransport([])
+
+    result = incident_main(
+        [
+            "--mode",
+            "apply",
+            "--status",
+            str(status_path),
+            "--job-status",
+            "failure",
+        ],
+        transport=transport,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "ACTIONS_TOKEN" in captured.err
+    assert transport.calls == []

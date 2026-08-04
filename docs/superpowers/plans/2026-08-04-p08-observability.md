@@ -17,7 +17,7 @@
 
 1. Write failing tests for threshold validation, create/update/reopen/heal/no-op, duplicate marker rejection, redacted deterministic body, fixed repository/label/title, bounded list pagination, exact mutation routes, and token non-disclosure.
 2. Run `pytest -q tests/test_incident_issue.py`; verify RED.
-3. Implement immutable plan values, pure planner, bounded stdlib REST adapter, and explicit `plan|apply` CLI.
+3. Implement immutable plan values, pure planner, bounded stdlib REST adapter, read-only same-caller Actions history for persistent CI failure streaks, and explicit `plan|apply` CLI.
 4. Run focused tests and offline plan smoke.
 
 ## Task 3: Preserve failure evidence without changing exit
@@ -56,4 +56,3 @@ git diff --check
 ```
 
 Then run scoped review, full branch review, PR checks, valid-feedback fixes, squash merge, post-merge CI, and governance closeout.
-

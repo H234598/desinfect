@@ -6,11 +6,14 @@ import argparse
 from copy import deepcopy
 from dataclasses import dataclass
 import json
+import math
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 from typing import Any, Callable
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from scripts.rki_pipeline.io_utils import stable_json_dumps
@@ -38,10 +41,21 @@ MAX_PAGES = 5
 MAX_INPUT_BYTES = 2 * 1024 * 1024
 MAX_BODY_CHARS = 20_000
 MAX_COMMENT_CHARS = 2_000
+MAX_HISTORY_RUNS = 100
 
 _ISSUES_PATH = f"/repos/{REPOSITORY}/issues"
+_LABELS_PATH = f"/repos/{REPOSITORY}/labels"
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-_MARKDOWN = re.compile(r"([\\`*_{}\[\]()#+.!|-])")
+_MARKDOWN = re.compile(r"([\\`*_{}\[\]()#+.!|~\-])")
+_FAILURE_CONCLUSIONS = {
+    "action_required",
+    "cancelled",
+    "failure",
+    "stale",
+    "startup_failure",
+    "timed_out",
+}
+_NON_FAILURE_CONCLUSIONS = {"neutral", "skipped", "success"}
 Transport = Callable[..., Any]
 
 
@@ -150,11 +164,12 @@ def _validated_status(status: dict[str, Any]) -> dict[str, Any]:
 
 
 def _markdown_text(value: object, *, limit: int = 600) -> str:
-    text, _changed = redact_text(value, limit=limit)
-    text = _ANSI.sub("", text).replace(MARKER, "[REDACTED-MARKER]")
-    text = " ".join(
-        "".join(character if character.isprintable() else " " for character in text).split()
-    )
+    text = str(value or "")
+    text = _ANSI.sub("", text)
+    text = "".join(character for character in text if character.isprintable())
+    text, _changed = redact_text(text, limit=limit)
+    text = text.replace(MARKER, "[REDACTED-MARKER]")
+    text = " ".join(text.split())
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return _MARKDOWN.sub(r"\\\1", text) or "nicht gemeldet"
 
@@ -265,6 +280,8 @@ class GitHubRestClient:
         method: str,
         path: str,
         payload: dict[str, object] | None = None,
+        *,
+        allow_not_found: bool = False,
     ) -> object:
         data = None
         headers = {
@@ -286,10 +303,22 @@ class GitHubRestClient:
             with self._transport(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
                 status = getattr(response, "status", 200)
+        except HTTPError as exc:
+            if not allow_not_found or exc.code != 404:
+                raise IncidentIssueError("GitHub-Anfrage fehlgeschlagen") from exc
+            try:
+                raw = exc.read(MAX_RESPONSE_BYTES + 1)
+            except Exception as read_exc:
+                raise IncidentIssueError("GitHub-Anfrage fehlgeschlagen") from read_exc
+            finally:
+                exc.close()
+            status = exc.code
         except Exception as exc:
             raise IncidentIssueError("GitHub-Anfrage fehlgeschlagen") from exc
         if len(raw) > MAX_RESPONSE_BYTES:
             raise IncidentIssueError("GitHub-Antwortgröße überschreitet Grenze")
+        if allow_not_found and status == 404:
+            return None
         if not 200 <= status < 300:
             raise IncidentIssueError("GitHub-Anfrage lieferte keinen Erfolg")
         if not raw:
@@ -304,7 +333,7 @@ class GitHubRestClient:
         marker_hits = 0
         for page_number in range(1, MAX_PAGES + 1):
             path = (
-                f"{_ISSUES_PATH}?state=all&labels={LABEL}"
+                f"{_ISSUES_PATH}?state=all"
                 f"&per_page={PAGE_SIZE}&page={page_number}"
             )
             page = self._request("GET", path)
@@ -326,65 +355,221 @@ class GitHubRestClient:
                 return tuple(matches)
         raise IncidentIssueError("GitHub-Issue-Seitengrenze erreicht")
 
-    def apply(self, plan: IncidentIssuePlan, *, status: dict[str, Any]) -> None:
-        _validate_incident_plan(plan)
-        current = _validated_status(status)
-        expected_body = (
-            _incident_body(current)
-            if plan.action in {"create", "update", "reopen"}
-            else None
+    def previous_consecutive_failures(
+        self,
+        run_id: object,
+        *,
+        threshold: object,
+    ) -> int:
+        """Count prior failed runs for the current main-branch caller workflow."""
+
+        failure_threshold = _threshold(threshold)
+        if type(run_id) is not int or run_id < 1:
+            raise IncidentIssueError("GitHub-Workflow-Lauf-ID ist ungültig")
+        current = self._request("GET", f"/repos/{REPOSITORY}/actions/runs/{run_id}")
+        if not isinstance(current, dict):
+            raise IncidentIssueError("GitHub-Workflow-Lauf ist ungültig")
+        repository = current.get("repository")
+        workflow_id = current.get("workflow_id")
+        run_number = current.get("run_number")
+        if (
+            type(current.get("id")) is not int
+            or current.get("id") != run_id
+            or current.get("head_branch") != "main"
+            or not isinstance(repository, dict)
+            or repository.get("full_name") != REPOSITORY
+            or type(workflow_id) is not int
+            or workflow_id < 1
+            or type(run_number) is not int
+            or run_number < 1
+        ):
+            raise IncidentIssueError("GitHub-Workflow-Lauf verletzt feste Grenzen")
+
+        history = self._request(
+            "GET",
+            (
+                f"/repos/{REPOSITORY}/actions/workflows/{workflow_id}/runs"
+                f"?branch=main&status=completed&per_page={MAX_HISTORY_RUNS}&page=1"
+            ),
         )
-        expected_comment = _healing_comment(current) if plan.action == "heal" else None
-        if plan.body != expected_body or plan.comment != expected_comment:
-            raise IncidentIssueError("Incident-Plan stimmt nicht mit Status überein")
-        if plan.action == "noop":
+        if not isinstance(history, dict):
+            raise IncidentIssueError("GitHub-Workflow-Historie ist ungültig")
+        runs = history.get("workflow_runs")
+        if not isinstance(runs, list) or len(runs) > MAX_HISTORY_RUNS:
+            raise IncidentIssueError("GitHub-Workflow-Historie ist ungültig")
+
+        normalized: list[tuple[int, str]] = []
+        seen_numbers: set[int] = set()
+        for run in runs:
+            if not isinstance(run, dict):
+                raise IncidentIssueError("GitHub-Workflow-Historie ist ungültig")
+            previous_id = run.get("id")
+            previous_number = run.get("run_number")
+            conclusion = run.get("conclusion")
+            if (
+                type(previous_id) is not int
+                or previous_id < 1
+                or type(previous_number) is not int
+                or previous_number < 1
+                or previous_number >= run_number
+                or previous_number in seen_numbers
+                or run.get("status") != "completed"
+                or not isinstance(conclusion, str)
+                or conclusion not in _FAILURE_CONCLUSIONS | _NON_FAILURE_CONCLUSIONS
+            ):
+                raise IncidentIssueError("GitHub-Workflow-Historie ist ungültig")
+            seen_numbers.add(previous_number)
+            normalized.append((previous_number, conclusion))
+
+        failures = 0
+        for _previous_number, conclusion in sorted(normalized, reverse=True):
+            if conclusion not in _FAILURE_CONCLUSIONS:
+                break
+            failures += 1
+            if failures >= failure_threshold - 1:
+                break
+        return failures
+
+    def _ensure_label(self) -> None:
+        label = self._request(
+            "GET",
+            f"{_LABELS_PATH}/{LABEL}",
+            allow_not_found=True,
+        )
+        if label is None:
+            label = self._request(
+                "POST",
+                _LABELS_PATH,
+                {
+                    "color": "B60205",
+                    "description": "Automatisch verwalteter RKI-Pipeline-Incident",
+                    "name": LABEL,
+                },
+            )
+        if not isinstance(label, dict) or label.get("name") != LABEL:
+            raise IncidentIssueError("GitHub-Label-Antwort ist ungültig")
+
+    def apply(
+        self,
+        plan: IncidentIssuePlan,
+        *,
+        status: dict[str, Any],
+        matches: tuple[IssueMatch, ...] | list[IssueMatch],
+        threshold: object,
+    ) -> None:
+        _validate_incident_plan(plan)
+        expected = plan_incident_issue(status, matches, threshold=threshold)
+        if plan != expected:
+            raise IncidentIssueError("Incident-Plan weicht vom neu berechneten Plan ab")
+        if expected.action == "noop":
             return
-        if plan.action == "create":
+        if expected.action == "create":
+            self._ensure_label()
             self._request(
                 "POST",
                 _ISSUES_PATH,
-                {"body": expected_body, "labels": [LABEL], "title": TITLE_PREFIX},
+                {"body": expected.body, "labels": [LABEL], "title": TITLE_PREFIX},
             )
             return
-        if plan.issue_number is None:
+        if expected.issue_number is None:
             raise IncidentIssueError("Incident-Plan enthält keine Issue-Nummer")
-        issue_path = f"{_ISSUES_PATH}/{plan.issue_number}"
-        if plan.action == "update":
+        issue_path = f"{_ISSUES_PATH}/{expected.issue_number}"
+        if expected.action == "update":
             self._request(
                 "PATCH",
                 issue_path,
-                {"body": expected_body, "labels": [LABEL], "title": TITLE_PREFIX},
+                {"body": expected.body, "labels": [LABEL], "title": TITLE_PREFIX},
             )
             return
-        if plan.action == "reopen":
+        if expected.action == "reopen":
             self._request(
                 "PATCH",
                 issue_path,
                 {
-                    "body": expected_body,
+                    "body": expected.body,
                     "labels": [LABEL],
                     "state": "open",
                     "title": TITLE_PREFIX,
                 },
             )
             return
-        if plan.action == "heal":
-            self._request("POST", f"{issue_path}/comments", {"body": expected_comment})
+        if expected.action == "heal":
+            self._request("POST", f"{issue_path}/comments", {"body": expected.comment})
             self._request("PATCH", issue_path, {"state": "closed"})
             return
         raise IncidentIssueError("Incident-Plan enthält unbekannte Aktion")
 
 
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise IncidentIssueError("Eingabedatei enthält einen doppelten Schlüssel")
+        result[key] = value
+    return result
+
+
+def _reject_nonfinite(_value: str) -> None:
+    raise IncidentIssueError("Eingabedatei enthält einen nichtendlichen Wert")
+
+
+def _finite_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        _reject_nonfinite(value)
+    return parsed
+
+
 def _load_json(path: Path) -> dict[str, Any]:
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if not isinstance(no_follow, int) or no_follow == 0:
+        raise IncidentIssueError("Plattform unterstützt O_NOFOLLOW nicht")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | no_follow
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     try:
-        raw = path.read_bytes()
+        descriptor = os.open(path, flags)
     except OSError as exc:
-        raise IncidentIssueError("Eingabedatei ist nicht lesbar") from exc
-    if len(raw) > MAX_INPUT_BYTES:
-        raise IncidentIssueError("Eingabedatei überschreitet Größenlimit")
+        raise IncidentIssueError(
+            "Eingabepfad ist keine lesbare reguläre Datei"
+        ) from exc
     try:
-        value = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise IncidentIssueError("Eingabepfad ist keine reguläre Datei")
+            if metadata.st_size > MAX_INPUT_BYTES:
+                raise IncidentIssueError("Eingabedatei überschreitet Größenlimit")
+            chunks: list[bytes] = []
+            remaining = MAX_INPUT_BYTES + 1
+            while remaining:
+                chunk = os.read(descriptor, min(64 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            raw = b"".join(chunks)
+            if len(raw) > MAX_INPUT_BYTES:
+                raise IncidentIssueError("Eingabedatei überschreitet Größenlimit")
+        except OSError as exc:
+            raise IncidentIssueError("Eingabedatei ist nicht lesbar") from exc
+    finally:
+        os.close(descriptor)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise IncidentIssueError("Eingabedatei ist kein gültiges UTF-8") from exc
+    try:
+        value = json.loads(
+            text,
+            object_pairs_hook=_unique_object,
+            parse_constant=_reject_nonfinite,
+            parse_float=_finite_float,
+        )
+    except json.JSONDecodeError as exc:
         raise IncidentIssueError("Eingabedatei enthält kein gültiges JSON") from exc
     if not isinstance(value, dict):
         raise IncidentIssueError("JSON-Wurzel muss ein Objekt sein")
@@ -449,6 +634,14 @@ def _decision_status(
     return _validated_status(status)
 
 
+def _with_failure_count(status: dict[str, Any], failures: int) -> dict[str, Any]:
+    if type(failures) is not int or failures < 1:
+        raise IncidentIssueError("Fehlerfolge ist ungültig")
+    result = deepcopy(_validated_status(status))
+    result["pipeline"]["consecutive_failures"] = failures
+    return _validated_status(result)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("plan", "apply"), required=True)
@@ -479,6 +672,25 @@ def main(
             token = os.environ.get("GH_TOKEN")
             if not token:
                 raise IncidentIssueError("GH_TOKEN fehlt für apply")
+            if args.job_status in {"failure", "cancelled"}:
+                actions_token = os.environ.get("ACTIONS_TOKEN")
+                run_id_value = os.environ.get("GITHUB_RUN_ID")
+                if not actions_token:
+                    raise IncidentIssueError("ACTIONS_TOKEN fehlt für Fehlerfolge")
+                try:
+                    run_id = int(run_id_value or "")
+                except ValueError as exc:
+                    raise IncidentIssueError("GITHUB_RUN_ID ist ungültig") from exc
+                history_client = (
+                    GitHubRestClient(actions_token)
+                    if transport is None
+                    else GitHubRestClient(actions_token, transport=transport)
+                )
+                previous_failures = history_client.previous_consecutive_failures(
+                    run_id,
+                    threshold=args.threshold,
+                )
+                current = _with_failure_count(current, previous_failures + 1)
             client = (
                 GitHubRestClient(token)
                 if transport is None
@@ -486,7 +698,12 @@ def main(
             )
             matches = client.list_issue_matches()
             plan = plan_incident_issue(current, matches, threshold=args.threshold)
-            client.apply(plan, status=current)
+            client.apply(
+                plan,
+                status=current,
+                matches=matches,
+                threshold=args.threshold,
+            )
         print(stable_json_dumps(plan.to_dict()), end="")
         return 0
     except IncidentIssueError as exc:
