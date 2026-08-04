@@ -204,12 +204,43 @@ def test_client_revalidates_frozen_plan_before_transport(
     field: str,
     value: object,
 ) -> None:
-    plan = IncidentIssuePlan(**plan_fields("update"))
+    status = public_status(failures=2, state="degraded")
+    plan = plan_incident_issue(status, (IssueMatch(number=7, state="open"),))
     object.__setattr__(plan, field, value)
     transport = FakeTransport([])
 
     with pytest.raises(IncidentIssueError, match="Plan"):
-        GitHubRestClient(TOKEN, transport=transport).apply(plan)
+        GitHubRestClient(TOKEN, transport=transport).apply(plan, status=status)
+
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize("action", ["create", "update", "reopen"])
+def test_client_rejects_valid_shaped_forged_body_before_transport(action: str) -> None:
+    status = public_status(failures=2, state="degraded")
+    matches = (
+        ()
+        if action == "create"
+        else (IssueMatch(number=7, state="open" if action == "update" else "closed"),)
+    )
+    plan = plan_incident_issue(status, matches)
+    object.__setattr__(plan, "body", f"{MARKER}\nsecret=forged-but-bounded")
+    transport = FakeTransport([])
+
+    with pytest.raises(IncidentIssueError, match="Status"):
+        GitHubRestClient(TOKEN, transport=transport).apply(plan, status=status)
+
+    assert transport.calls == []
+
+
+def test_client_rejects_bounded_arbitrary_heal_comment_before_transport() -> None:
+    status = public_status()
+    plan = plan_incident_issue(status, (IssueMatch(number=7, state="open"),))
+    object.__setattr__(plan, "comment", "bounded forged healing comment")
+    transport = FakeTransport([])
+
+    with pytest.raises(IncidentIssueError, match="Status"):
+        GitHubRestClient(TOKEN, transport=transport).apply(plan, status=status)
 
     assert transport.calls == []
 
@@ -396,7 +427,7 @@ def test_client_uses_exact_mutation_routes(
     plan = plan_incident_issue(status, matches)
     transport = FakeTransport([FakeResponse({}) for _ in methods])
 
-    GitHubRestClient(TOKEN, transport=transport).apply(plan)
+    GitHubRestClient(TOKEN, transport=transport).apply(plan, status=status)
 
     assert [request.method for request, _timeout in transport.calls] == methods
     assert [

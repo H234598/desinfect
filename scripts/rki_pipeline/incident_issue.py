@@ -326,15 +326,24 @@ class GitHubRestClient:
                 return tuple(matches)
         raise IncidentIssueError("GitHub-Issue-Seitengrenze erreicht")
 
-    def apply(self, plan: IncidentIssuePlan) -> None:
+    def apply(self, plan: IncidentIssuePlan, *, status: dict[str, Any]) -> None:
         _validate_incident_plan(plan)
+        current = _validated_status(status)
+        expected_body = (
+            _incident_body(current)
+            if plan.action in {"create", "update", "reopen"}
+            else None
+        )
+        expected_comment = _healing_comment(current) if plan.action == "heal" else None
+        if plan.body != expected_body or plan.comment != expected_comment:
+            raise IncidentIssueError("Incident-Plan stimmt nicht mit Status überein")
         if plan.action == "noop":
             return
         if plan.action == "create":
             self._request(
                 "POST",
                 _ISSUES_PATH,
-                {"body": plan.body, "labels": [LABEL], "title": TITLE_PREFIX},
+                {"body": expected_body, "labels": [LABEL], "title": TITLE_PREFIX},
             )
             return
         if plan.issue_number is None:
@@ -344,7 +353,7 @@ class GitHubRestClient:
             self._request(
                 "PATCH",
                 issue_path,
-                {"body": plan.body, "labels": [LABEL], "title": TITLE_PREFIX},
+                {"body": expected_body, "labels": [LABEL], "title": TITLE_PREFIX},
             )
             return
         if plan.action == "reopen":
@@ -352,7 +361,7 @@ class GitHubRestClient:
                 "PATCH",
                 issue_path,
                 {
-                    "body": plan.body,
+                    "body": expected_body,
                     "labels": [LABEL],
                     "state": "open",
                     "title": TITLE_PREFIX,
@@ -360,7 +369,7 @@ class GitHubRestClient:
             )
             return
         if plan.action == "heal":
-            self._request("POST", f"{issue_path}/comments", {"body": plan.comment})
+            self._request("POST", f"{issue_path}/comments", {"body": expected_comment})
             self._request("PATCH", issue_path, {"state": "closed"})
             return
         raise IncidentIssueError("Incident-Plan enthält unbekannte Aktion")
@@ -477,7 +486,7 @@ def main(
             )
             matches = client.list_issue_matches()
             plan = plan_incident_issue(current, matches, threshold=args.threshold)
-            client.apply(plan)
+            client.apply(plan, status=current)
         print(stable_json_dumps(plan.to_dict()), end="")
         return 0
     except IncidentIssueError as exc:
