@@ -260,6 +260,50 @@ def test_staged_directory_never_removes_concurrent_target_after_validator_rename
     assert moved.is_dir()
 
 
+def test_staged_directory_never_removes_replaced_quarantine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rollback cleanup remains bound to the claimed quarantine inode."""
+
+    target = tmp_path / "site"
+    _generated(target, "old")
+    ours_away = tmp_path / "ours-away"
+    foreign: Path | None = None
+    original_claim = staging_module._claim_owned_target
+
+    def swap_after_claim(
+        parent_fd: int,
+        target_name: str,
+        quarantine_name: str,
+        identity: tuple[int, int, int],
+    ) -> int | None:
+        nonlocal foreign
+        descriptor = original_claim(parent_fd, target_name, quarantine_name, identity)
+        if descriptor is not None:
+            quarantine = tmp_path / quarantine_name
+            quarantine.rename(ours_away)
+            foreign = quarantine
+            _generated(quarantine, "foreign")
+        return descriptor
+
+    monkeypatch.setattr(staging_module, "_claim_owned_target", swap_after_claim)
+
+    def reject(_target_fd: int) -> None:
+        raise RuntimeError("signature mismatch")
+
+    with pytest.raises(StagingError, match="Rollback"):
+        with staged_directory(
+            target,
+            allowed_root=tmp_path,
+            publication_validator=reject,
+        ) as stage:
+            (stage / "value.txt").write_text("ours", encoding="utf-8")
+
+    assert foreign is not None
+    assert (foreign / "value.txt").read_text(encoding="utf-8") == "foreign"
+    assert (ours_away / "value.txt").read_text(encoding="utf-8") == "ours"
+
+
 def test_staged_directory_rejects_nested_same_target_without_lock_artifact(tmp_path: Path) -> None:
     """Same-target reentry fails fast and leaves no persistent lock file."""
 

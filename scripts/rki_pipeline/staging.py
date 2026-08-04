@@ -294,14 +294,16 @@ def _claim_owned_target(
     target_name: str,
     quarantine_name: str,
     identity: tuple[int, int, int],
-) -> bool:
-    """Claim target only if a private quarantine proves it is our generation."""
+) -> int | None:
+    """Claim target and hold its quarantine descriptor through cleanup."""
 
     if not entry_exists(parent_fd, target_name):
-        return False
+        return None
     _rename_noreplace(parent_fd, target_name, quarantine_name)
-    if _named_identity_matches(parent_fd, quarantine_name, identity):
-        return True
+    descriptor = _open_child_directory(parent_fd, quarantine_name)
+    if _directory_identity(descriptor) == identity:
+        return descriptor
+    os.close(descriptor)
     try:
         _rename_noreplace(parent_fd, quarantine_name, target_name)
     except StagingError as exc:
@@ -443,15 +445,24 @@ def staged_directory(
                 raise
             try:
                 if staging_published and published_identity is not None:
-                    if _claim_owned_target(
+                    quarantine_fd = _claim_owned_target(
                         parent_fd,
                         target_name,
                         quarantine_name,
                         published_identity,
-                    ):
-                        remove_tree_at(parent_fd, quarantine_name, require_sentinel=True)
-                        staging_published = False
-                        publication_state.published = False
+                    )
+                    if quarantine_fd is not None:
+                        try:
+                            remove_tree_at(
+                                parent_fd,
+                                quarantine_name,
+                                require_sentinel=True,
+                                expected_identity=published_identity,
+                            )
+                            staging_published = False
+                            publication_state.published = False
+                        finally:
+                            os.close(quarantine_fd)
                 if target_moved and entry_exists(parent_fd, backup_name):
                     if entry_exists(parent_fd, target_name):
                         raise StagingConflictError(
