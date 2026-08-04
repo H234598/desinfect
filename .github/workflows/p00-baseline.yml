@@ -226,6 +226,19 @@ jobs:
           python -m pytest -q tests/test_period_archives.py
           python -m scripts.rki_pipeline.cli aggregate --as-of 2026-01-01T05:00:00Z --mode plan
 
+      - name: P07.3 reconciliation tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          pytest -q tests/test_reconciliation.py tests/test_reconciliation_cli.py
+
+      - name: P07.3 offline reconciliation smoke
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m scripts.rki_pipeline.cli reconcile --fixture tests/fixtures/reconciliation --mode plan
+          python3 -m scripts.rki_pipeline.cli reconcile --fixture tests/fixtures/reconciliation --mode materialize
+
       - name: Run focused P05 contracts
         shell: bash
         run: |

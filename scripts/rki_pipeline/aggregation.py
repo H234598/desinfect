@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime, time
 import hashlib
@@ -23,6 +24,7 @@ from scripts.rki_pipeline.archive import (
     ArchiveBuild,
     ArchiveEntry,
     ArchiveError,
+    ArchiveSecurityError,
     ArchiveSpec,
     archive_input_fingerprint,
     materialize_archive,
@@ -76,6 +78,14 @@ class PeriodManifestError(AggregationError):
     """Period-manifest bytes or archive references violate the contract."""
 
 
+class PeriodPublicationMissing(FileNotFoundError):
+    """One bounded manifest or archive-bundle path is absent."""
+
+    def __init__(self, relative_path: str) -> None:
+        super().__init__("Periodenveröffentlichung fehlt")
+        self.relative_path = relative_path
+
+
 @dataclass(frozen=True, slots=True)
 class PeriodRef:
     """One immutable, closed calendar period in Berlin time."""
@@ -85,6 +95,15 @@ class PeriodRef:
     start: date
     end: date
     source_date_epoch: int
+
+
+@dataclass(frozen=True, slots=True)
+class PeriodPublicationInspection:
+    """One fully validated published period manifest and its archive bundles."""
+
+    period: PeriodRef
+    manifest: dict[str, object]
+    manifest_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -428,8 +447,10 @@ def _period_documents(
         paths = _mapping_value(document, "paths", label="Dokument")
         if type(paths) is not dict:
             raise AggregationError("Dokumentpfade sind ungültig")
-        pdf_path = _string(paths, "pdf", label="Dokumentpfade")
+        pdf_path = _nullable_string(paths, "pdf", label="Dokumentpfade")
         markdown_path = _nullable_string(paths, "markdown", label="Dokumentpfade")
+        if pdf_path is None and markdown_path is None:
+            raise AggregationError("Dokument besitzt kein unterstütztes Produkt")
         all_candidates = by_owner.get((document_id, bitstream_id), [])
         persisted_candidates = [
             candidate
@@ -458,16 +479,18 @@ def _period_documents(
                 source, "sha256", label="Source"
             ):
                 raise AggregationError("Conversion-Source-SHA stimmt nicht mit Source überein")
-        pdf_reference = storage_by_path.get(pdf_path)
-        if pdf_reference is None:
-            raise AggregationError(f"Storage für PDF fehlt: {pdf_path}")
-        pdf = _prepared_for(
-            pdf_reference,
-            prepared_by_logical_key,
-            source=source,
-            document=document,
-            conversion_id=None,
-        )
+        pdf: PreparedObject | None = None
+        if pdf_path is not None:
+            pdf_reference = storage_by_path.get(pdf_path)
+            if pdf_reference is None:
+                raise AggregationError(f"Storage für PDF fehlt: {pdf_path}")
+            pdf = _prepared_for(
+                pdf_reference,
+                prepared_by_logical_key,
+                source=source,
+                document=document,
+                conversion_id=None,
+            )
         markdown: PreparedObject | None = None
         if state in _MATERIALIZED_CONVERSION_STATES:
             assert conversion is not None and conversion_id is not None
@@ -1081,6 +1104,110 @@ def validate_period_manifest(payload: bytes) -> dict[str, object]:
     if payload != canonical:
         raise PeriodManifestError("Manifestbytes sind nicht kanonisch")
     return value
+
+
+def inspect_period_publication(
+    root: Path,
+    period: PeriodRef,
+) -> PeriodPublicationInspection:
+    """Validate one published period manifest and every referenced archive bundle."""
+
+    if not isinstance(root, Path) or type(period) is not PeriodRef:
+        raise PeriodManifestError("Periodeninspektion benötigt Path und PeriodRef")
+    manifest_parts = (
+        "rki",
+        "Bulletins",
+        "Manifeste",
+        "Archive",
+        period.kind.value,
+    )
+    missing_path = (
+        f"rki/Bulletins/Manifeste/Archive/{period.kind.value}/{period.value}.json"
+    )
+    try:
+        with open_root_directory(root) as root_fd:
+            manifest_fd = open_directory_beneath(root_fd, manifest_parts)
+            try:
+                payload = _read_stable_regular_at(
+                    manifest_fd,
+                    f"{period.value}.json",
+                    maximum=_MAX_PERIOD_MANIFEST_BYTES,
+                )
+            finally:
+                os.close(manifest_fd)
+            manifest = validate_period_manifest(payload)
+            if manifest["kind"] != period.kind.value or manifest["period"] != period.value:
+                raise PeriodManifestError("Periodenmanifest stimmt nicht mit angefragter Periode überein")
+            archives = manifest["archives"]
+            if type(archives) is not list:
+                raise PeriodManifestError("Periodenmanifest-Archive sind ungültig")
+            for archive in archives:
+                if type(archive) is not dict:
+                    raise PeriodManifestError("Periodenmanifest-Archivreferenz ist ungültig")
+                relative_bundle = _string(archive, "relative_bundle", label="Periodenarchiv")
+                missing_path = relative_bundle
+                relative = PurePosixPath(
+                    _canonical_path(relative_bundle, label="Periodenarchivpfad")
+                )
+                try:
+                    bundle_fd = open_directory_beneath(root_fd, relative.parts)
+                except FileNotFoundError:
+                    raise
+                except (OSError, UnsafePathError) as exc:
+                    raise ArchiveSecurityError("Periodenarchivpfad ist nicht sicher lesbar") from exc
+                try:
+                    validate_archive_bundle_fd(
+                        bundle_fd,
+                        display_root=root / relative_bundle,
+                        archive_id=_string(archive, "archive_id", label="Periodenarchiv"),
+                        period=period.value,
+                        kind=_string(archive, "kind", label="Periodenarchiv"),
+                        input_fingerprint=_string(
+                            archive,
+                            "input_fingerprint",
+                            label="Periodenarchiv",
+                        ),
+                        output_sha256=_string(
+                            archive,
+                            "output_sha256",
+                            label="Periodenarchiv",
+                        ),
+                        size=archive["bytes"],
+                    )
+                    try:
+                        live_bundle_fd = open_directory_beneath(root_fd, relative.parts)
+                    except (FileNotFoundError, OSError, UnsafePathError) as exc:
+                        raise ArchiveSecurityError(
+                            "Periodenarchiv wurde nach der Prüfung ausgetauscht"
+                        ) from exc
+                    try:
+                        held = os.fstat(bundle_fd)
+                        live = os.fstat(live_bundle_fd)
+                        if (
+                            not stat.S_ISDIR(held.st_mode)
+                            or not stat.S_ISDIR(live.st_mode)
+                            or (held.st_dev, held.st_ino) != (live.st_dev, live.st_ino)
+                        ):
+                            raise ArchiveSecurityError(
+                                "Periodenarchiv änderte seine Identität nach der Prüfung"
+                            )
+                    finally:
+                        os.close(live_bundle_fd)
+                finally:
+                    os.close(bundle_fd)
+    except PeriodPublicationMissing:
+        raise
+    except FileNotFoundError as exc:
+        raise PeriodPublicationMissing(missing_path) from exc
+    except (ArchiveError, PeriodManifestError):
+        raise
+    except (AggregationError, OSError, UnsafePathError) as exc:
+        raise PeriodManifestError("Periodenmanifest ist nicht sicher lesbar") from exc
+    return PeriodPublicationInspection(
+        period=period,
+        manifest=deepcopy(manifest),
+        manifest_sha256=hashlib.sha256(payload).hexdigest(),
+    )
 
 
 def render_period_manifest(period_plan: PeriodPlan, builds: Mapping[str, ArchiveBuild]) -> bytes:

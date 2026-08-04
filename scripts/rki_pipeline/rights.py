@@ -104,12 +104,14 @@ class RightsAuthority:
 
     _register_source: Path
     _token: object
+    _isolated: bool
 
     def __init__(
         self,
         register_source: Path,
         *,
         _token: object | None = None,
+        _isolated: bool = False,
     ) -> None:
         if _token is not _AUTHORITY_TOKEN:
             raise RightsPolicyError(
@@ -117,6 +119,7 @@ class RightsAuthority:
             )
         object.__setattr__(self, "_register_source", register_source)
         object.__setattr__(self, "_token", _token)
+        object.__setattr__(self, "_isolated", _isolated)
 
 
 @dataclass(frozen=True, slots=True)
@@ -473,6 +476,16 @@ def load_rights_authority() -> RightsAuthority:
     return RightsAuthority(register_source, _token=_AUTHORITY_TOKEN)
 
 
+def load_fixture_rights_authority(path: Path) -> RightsAuthority:
+    """Mint offline-fixture authority; isolated mode relaxes canonical-source binding."""
+
+    register_source = Path(path).absolute()
+    load_rights_register(register_source)
+    authority = RightsAuthority(register_source, _token=_AUTHORITY_TOKEN, _isolated=True)
+    assert authority._token is _AUTHORITY_TOKEN and authority._isolated
+    return authority
+
+
 def evaluate_rights(
     source_id: str,
     source_sha256: str,
@@ -550,7 +563,8 @@ def _validate_authority_instance(authority: RightsAuthority) -> None:
         type(authority) is not RightsAuthority
         or authority._token is not _AUTHORITY_TOKEN
         or not isinstance(authority._register_source, Path)
-        or authority._register_source != _canonical_authority_source()
+        or type(authority._isolated) is not bool
+        or (not authority._isolated and authority._register_source != _canonical_authority_source())
     ):
         raise RightsPolicyError(
             "RightsAuthority ist nicht an die kanonische Register-Source gebunden"
@@ -599,6 +613,7 @@ __all__ = [
     "RightsRegister",
     "RightsState",
     "evaluate_rights",
+    "load_fixture_rights_authority",
     "load_rights_authority",
     "load_rights_policy",
     "load_rights_register",

@@ -18,7 +18,9 @@ from scripts.rki_pipeline.aggregation import (
     AggregationError,
     PeriodArchiveMaterialization,
     PeriodManifestError,
+    PeriodPublicationInspection,
     PeriodSelectionError,
+    inspect_period_publication,
     materialize_period_archives,
     plan_period_archives,
     period_ref,
@@ -27,7 +29,7 @@ from scripts.rki_pipeline.aggregation import (
     select_periods,
     validate_period_manifest,
 )
-from scripts.rki_pipeline.archive import ArchiveBuild, build_archive
+from scripts.rki_pipeline.archive import ArchiveBuild, ArchiveError, build_archive
 from scripts.rki_pipeline.due_tasks import DueTask, TaskKind
 from scripts.rki_pipeline.io_utils import mark_generated_root, stable_json_dumps
 from scripts.rki_pipeline.manifests import ManifestGraph
@@ -1254,6 +1256,150 @@ def _materialize_fixture(
         authorizer=authorizer,
     )
     return plan, authorizer, result, ledger
+
+
+def _materialize_complete_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    markdown: bool = True,
+) -> PeriodArchiveMaterialization:
+    inputs = _plan_inputs(tmp_path, markdown=markdown)
+    inputs["as_of"] = datetime(2027, 1, 2, tzinfo=timezone.utc)
+    inputs["due_tasks"] = (
+        due(TaskKind.WEEK, "2026-W28"),
+        due(TaskKind.MONTH, "2026-07"),
+        due(TaskKind.YEAR, "2026"),
+    )
+    plan, authorizer = _materialize_authorizer(
+        tmp_path,
+        plan_period_archives(**inputs),
+        monkeypatch,
+    )
+    return materialize_period_archives(
+        plan,
+        tmp_path / "period-products",
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=authorizer,
+    )
+
+
+def test_inspect_period_publication_validates_manifest_and_bundles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = _materialize_complete_publication(tmp_path, monkeypatch)
+
+    inspection = inspect_period_publication(
+        result.root,
+        period_ref(TaskKind.WEEK, "2026-W28"),
+    )
+
+    assert type(inspection) is PeriodPublicationInspection
+    assert inspection.period.value == "2026-W28"
+    assert inspection.manifest["kind"] == "week"
+    assert inspection.manifest_sha256 == hashlib.sha256(
+        stable_json_dumps(inspection.manifest).encode("utf-8")
+    ).hexdigest()
+
+
+def test_inspect_period_publication_rejects_bundle_path_swap_after_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = _materialize_complete_publication(tmp_path, monkeypatch)
+    validate_bundle = aggregation_module.validate_archive_bundle_fd
+    swapped = False
+
+    def validate_then_swap(bundle_fd: int, **kwargs):
+        nonlocal swapped
+        build = validate_bundle(bundle_fd, **kwargs)
+        if not swapped:
+            live_bundle = kwargs["display_root"]
+            live_bundle.rename(tmp_path / "validated-bundle")
+            live_bundle.mkdir()
+            swapped = True
+        return build
+
+    monkeypatch.setattr(aggregation_module, "validate_archive_bundle_fd", validate_then_swap)
+
+    with pytest.raises(ArchiveError, match=r"ausgetauscht|Identität"):
+        inspect_period_publication(
+            result.root,
+            period_ref(TaskKind.WEEK, "2026-W28"),
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("zip", "sidecar", "manifest-hash", "manifest-period", "symlink"),
+)
+def test_inspect_period_publication_rejects_corruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    result = _materialize_complete_publication(tmp_path, monkeypatch)
+    manifest_path = next(path for path in result.manifest_paths if path.name == "2026-W28.json")
+    manifest = json.loads(manifest_path.read_bytes())
+    bundle = result.root / manifest["archives"][0]["relative_bundle"]
+    if mutation == "zip":
+        (bundle / "archive.zip").write_bytes(b"corrupt")
+    elif mutation == "sidecar":
+        (bundle / "archive-manifest.json").write_bytes(b"corrupt")
+    elif mutation == "manifest-hash":
+        manifest["input_fingerprint"] = "0" * 64
+        manifest_path.write_text(stable_json_dumps(manifest), encoding="utf-8")
+    elif mutation == "manifest-period":
+        other = period_ref(TaskKind.WEEK, "2026-W27")
+        manifest.update(
+            {
+                "period": other.value,
+                "start_date": other.start.isoformat(),
+                "end_date": other.end.isoformat(),
+                "source_date_epoch": other.source_date_epoch,
+            }
+        )
+        for archive_row in manifest["archives"]:
+            format_name = archive_row["kind"].removeprefix("week-")
+            archive_row["archive_id"] = f"rki-week-{other.value.lower()}-{format_name}"
+            archive_row["relative_bundle"] = aggregation_module._bundle_path(other, format_name)
+        manifest["input_fingerprint"] = aggregation_module._manifest_fingerprint(manifest)
+        payload = stable_json_dumps(manifest).encode("utf-8")
+        assert validate_period_manifest(payload)["period"] == other.value
+        manifest_path.write_bytes(payload)
+    else:
+        archive = bundle / "archive.zip"
+        target = tmp_path / "outside.zip"
+        target.write_bytes(archive.read_bytes())
+        archive.unlink()
+        archive.symlink_to(target)
+
+    if mutation == "manifest-period":
+        with pytest.raises(PeriodManifestError, match="angefragter Periode"):
+            inspect_period_publication(
+                result.root,
+                period_ref(TaskKind.WEEK, "2026-W28"),
+            )
+    else:
+        with pytest.raises((PeriodManifestError, ArchiveError)):
+            inspect_period_publication(
+                result.root,
+                period_ref(TaskKind.WEEK, "2026-W28"),
+            )
+
+
+def test_inspect_period_publication_preserves_missing_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = _materialize_complete_publication(tmp_path, monkeypatch)
+    manifest_path = next(path for path in result.manifest_paths if path.name == "2026-W28.json")
+    manifest_path.unlink()
+
+    with pytest.raises(FileNotFoundError):
+        inspect_period_publication(
+            result.root,
+            period_ref(TaskKind.WEEK, "2026-W28"),
+        )
 
 
 def _tree_fingerprint(root: Path) -> dict[str, tuple[int, int, str]]:

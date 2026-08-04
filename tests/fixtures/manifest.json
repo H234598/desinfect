@@ -171,6 +171,16 @@
       "synthetic": true
     },
     {
+      "bytes": 417,
+      "license_status": "synthetic",
+      "media_type": "application/json",
+      "path": "reconciliation/fixture.json",
+      "provenance": "H234598/desinfect P07.3 synthetic reconciliation fixture",
+      "purpose": "offline deterministic reconciliation CLI smoke",
+      "sha256": "11aac9ecee5e3a02767744f8a7b758e07a9d06fefe4846b2ff56ea9fb7e87a26",
+      "synthetic": true
+    },
+    {
       "bytes": 1046,
       "license_status": "synthetic",
       "media_type": "application/x-ndjson",
