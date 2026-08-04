@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
+import json
 from typing import NoReturn
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from scripts.rki_pipeline.reconciliation import (
     build_reconciliation_result,
     compare_remote_sources,
     reconcile_rights,
+    reconcile_periods,
     reconcile_storage,
     source_subject_id,
 )
@@ -50,6 +52,9 @@ from scripts.rki_pipeline.storage.config import LfsConfig
 from scripts.rki_pipeline.storage.lfs import LfsStorageAdapter
 from scripts.rki_pipeline.manifests import ManifestGraph
 from scripts.rki_pipeline.run_modes import EffectLedger
+from scripts.rki_pipeline import aggregation as aggregation_module
+from scripts.rki_pipeline.io_utils import stable_json_dumps
+from tests.test_period_archives import _materialize_complete_publication, _plan_inputs
 
 
 def finding(code: FindingCode, subject_id: str) -> ReconciliationFinding:
@@ -175,6 +180,191 @@ def test_storage_verifies_each_manifest_reference_once() -> None:
 
     assert findings == ()
     assert adapter.verified == ["artifact-a", "artifact-b"]
+
+
+def _period_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    markdown: bool = True,
+) -> tuple[ManifestGraph, Path]:
+    result = _materialize_complete_publication(
+        tmp_path,
+        monkeypatch,
+        markdown=markdown,
+    )
+    graph = _plan_inputs(tmp_path, markdown=markdown)["graph"]
+    assert isinstance(graph, ManifestGraph)
+    return graph, result.root
+
+
+def _period_manifest(root: Path, kind: str, value: str) -> Path:
+    return root / f"rki/Bulletins/Manifeste/Archive/{kind}/{value}.json"
+
+
+def _rewrite_period_manifest(path: Path, mutate) -> None:
+    manifest = json.loads(path.read_bytes())
+    mutate(manifest)
+    manifest["input_fingerprint"] = aggregation_module._manifest_fingerprint(manifest)
+    path.write_text(stable_json_dumps(manifest), encoding="utf-8")
+
+
+@pytest.mark.parametrize("markdown", (False, True), ids=("pdf-only", "both"))
+def test_period_completeness_accepts_available_formats(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    markdown: bool,
+) -> None:
+    graph, root = _period_fixture(tmp_path, monkeypatch, markdown=markdown)
+
+    assert reconcile_periods(graph, root) == ()
+
+
+def test_period_completeness_accepts_markdown_only_without_pdf_requirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph, root = _period_fixture(tmp_path, monkeypatch)
+    document = graph.documents[-1]
+    markdown_path = document["paths"]["markdown"]
+    markdown_graph = ManifestGraph(
+        sources=graph.sources,
+        documents=(*graph.documents[:-1], {**document, "paths": {"pdf": None, "markdown": markdown_path}}),
+        conversions=graph.conversions,
+        storage_references=tuple(
+            reference
+            for reference in graph.storage_references
+            if reference["relative_path"] == markdown_path
+        ),
+    )
+    for kind, value in (("week", "2026-W28"), ("month", "2026-07"), ("year", "2026")):
+        def remove_pdf(manifest: dict[str, object]) -> None:
+            manifest["archives"] = [
+                archive
+                for archive in manifest["archives"]
+                if archive["kind"] != f"{kind}-pdf"
+            ]
+            for row in manifest["documents"]:
+                row["pdf_artifact_id"] = None
+                row["pdf_sha256"] = None
+
+        _rewrite_period_manifest(_period_manifest(root, kind, value), remove_pdf)
+
+    assert reconcile_periods(markdown_graph, root) == ()
+
+
+def test_period_completeness_checks_year_only_for_partial_date(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph, root = _period_fixture(tmp_path, monkeypatch)
+    current = graph.documents[-1]
+    partial = {
+        **current,
+        "publication_date": None,
+        "canonical_periods": {"week": None, "month": None, "year": 2026},
+    }
+    partial_graph = ManifestGraph(
+        sources=graph.sources,
+        documents=(*graph.documents[:-1], partial),
+        conversions=graph.conversions,
+        storage_references=graph.storage_references,
+    )
+    _period_manifest(root, "week", "2026-W28").unlink()
+    _period_manifest(root, "month", "2026-07").unlink()
+
+    assert reconcile_periods(partial_graph, root) == ()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "code", "relative_path"),
+    (
+        (
+            "missing-manifest",
+            FindingCode.MISSING_LOCAL,
+            "rki/Bulletins/Manifeste/Archive/week/2026-W28.json",
+        ),
+        (
+            "missing-bundle",
+            FindingCode.MISSING_LOCAL,
+            "rki/Bulletins/Manifeste/Archive/week/2026-W28.json",
+        ),
+        (
+            "corrupt-bundle",
+            FindingCode.CHANGED,
+            "rki/Bulletins/Manifeste/Archive/week/2026-W28.json",
+        ),
+        (
+            "mismatched-bundle",
+            FindingCode.CHANGED,
+            "rki/Bulletins/Manifeste/Archive/week/2026-W28.json",
+        ),
+        (
+            "wrong-membership",
+            FindingCode.CHANGED,
+            "rki/Bulletins/Manifeste/Archive/month/2026-07.json",
+        ),
+        (
+            "month-week-link",
+            FindingCode.CHANGED,
+            "rki/Bulletins/Manifeste/Archive/week/2026-W28.json",
+        ),
+        (
+            "year-month-link",
+            FindingCode.CHANGED,
+            "rki/Bulletins/Manifeste/Archive/year/2026.json",
+        ),
+    ),
+)
+def test_period_completeness_classifies_missing_and_changed_publications(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    code: FindingCode,
+    relative_path: str,
+) -> None:
+    graph, root = _period_fixture(tmp_path, monkeypatch)
+    week = _period_manifest(root, "week", "2026-W28")
+    if mutation == "missing-manifest":
+        week.unlink()
+    elif mutation in {"missing-bundle", "corrupt-bundle", "mismatched-bundle"}:
+        manifest = json.loads(week.read_bytes())
+        bundle = root / manifest["archives"][0]["relative_bundle"]
+        if mutation == "missing-bundle":
+            bundle.rename(tmp_path / "missing-bundle")
+        elif mutation == "corrupt-bundle":
+            (bundle / "archive.zip").write_bytes(b"corrupt")
+        else:
+            def mismatch(current: dict[str, object]) -> None:
+                current["archives"][0]["output_sha256"] = "0" * 64
+
+            _rewrite_period_manifest(week, mismatch)
+    elif mutation in {"wrong-membership", "month-week-link"}:
+        def change_membership(manifest: dict[str, object]) -> None:
+            manifest["documents"][0]["document_id"] = "rki-176904-900000099-v1"
+
+        target = (
+            _period_manifest(root, "month", "2026-07")
+            if mutation == "wrong-membership"
+            else week
+        )
+        _rewrite_period_manifest(target, change_membership)
+    else:
+        def remove_month_link(manifest: dict[str, object]) -> None:
+            manifest["month_manifests"] = []
+
+        _rewrite_period_manifest(_period_manifest(root, "year", "2026"), remove_month_link)
+
+    findings = reconcile_periods(graph, root)
+
+    current = graph.documents[-1]
+    assert [(item.code, item.subject_kind, item.subject_id, item.relative_path) for item in findings] == [
+        (
+            code,
+            SubjectKind.PERIOD,
+            source_subject_id(current["source_id"], current["bitstream_id"]),
+            relative_path,
+        )
+    ]
+    assert str(tmp_path) not in findings[0].message
 
 
 @pytest.mark.parametrize(

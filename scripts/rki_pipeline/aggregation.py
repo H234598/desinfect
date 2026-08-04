@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime, time
 import hashlib
@@ -23,6 +24,7 @@ from scripts.rki_pipeline.archive import (
     ArchiveBuild,
     ArchiveEntry,
     ArchiveError,
+    ArchiveSecurityError,
     ArchiveSpec,
     archive_input_fingerprint,
     materialize_archive,
@@ -85,6 +87,15 @@ class PeriodRef:
     start: date
     end: date
     source_date_epoch: int
+
+
+@dataclass(frozen=True, slots=True)
+class PeriodPublicationInspection:
+    """One fully validated published period manifest and its archive bundles."""
+
+    period: PeriodRef
+    manifest: dict[str, object]
+    manifest_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -1081,6 +1092,85 @@ def validate_period_manifest(payload: bytes) -> dict[str, object]:
     if payload != canonical:
         raise PeriodManifestError("Manifestbytes sind nicht kanonisch")
     return value
+
+
+def inspect_period_publication(
+    root: Path,
+    period: PeriodRef,
+) -> PeriodPublicationInspection:
+    """Validate one published period manifest and every referenced archive bundle."""
+
+    if not isinstance(root, Path) or type(period) is not PeriodRef:
+        raise PeriodManifestError("Periodeninspektion benötigt Path und PeriodRef")
+    manifest_parts = (
+        "rki",
+        "Bulletins",
+        "Manifeste",
+        "Archive",
+        period.kind.value,
+    )
+    try:
+        with open_root_directory(root) as root_fd:
+            manifest_fd = open_directory_beneath(root_fd, manifest_parts)
+            try:
+                payload = _read_stable_regular_at(
+                    manifest_fd,
+                    f"{period.value}.json",
+                    maximum=_MAX_PERIOD_MANIFEST_BYTES,
+                )
+            finally:
+                os.close(manifest_fd)
+            manifest = validate_period_manifest(payload)
+            if manifest["kind"] != period.kind.value or manifest["period"] != period.value:
+                raise PeriodManifestError("Periodenmanifest stimmt nicht mit angefragter Periode überein")
+            archives = manifest["archives"]
+            if type(archives) is not list:
+                raise PeriodManifestError("Periodenmanifest-Archive sind ungültig")
+            for archive in archives:
+                if type(archive) is not dict:
+                    raise PeriodManifestError("Periodenmanifest-Archivreferenz ist ungültig")
+                relative_bundle = _string(archive, "relative_bundle", label="Periodenarchiv")
+                relative = PurePosixPath(
+                    _canonical_path(relative_bundle, label="Periodenarchivpfad")
+                )
+                try:
+                    bundle_fd = open_directory_beneath(root_fd, relative.parts)
+                except FileNotFoundError:
+                    raise
+                except (OSError, UnsafePathError) as exc:
+                    raise ArchiveSecurityError("Periodenarchivpfad ist nicht sicher lesbar") from exc
+                try:
+                    validate_archive_bundle_fd(
+                        bundle_fd,
+                        display_root=root / relative_bundle,
+                        archive_id=_string(archive, "archive_id", label="Periodenarchiv"),
+                        period=period.value,
+                        kind=_string(archive, "kind", label="Periodenarchiv"),
+                        input_fingerprint=_string(
+                            archive,
+                            "input_fingerprint",
+                            label="Periodenarchiv",
+                        ),
+                        output_sha256=_string(
+                            archive,
+                            "output_sha256",
+                            label="Periodenarchiv",
+                        ),
+                        size=archive["bytes"],
+                    )
+                finally:
+                    os.close(bundle_fd)
+    except FileNotFoundError:
+        raise
+    except (ArchiveError, PeriodManifestError):
+        raise
+    except (AggregationError, OSError, UnsafePathError) as exc:
+        raise PeriodManifestError("Periodenmanifest ist nicht sicher lesbar") from exc
+    return PeriodPublicationInspection(
+        period=period,
+        manifest=deepcopy(manifest),
+        manifest_sha256=hashlib.sha256(payload).hexdigest(),
+    )
 
 
 def render_period_manifest(period_plan: PeriodPlan, builds: Mapping[str, ArchiveBuild]) -> bytes:

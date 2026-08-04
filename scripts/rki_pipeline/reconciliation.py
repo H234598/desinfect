@@ -2,15 +2,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from enum import StrEnum
 import json
+from pathlib import Path
 import re
 from typing import Callable, Iterable, Mapping, TypeAlias
 import unicodedata
 
 from scripts.rki_grabber.models import ArtifactRecord, RecordState
+from scripts.rki_pipeline.aggregation import (
+    PeriodManifestError,
+    PeriodPublicationInspection,
+    PeriodRef,
+    inspect_period_publication,
+    period_ref,
+)
+from scripts.rki_pipeline.archive import ArchiveError
 from scripts.rki_pipeline.documents import DocumentIdentityError, bitstream_identity
+from scripts.rki_pipeline.due_tasks import TaskKind
 from scripts.rki_pipeline.io_utils import normalize_posix_path, stable_json_dumps
 from scripts.rki_pipeline.manifests import (
     LoadedManifestCatalog,
@@ -353,6 +363,244 @@ def reconcile_rights(
             findings.append(_storage_finding(FindingCode.RIGHTS_CHANGED, reference))
 
     return tuple(sorted(findings, key=lambda item: item.key))
+
+
+def reconcile_periods(
+    graph: ManifestGraph,
+    period_root: Path,
+) -> tuple[ReconciliationFinding, ...]:
+    """Verify required period manifests, memberships, formats, and archive bundles."""
+
+    _require_graph(graph)
+    if not isinstance(period_root, Path):
+        raise ReconciliationIntegrityError("Periodenwurzel ist ungültig")
+    storage_by_path: dict[str, dict[str, object]] = {}
+    for reference in graph.storage_references:
+        if type(reference) is not dict:
+            raise ReconciliationIntegrityError("Storage-Manifest ist ungültig")
+        relative_path = reference.get("relative_path")
+        if type(relative_path) is not str or relative_path in storage_by_path:
+            raise ReconciliationIntegrityError("Storage-Pfadidentität ist ungültig")
+        storage_by_path[relative_path] = reference
+
+    expected: dict[
+        tuple[TaskKind, str],
+        dict[tuple[str, str], tuple[str, str, str | None, str | None, str | None, str | None]],
+    ] = {}
+    subjects: dict[tuple[str, str], str] = {}
+    periods: dict[tuple[TaskKind, str], PeriodRef] = {}
+    try:
+        documents = sorted(
+            graph.documents,
+            key=lambda item: (str(item.get("document_id")), str(item.get("bitstream_id"))),
+        )
+    except AttributeError as exc:
+        raise ReconciliationIntegrityError("Dokumentmanifest ist ungültig") from exc
+    for document in documents:
+        if type(document) is not dict:
+            raise ReconciliationIntegrityError("Dokumentmanifest ist ungültig")
+        if document.get("superseded_by") is not None:
+            continue
+        try:
+            document_id = document["document_id"]
+            bitstream_id = document["bitstream_id"]
+            source_id = document["source_id"]
+            publication_date = document["publication_date"]
+            paths = document["paths"]
+        except KeyError as exc:
+            raise ReconciliationIntegrityError("Dokumentperiodenverknüpfung ist unvollständig") from exc
+        if not all(type(value) is str for value in (document_id, bitstream_id, source_id)):
+            raise ReconciliationIntegrityError("Dokumentperiodenidentität ist ungültig")
+        if type(paths) is not dict:
+            raise ReconciliationIntegrityError("Dokumentpfade sind ungültig")
+        identity = (document_id, bitstream_id)
+        if identity in subjects:
+            raise ReconciliationIntegrityError("Dokument-/Bitstream-Identität ist doppelt")
+        subjects[identity] = source_subject_id(source_id, bitstream_id)
+        document_periods = _document_periods(document, publication_date)
+        pdf_id, pdf_sha256 = _period_artifact(paths.get("pdf"), storage_by_path, document_id)
+        markdown_id, markdown_sha256 = _period_artifact(
+            paths.get("markdown"),
+            storage_by_path,
+            document_id,
+        )
+        row = (
+            source_id,
+            document_id,
+            pdf_id,
+            pdf_sha256,
+            markdown_id,
+            markdown_sha256,
+        )
+        for period in document_periods:
+            key = (period.kind, period.value)
+            periods[key] = period
+            period_documents = expected.setdefault(key, {})
+            if identity in period_documents:
+                raise ReconciliationIntegrityError("Periodenmitgliedschaft ist doppelt")
+            period_documents[identity] = row
+
+    inspections: dict[tuple[TaskKind, str], PeriodPublicationInspection] = {}
+    findings: list[ReconciliationFinding] = []
+    for key in sorted(expected, key=lambda item: (item[0].value, item[1])):
+        period = periods[key]
+        relative_path = _period_manifest_path(period)
+        try:
+            inspection = inspections.get(key)
+            if inspection is None:
+                inspection = inspect_period_publication(period_root, period)
+                inspections[key] = inspection
+        except FileNotFoundError:
+            findings.extend(
+                _period_findings(
+                    FindingCode.MISSING_LOCAL,
+                    expected[key],
+                    subjects,
+                    relative_path,
+                )
+            )
+            continue
+        except (ArchiveError, PeriodManifestError):
+            findings.extend(
+                _period_findings(
+                    FindingCode.CHANGED,
+                    expected[key],
+                    subjects,
+                    relative_path,
+                )
+            )
+            continue
+        if not _period_membership_matches(inspection.manifest, period, expected[key]):
+            findings.extend(
+                _period_findings(
+                    FindingCode.CHANGED,
+                    expected[key],
+                    subjects,
+                    relative_path,
+                )
+            )
+    return tuple(sorted(findings, key=lambda item: item.key))
+
+
+def _document_periods(
+    document: dict[str, object],
+    publication_date: object,
+) -> tuple[PeriodRef, ...]:
+    if publication_date is None:
+        canonical = document.get("canonical_periods")
+        year = canonical.get("year") if type(canonical) is dict else document.get("year")
+        if type(year) is not int:
+            raise ReconciliationIntegrityError("Dokumentjahr ist ungültig")
+        try:
+            return (period_ref(TaskKind.YEAR, f"{year:04d}"),)
+        except ValueError as exc:
+            raise ReconciliationIntegrityError("Dokumentjahr ist ungültig") from exc
+    if type(publication_date) is not str:
+        raise ReconciliationIntegrityError("Dokumentdatum ist ungültig")
+    try:
+        published = date.fromisoformat(publication_date)
+    except ValueError as exc:
+        raise ReconciliationIntegrityError("Dokumentdatum ist ungültig") from exc
+    if published.isoformat() != publication_date:
+        raise ReconciliationIntegrityError("Dokumentdatum ist nicht kanonisch")
+    iso = published.isocalendar()
+    try:
+        return (
+            period_ref(TaskKind.WEEK, f"{iso.year:04d}-W{iso.week:02d}"),
+            period_ref(TaskKind.MONTH, f"{published.year:04d}-{published.month:02d}"),
+            period_ref(TaskKind.YEAR, f"{published.year:04d}"),
+        )
+    except ValueError as exc:
+        raise ReconciliationIntegrityError("Dokumentperioden sind ungültig") from exc
+
+
+def _period_artifact(
+    relative_path: object,
+    storage_by_path: Mapping[str, dict[str, object]],
+    document_id: str,
+) -> tuple[str | None, str | None]:
+    if relative_path is None:
+        return None, None
+    if type(relative_path) is not str:
+        raise ReconciliationIntegrityError("Dokumentartefaktpfad ist ungültig")
+    reference = storage_by_path.get(relative_path)
+    if reference is None or reference.get("document_id") != document_id:
+        raise ReconciliationIntegrityError("Dokumentartefakt-Storage fehlt oder widerspricht")
+    artifact_id = reference.get("artifact_id")
+    sha256 = reference.get("sha256")
+    if type(artifact_id) is not str or type(sha256) is not str:
+        raise ReconciliationIntegrityError("Dokumentartefaktidentität ist ungültig")
+    return artifact_id, sha256
+
+
+def _period_manifest_path(period: PeriodRef) -> str:
+    return f"rki/Bulletins/Manifeste/Archive/{period.kind.value}/{period.value}.json"
+
+
+def _period_findings(
+    code: FindingCode,
+    expected: Mapping[tuple[str, str], object],
+    subjects: Mapping[tuple[str, str], str],
+    relative_path: str,
+) -> tuple[ReconciliationFinding, ...]:
+    messages = {
+        FindingCode.MISSING_LOCAL: "Erforderliche Periodenveröffentlichung fehlt lokal",
+        FindingCode.CHANGED: "Periodenveröffentlichung oder Archivintegrität weicht ab",
+    }
+    return tuple(
+        ReconciliationFinding(
+            code=code,
+            subject_kind=SubjectKind.PERIOD,
+            subject_id=subjects[identity],
+            relative_path=relative_path,
+            message=messages[code],
+        )
+        for identity in sorted(expected)
+    )
+
+
+def _period_membership_matches(
+    manifest: dict[str, object],
+    period: PeriodRef,
+    expected: Mapping[
+        tuple[str, str],
+        tuple[str, str, str | None, str | None, str | None, str | None],
+    ],
+) -> bool:
+    documents = manifest["documents"]
+    archives = manifest["archives"]
+    if type(documents) is not list or type(archives) is not list:
+        return False
+    actual: dict[
+        tuple[str, str],
+        tuple[str, str, str | None, str | None, str | None, str | None],
+    ] = {}
+    for row in documents:
+        if type(row) is not dict:
+            return False
+        identity = (row.get("document_id"), row.get("bitstream_id"))
+        if not all(type(value) is str for value in identity) or identity in actual:
+            return False
+        actual[identity] = (
+            row.get("source_id"),
+            row.get("document_id"),
+            row.get("pdf_artifact_id"),
+            row.get("pdf_sha256"),
+            row.get("markdown_artifact_id"),
+            row.get("markdown_sha256"),
+        )
+    required_formats = {
+        format_name
+        for values in expected.values()
+        for format_name, artifact_id in (("pdf", values[2]), ("markdown", values[4]))
+        if artifact_id is not None
+    }
+    actual_formats = {
+        archive.get("kind", "").removeprefix(f"{period.kind.value}-")
+        for archive in archives
+        if type(archive) is dict
+    }
+    return actual == expected and actual_formats == required_formats
 
 
 def _require_graph(graph: ManifestGraph) -> None:
