@@ -1,6 +1,6 @@
 ---
 title: Implementierungsplan V3 – Steuerung
-status: P07.1 abgeschlossen; P07.2 als nächste Phase
+status: P07.2 abgeschlossen; P07.3 als nächste Phase
 source_plan_sha256: aa50863cde1313a7039691b4ca596c1ab498d0fab0008da324de5cb69f12ffc4
 repository: H234598/desinfect
 branch: main
@@ -32,11 +32,13 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 - **P06-Gate:** geprüfte Heads `9c38fb5`, `3b1d4bc`, `5a04bee` und `ce27bf1`; GitHub Actions `30798406250`, `30814619838`, `30831150430`, `30838403022` sowie Nach-Merge-Lauf `30838723565` erfolgreich; CodeRabbit und qlty erfolgreich; alle 23 Reviewthreads aufgelöst; 782 Pytest-, 9 Unittest- und 2 Node-Tests erfolgreich; finaler Security-Diff-Scan ohne Finding.
 - **P07.1:** PR #19, Merge `cb378bec67ccacd3d3b426e6a8661eeb06ddfe08`
 - **P07.1-Gate:** geprüfter Head `5ce347e`; GitHub Actions `30855764141` sowie Nach-Merge-Lauf `30855957537` erfolgreich; CodeRabbit und qlty erfolgreich; beide Reviewthreads aufgelöst; 892 Pytest-, 9 Unittest- und 2 Node-Tests erfolgreich; deterministischer Doppel-CLI-Smoke bytegleich.
-- **Fortschritt:** 25 von 60 Arbeitspaketen umgesetzt; 35 offen; 0 in Arbeit; 0 im Review; 0 blockiert.
+- **P07.2:** PR #21, Merge `5cf540d6d9918ae0cab1eb5b2dcfcc6cad521e61`
+- **P07.2-Gate:** geprüfter Head `490d5a2`; GitHub Actions `30875762790` sowie Nach-Merge-Lauf `30875875161` erfolgreich; CodeRabbit und qlty erfolgreich; alle fünf Reviewthreads aufgelöst; 1014 Pytest-, 9 Unittest- und 2 Node-Tests erfolgreich; materialisierter Archiv-Smoke und Aggregationsplan erfolgreich.
+- **Fortschritt:** 26 von 60 Arbeitspaketen umgesetzt; 34 offen; 0 in Arbeit; 0 im Review; 0 blockiert.
 
 ## Nächste Phase P07
 
-P07.1 ist umgesetzt. P07.2 und P07.3 bleiben `offen`, bis Implementierungsbranch und planmäßige Evidenz vorliegen. P07.2 ergänzt Wochen-, Monats- und Jahresprodukte samt Nachzüglerbehandlung; P07.3 ergänzt die quartalsweise Reconciliation.
+P07.1 und P07.2 sind umgesetzt. P07.3 bleibt `offen`, bis Implementierungsbranch und planmäßige Evidenz vorliegen. P07.3 ergänzt die quartalsweise Reconciliation für Quellen, Versionen, Prüfsummen, LFS-Objekte und Archivvollständigkeit.
 
 ## Arbeitspakete
 
@@ -65,7 +67,7 @@ P07.1 ist umgesetzt. P07.2 und P07.3 bleiben `offen`, bis Implementierungsbranch
 - [x] **P06.3** PDF-Validierung und Konvertierung _(umgesetzt, PR #16, Merge `54da0963f1b7b0458ae7bb4a0311a02a32e7649e`)_
 - [x] **P06.4** Dokument-, Konvertierungs- und Storage-Manifeste _(umgesetzt, PR #17, Merge `71f8a58b5c737ad5034da55aad908b7bd2b91080`)_
 - [x] **P07.1** Deterministischer ZIP-Builder _(umgesetzt, PR #19, Merge `cb378bec67ccacd3d3b426e6a8661eeb06ddfe08`)_
-- [ ] **P07.2** Wochen-, Monats-, Jahresarchive und Nachzügler
+- [x] **P07.2** Wochen-, Monats-, Jahresarchive und Nachzügler _(umgesetzt, PR #21, Merge `5cf540d6d9918ae0cab1eb5b2dcfcc6cad521e61`)_
 - [ ] **P07.3** Quartals-Reconciliation
 - [ ] **P08.1** Interner Wachhund und getrennte Uhren
 - [ ] **P08.2** Job Summary, Diagnoseartefakte und Rolling Issue
