@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import sys
 
-from scripts.rki_pipeline import aggregation, archive, conversion_cli, reconciliation
+from scripts.rki_pipeline import (
+    aggregation,
+    archive,
+    conversion_cli,
+    reconciliation,
+    watchdog,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -17,8 +23,11 @@ def main(argv: list[str] | None = None) -> int:
         return aggregation.main(arguments[1:])
     if arguments and arguments[0] == "reconcile":
         return reconciliation.main(arguments[1:])
+    if arguments and arguments[0] == "watchdog":
+        return watchdog.main(arguments[1:])
     print(
-        "usage: python -m scripts.rki_pipeline.cli (convert|build-archive|aggregate|reconcile) ...",
+        "usage: python -m scripts.rki_pipeline.cli "
+        "(convert|build-archive|aggregate|reconcile|watchdog) ...",
         file=sys.stderr,
     )
     return 2

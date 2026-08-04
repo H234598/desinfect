@@ -239,6 +239,13 @@ jobs:
           python3 -m scripts.rki_pipeline.cli reconcile --fixture tests/fixtures/reconciliation --mode plan
           python3 -m scripts.rki_pipeline.cli reconcile --fixture tests/fixtures/reconciliation --mode materialize
 
+      - name: P08.1 internal watchdog contracts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          pytest -q tests/test_watchdog.py tests/test_status_schema.py tests/test_runtime_status.py
+          python3 -m scripts.rki_pipeline.cli watchdog --as-of 2026-09-04T00:00:00Z --mode plan
+
       - name: Run focused P05 contracts
         shell: bash
         run: |

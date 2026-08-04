@@ -2,12 +2,17 @@
 """Pure internal-watchdog planning and status projections."""
 from __future__ import annotations
 
+import argparse
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import json
+from pathlib import Path
+import sys
 from typing import Any
 
 from scripts.rki_pipeline.due_tasks import DueTaskError, parse_utc
+from scripts.rki_pipeline.io_utils import stable_json_dumps
 from scripts.rki_pipeline.schema_registry import SchemaContractError, validate_document
 
 
@@ -237,3 +242,44 @@ def reset_watchdog(
     except SchemaContractError as exc:
         raise WatchdogError("Resetprojektion verletzt den öffentlichen Vertrag") from exc
     return result
+
+
+def _load_status(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise WatchdogError("Statusdatei ist nicht lesbar") from exc
+    if not isinstance(value, dict):
+        raise WatchdogError("Status muss ein JSON-Objekt sein")
+    return value
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--as-of", required=True)
+    parser.add_argument("--mode", choices=("plan",), required=True)
+    parser.add_argument("--status", type=Path, default=Path("status.json"))
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        as_of = _format_utc(_utc(args.as_of, "as_of"))
+        plan = plan_watchdog(_load_status(args.status), as_of=as_of)
+        payload = {
+            "as_of": as_of,
+            "bark_plan": None if plan is None else plan.to_dict(),
+            "due": plan is not None,
+            "mode": args.mode,
+            "schema_version": "1.0.0",
+        }
+        print(stable_json_dumps(payload), end="")
+        return 0
+    except WatchdogError as exc:
+        print(f"watchdog: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

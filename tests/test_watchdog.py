@@ -6,9 +6,12 @@ from pathlib import Path
 
 import pytest
 
+from scripts.rki_pipeline.cli import main as pipeline_main
+from scripts.rki_pipeline.io_utils import stable_json_dumps
 from scripts.rki_pipeline.watchdog import (
     WatchdogError,
     apply_bark,
+    main as watchdog_main,
     plan_watchdog,
     reset_watchdog,
 )
@@ -237,3 +240,57 @@ def test_reset_reason_must_be_bounded_and_printable(reset_by: str) -> None:
             run_status="success",
             commit_created=True,
         )
+
+
+def test_watchdog_cli_is_read_only_and_deterministic(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    status_path = tmp_path / "status.json"
+    original = stable_json_dumps(armed_status())
+    status_path.write_text(original, encoding="utf-8")
+    arguments = ["--as-of", DUE, "--mode", "plan", "--status", str(status_path)]
+
+    assert watchdog_main(arguments) == 0
+    first = capsys.readouterr().out
+    assert watchdog_main(arguments) == 0
+    second = capsys.readouterr().out
+
+    assert first == second
+    payload = json.loads(first)
+    assert payload["due"] is True
+    assert payload["bark_plan"]["expected_next_bark_at"] == DUE
+    assert status_path.read_text(encoding="utf-8") == original
+
+
+def test_domain_router_runs_watchdog_plan(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    status_path = tmp_path / "status.json"
+    status_path.write_text(stable_json_dumps(armed_status()), encoding="utf-8")
+
+    result = pipeline_main(
+        ["watchdog", "--as-of", DUE, "--mode", "plan", "--status", str(status_path)]
+    )
+
+    assert result == 0
+    assert json.loads(capsys.readouterr().out)["due"] is True
+
+
+def test_watchdog_cli_reports_invalid_status_without_traceback(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    status_path = tmp_path / "status.json"
+    status_path.write_text("{}\n", encoding="utf-8")
+
+    result = watchdog_main(
+        ["--as-of", DUE, "--mode", "plan", "--status", str(status_path)]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.out == ""
+    assert captured.err.startswith("watchdog:")
+    assert "Traceback" not in captured.err
