@@ -1,6 +1,6 @@
 {
   "canonical_control_path": "docs/IMPLEMENTIERUNGSPLAN-STEUERUNG.md",
-  "canonical_control_sha256": "65b05241d8fa85d5fc378da244bbc92d3effd3d9e8e21a550d9c553f1fe81df7",
+  "canonical_control_sha256": "7e65fc52c525f247a47f51a828251f59abf1c1d05cfaa6bb3e1c8847ddd9f97d",
   "locked_decisions": {
     "ADR-003": "A",
     "ADR-014": "B"
