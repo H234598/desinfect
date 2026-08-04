@@ -26,7 +26,8 @@ Artefaktidentität.
 ## Referenzvertrag
 
 `build_manifest_graph(..., authorizer=...)` validiert jeden Datensatz zuerst
-gegen registriertes Schema 1.1 und akzeptiert nur `provenance_state=current`.
+gegen seinen registrierten Vertrag (`source-manifest` 1.2, übrige P06-Manifeste
+1.1) und akzeptiert nur `provenance_state=current`.
 Authorizer löst jede Quelle frisch gegen kanonisches Rechte-Register und Policy
 auf; jede Storage-Referenz wird erneut autorisiert. Danach gelten:
 

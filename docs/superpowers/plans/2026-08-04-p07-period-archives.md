@@ -17,6 +17,9 @@
 - P07.2 supports `plan` and isolated `materialize`; direct `apply` is rejected.
 - No archive contains another ZIP. No empty format archive is emitted.
 - One archive has one visibility. Mixed visibility for the same period/format fails closed instead of changing required names.
+- Document uniqueness is `(document_id, bitstream_id)`; valid same-document/same-source bitstream aliases remain separate products.
+- Source manifest `1.2.0` carries nullable DOI; registered `1.0.0` and `1.1.0` inputs migrate directly with `doi: null`.
+- Monthly weekly links come only from current-plan bundles or fully revalidated retained week manifests/bundles, never predicted paths.
 - All writes remain below explicit `temp_root`; P05 owns repository apply, commit, and push.
 - No new dependency.
 
@@ -139,7 +142,7 @@ def select_periods(
     """Return closed due/affected periods in stable chronological kind order."""
 ```
 
-Use `date.fromisocalendar`, calendar-month arithmetic, `ZoneInfo("Europe/Berlin")`, and exact type checks. Reject naive `as_of`, `TaskKind.RECONCILIATION`, future/nonclosed periods, invalid set member types, and boolean years.
+Use `date.fromisocalendar`, calendar-month arithmetic, `ZoneInfo("Europe/Berlin")`, and exact type checks. Reject naive `as_of`, `TaskKind.RECONCILIATION`, future/nonclosed periods, invalid set member types, boolean years, and negative close epochs. RKI operator periods begin in 1996; epoch zero is conservative machine floor.
 
 - [ ] **Step 4: Add strict period-manifest schema and fixture**
 
@@ -161,7 +164,7 @@ Register this exact top-level contract with `additionalProperties: false`:
 }
 ```
 
-Document entries require document/version/source/publication identity plus nullable PDF/Markdown artifact IDs and SHA-256 values. Archive entries require archive ID, kind, relative bundle path, input fingerprint, output SHA-256, bytes, and nullable storage-reference ID. Month-manifest values are canonical repository-relative paths. Arrays are sorted and unique at runtime; schema enforces shapes and bounds.
+Document entries require document/version/bitstream/source/publication identity, nullable DOI, and nullable PDF/Markdown artifact IDs and SHA-256 values. Archive entries require archive ID, kind, relative bundle path, input fingerprint, output SHA-256, bytes, and nullable storage-reference ID. Month-manifest values are canonical repository-relative paths. Arrays are sorted and unique at runtime; document uniqueness is `(document_id, bitstream_id)` while repeated `source_id` is allowed.
 
 Update registry count and validator output from 12 to 13. `validate_schemas.py` must load `tests/fixtures/schemas/period-archive-manifest.json` and call `validate_document("period-archive-manifest", fixture)`. Update `test_all_registered_schemas_are_strict_draft_2020_12` accordingly and add valid/unknown-field checks for the fixture.
 
@@ -273,6 +276,7 @@ Expected: fails because planning interfaces are absent.
 @dataclass(frozen=True, slots=True)
 class PeriodDocument:
     document_id: str
+    bitstream_id: str
     version: int
     source_id: str
     publication_date: str
@@ -311,13 +315,13 @@ class AggregationPlan:
 
 1. call `select_periods`;
 2. index graph collections by exact primary keys;
-3. select only current documents with `superseded_by is None` and matching `canonical_periods`;
+3. select only current documents with `superseded_by is None` and matching `canonical_periods`, preserving every unique `(document_id, bitstream_id)` alias;
 4. resolve PDF/Markdown storage records by canonical relative path;
 5. require matching `PreparedObject.logical_key`, checksum, bytes, source/document/conversion identity, rights state, and visibility;
 6. build zero, one, or two `ArchiveSpec` values per period using sorted canonical basenames;
 7. use archive IDs `rki-<kind>-<period-lower>-<format>`;
 8. use weekly names and path under the Monday start month, month paths under `Monate/YYYY/MM`, and year paths under `Jahre/YYYY`;
-9. fingerprint the entire ordered plan with `stable_json_dumps`.
+9. propagate source DOI and bitstream ID through renderer/manifest records and fingerprint the entire ordered plan with `stable_json_dumps`.
 
 Fail if one format would mix visibility. Do not split into undocumented extra archives.
 
@@ -417,7 +421,7 @@ Expected: fails because render/validate functions are absent.
 
 - [ ] **Step 3: Implement safe monthly Markdown rendering**
 
-Use a private table-cell escaper that replaces `&`, `<`, `>`, `|`, CR, and LF with safe text. Build only relative links derived from canonical paths. Sort rows by publication date, document ID, source ID. Include count, required metadata, exact conversion state, checksums, and every overlapping week archive link.
+Use a private table-cell escaper that replaces `&`, `<`, `>`, `|`, backslash, `[`, `]`, CR, and LF with safe text. Build only relative links derived from canonical paths. Sort rows by publication date, document ID, bitstream ID. Include count, required metadata, exact conversion state, checksums, and only validated overlapping week archive links. Link/image-shaped titles must remain inert text.
 
 - [ ] **Step 4: Implement canonical period-manifest rendering and validation**
 
@@ -553,11 +557,13 @@ class PeriodArchiveMaterialization:
 Use existing `staged_directory(target, allowed_root=temp_root, replace_existing=True)`. Inside its stage:
 
 1. create an inner `EffectLedger(RunMode.MATERIALIZE, temp_root=stage)`;
-2. call P07.1 `materialize_archive` for every planned bundle under the stage;
-3. write monthly indexes and validated period manifests with existing safe file primitives;
-4. compare canonical file path/mode/size/SHA tuples to an existing target;
-5. if identical, abort staging through one private no-change signal, return `changed=False`, and preserve outer ledger/events;
-6. otherwise publish the complete stage, then record final regular-file effects in the outer ledger.
+2. copy the existing generated tree through held descriptors and clear only planned outputs;
+3. schema-validate overlapping retained week manifests and verify every claimed sidecar/ZIP/checksum/size; a missing manifest yields no link, while a corrupt or missing claimed bundle fails closed;
+4. call P07.1 `materialize_archive` for every planned bundle under the stage;
+5. freeze sorted current and historical week references into immutable fingerprinted renderer input, then write monthly indexes and validated period manifests;
+6. compare canonical file path/mode/size/SHA tuples to an existing target;
+7. if identical, abort staging through one private no-change signal, return `changed=False`, and preserve outer ledger/events;
+8. otherwise publish the complete stage, then record final regular-file effects in the outer ledger.
 
 On any failure, restore prior target through `staged_directory`, remove translated tentative events, and rethrow as the narrow aggregation error. Returned paths must point to final target, never the staging directory.
 
@@ -616,7 +622,7 @@ def test_aggregate_cli_rejects_unsafe_or_unknown_modes(mode: str, capsys) -> Non
     assert "aggregate:" in capsys.readouterr().err
 ```
 
-Add materialize double-run equality, invalid/naive timestamp, unknown argument, and stdout-only/no-output-option tests.
+Add materialize double-run equality, invalid/naive timestamp, unknown argument, stdout-only/no-output-option, and path-free fixed `OSError` output tests.
 
 - [ ] **Step 2: Run CLI tests and prove RED**
 
@@ -681,6 +687,15 @@ Expected: every command passes; plan CLI is byte-identical across two invocation
 git add scripts/rki_pipeline/aggregation.py scripts/rki_pipeline/cli.py tests/test_period_archives.py docs/Wartung/Periodenarchive.md rki/Bulletins/README.md .github/workflows/p00-baseline.yml .github/workflows/rki-pipeline.yml
 git commit -m "feat(p07): expose period archive aggregation"
 ```
+
+### Final review hardening
+
+- Prove a real P06 two-bitstream alias survives planning, index, period manifest, both format ZIPs, and whole-tree materialization.
+- Rebuild month-only output after week-only publication; retain byte-identical validated weekly bundles and links. Corrupt or missing claimed weekly bundles must leave prior root unchanged.
+- Upgrade `source-manifest` production output to `1.2.0` with nullable DOI and preserve direct validation/migration coverage for `1.0.0` and `1.1.0` fixtures.
+- Escape Markdown backslashes and brackets in addition to HTML/table delimiters; test inert link/image-shaped titles.
+- Keep parent `fsync` and `publication_committed=True` inside `_publication_signal_guard`. Hold exact staging/publication FD from rename through validation, commit or rollback, and transaction cleanup. Parent-wide nonblocking `flock` must reject sibling-target publication fast.
+- Run complete acceptance gate plus `git diff --check 8d06c7d..HEAD`.
 
 ## Plan self-review
 
