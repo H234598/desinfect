@@ -170,14 +170,18 @@ def test_cli_rejects_invalid_fixture_with_fixed_stderr(tmp_path: Path, mutation:
 def test_fixture_authority_never_mutates_process_default(monkeypatch: pytest.MonkeyPatch) -> None:
     original = rights.DEFAULT_REGISTER_PATH
     loader = reconciliation.load_fixture_rights_authority
+    calls = 0
 
     def assert_default_then_load(path: Path):
+        nonlocal calls
+        calls += 1
         assert rights.DEFAULT_REGISTER_PATH == original
         return loader(path)
 
     monkeypatch.setattr(reconciliation, "load_fixture_rights_authority", assert_default_then_load)
 
     assert reconciliation._reconcile_fixture(reconciliation._fixture_payload(FIXTURE), mode="plan")["conclusion"] == "success"
+    assert calls == 1
     assert rights.DEFAULT_REGISTER_PATH == original
 
 

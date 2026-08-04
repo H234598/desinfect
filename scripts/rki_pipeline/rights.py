@@ -613,6 +613,7 @@ __all__ = [
     "RightsRegister",
     "RightsState",
     "evaluate_rights",
+    "load_fixture_rights_authority",
     "load_rights_authority",
     "load_rights_policy",
     "load_rights_register",
