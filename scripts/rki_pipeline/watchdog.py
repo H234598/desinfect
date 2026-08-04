@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
@@ -20,7 +21,20 @@ class WatchdogError(ValueError):
     """Watchdog input or persisted state is unsafe or inconsistent."""
 
 
+_UTC_DATETIME = re.compile(
+    r"^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])"
+    r"T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]+)?Z$"
+)
+_PIPELINE_CLOCKS = (
+    ("last_main_commit_at", "last_main_commit"),
+    ("last_successful_run_at", "last_successful_run"),
+    ("last_successful_write_at", "last_successful_write"),
+)
+
+
 def _utc(value: str, name: str) -> datetime:
+    if type(value) is not str or _UTC_DATETIME.fullmatch(value) is None:
+        raise WatchdogError(f"{name} ist kein gültiger UTC-Zeitstempel")
     try:
         return parse_utc(value)
     except DueTaskError as exc:
@@ -28,9 +42,16 @@ def _utc(value: str, name: str) -> datetime:
 
 
 def _format_utc(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace(
-        "+00:00", "Z"
-    )
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _shift_days(value: datetime, days: int) -> datetime:
+    try:
+        return value + timedelta(days=days)
+    except OverflowError as exc:
+        raise WatchdogError(
+            "Watchdog-Zeitberechnung überschreitet den gültigen Datumsbereich"
+        ) from exc
 
 
 def _interval(value: object) -> int:
@@ -77,23 +98,34 @@ class BarkPlan:
         }
 
 
+def _observed_clock(value: object, name: str, *, now: datetime) -> datetime | None:
+    if value is None:
+        return None
+    clock = _utc(value, name)
+    if clock > now:
+        raise WatchdogError(f"{name} liegt in der Zukunft")
+    return clock
+
+
+def _pipeline_clocks(
+    status: dict[str, Any], *, now: datetime
+) -> dict[str, datetime | None]:
+    return {
+        field: _observed_clock(status["pipeline"][field], field, now=now)
+        for field, _label in _PIPELINE_CLOCKS
+    }
+
+
 def _clock_causes(
-    status: dict[str, Any], *, now: datetime, interval: int
+    clocks: dict[str, datetime | None], *, now: datetime, interval: int
 ) -> tuple[str, ...]:
-    threshold = now - timedelta(days=interval)
+    threshold = _shift_days(now, -interval)
     causes: list[str] = []
-    for field, label in (
-        ("last_main_commit_at", "last_main_commit"),
-        ("last_successful_run_at", "last_successful_run"),
-        ("last_successful_write_at", "last_successful_write"),
-    ):
-        raw = status["pipeline"][field]
-        if raw is None:
+    for field, label in _PIPELINE_CLOCKS:
+        clock = clocks[field]
+        if clock is None:
             causes.append(f"{label}_missing")
             continue
-        clock = _utc(raw, field)
-        if clock > now:
-            raise WatchdogError(f"{field} liegt in der Zukunft")
         if clock < threshold:
             causes.append(f"{label}_stale")
     return tuple(causes) or ("scheduled_keepalive",)
@@ -141,6 +173,8 @@ def plan_watchdog(status: dict[str, Any], *, as_of: str) -> BarkPlan | None:
     evaluated_at = _format_utc(now)
     watchdog = current["watchdog"]
     interval = _interval(watchdog["interval_days"])
+    bark = _observed_clock(watchdog["last_bark_at"], "last_bark_at", now=now)
+    pipeline_clocks = _pipeline_clocks(current, now=now)
     reset_raw = watchdog["last_reset_at"]
     next_raw = watchdog["next_bark_at"]
     if reset_raw is None and next_raw is None:
@@ -149,19 +183,15 @@ def plan_watchdog(status: dict[str, Any], *, as_of: str) -> BarkPlan | None:
         raise WatchdogError("last_reset_at und next_bark_at müssen gemeinsam gesetzt sein")
     reset = _utc(reset_raw, "last_reset_at")
     deadline = _utc(next_raw, "next_bark_at")
-    if deadline != reset + timedelta(days=interval):
+    if deadline != _shift_days(reset, interval):
         raise WatchdogError("next_bark_at stimmt nicht mit Reset und Intervall überein")
     if reset > now or deadline > now:
         if reset > now:
             raise WatchdogError("last_reset_at liegt in der Zukunft")
         return None
-    bark_raw = watchdog["last_bark_at"]
-    bark = None if bark_raw is None else _utc(bark_raw, "last_bark_at")
-    if bark is not None and bark > now:
-        raise WatchdogError("last_bark_at liegt in der Zukunft")
     repeated = bark is not None and bark >= reset
-    causes = _clock_causes(current, now=now, interval=interval)
-    next_bark_at = _format_utc(now + timedelta(days=interval))
+    causes = _clock_causes(pipeline_clocks, now=now, interval=interval)
+    next_bark_at = _format_utc(_shift_days(now, interval))
     title, body = _commit_text(
         current,
         evaluated_at=evaluated_at,
@@ -233,9 +263,7 @@ def reset_watchdog(
     result["updated_at"] = reset_at
     result["watchdog"]["interval_days"] = interval
     result["watchdog"]["last_reset_at"] = reset_at
-    result["watchdog"]["next_bark_at"] = _format_utc(
-        reset + timedelta(days=interval)
-    )
+    result["watchdog"]["next_bark_at"] = _format_utc(_shift_days(reset, interval))
     result["watchdog"]["reset_by"] = reset_by
     try:
         validate_document("status", result)

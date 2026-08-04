@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
+import time
 
 import pytest
 
@@ -50,6 +52,26 @@ def test_unarmed_watchdog_has_no_plan() -> None:
     assert plan_watchdog(value, as_of=DUE) is None
 
 
+@pytest.mark.parametrize("host_tz", ["UTC", "Europe/Berlin"])
+def test_date_only_as_of_is_rejected_independently_of_host_timezone(
+    host_tz: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_tz = os.environ.get("TZ")
+    try:
+        monkeypatch.setenv("TZ", host_tz)
+        time.tzset()
+
+        with pytest.raises(WatchdogError, match="UTC-Zeitstempel"):
+            plan_watchdog(armed_status(), as_of="2026-09-04Z")
+    finally:
+        if original_tz is None:
+            monkeypatch.delenv("TZ", raising=False)
+        else:
+            monkeypatch.setenv("TZ", original_tz)
+        time.tzset()
+
+
 def test_watchdog_does_not_bark_after_44_days_and_barks_at_deadline() -> None:
     value = armed_status()
     assert plan_watchdog(value, as_of="2026-09-02T04:31:12Z") is None
@@ -60,6 +82,28 @@ def test_watchdog_does_not_bark_after_44_days_and_barks_at_deadline() -> None:
     assert plan.causes == ("scheduled_keepalive",)
     assert plan.next_bark_at == "2026-10-18T04:31:12Z"
     assert plan.repeated is False
+
+
+def test_fractional_due_plan_round_trips_through_apply() -> None:
+    due = "2026-09-03T04:31:12.500000Z"
+    value = armed_status()
+    value["watchdog"]["last_reset_at"] = "2026-07-20T04:31:12.500000Z"
+    value["watchdog"]["next_bark_at"] = due
+    for field in (
+        "last_main_commit_at",
+        "last_successful_run_at",
+        "last_successful_write_at",
+    ):
+        value["pipeline"][field] = "2026-07-20T04:31:12.500000Z"
+
+    plan = plan_watchdog(value, as_of=due)
+
+    assert plan is not None
+    assert plan.evaluated_at == due
+    assert plan.next_bark_at == "2026-10-18T04:31:12.500000Z"
+    projected = apply_bark(value, plan)
+    assert projected["updated_at"] == due
+    assert projected["watchdog"]["last_bark_at"] == due
 
 
 def test_delayed_evaluation_emits_one_plan_without_catch_up_bursts() -> None:
@@ -123,6 +167,46 @@ def test_future_pipeline_clock_is_rejected() -> None:
     value["pipeline"]["last_successful_write_at"] = "2026-09-04T00:00:00Z"
     with pytest.raises(WatchdogError, match="Zukunft"):
         plan_watchdog(value, as_of=DUE)
+
+
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [
+        ("watchdog", "last_bark_at"),
+        ("pipeline", "last_main_commit_at"),
+        ("pipeline", "last_successful_run_at"),
+        ("pipeline", "last_successful_write_at"),
+    ],
+)
+def test_unarmed_watchdog_rejects_future_observed_clocks(
+    section: str,
+    field: str,
+) -> None:
+    value = json.loads((ROOT / "status.json").read_text(encoding="utf-8"))
+    value[section][field] = "2026-09-04T00:00:00Z"
+
+    with pytest.raises(WatchdogError, match=f"{field} liegt in der Zukunft"):
+        plan_watchdog(value, as_of=DUE)
+
+
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [
+        ("watchdog", "last_bark_at"),
+        ("pipeline", "last_main_commit_at"),
+        ("pipeline", "last_successful_run_at"),
+        ("pipeline", "last_successful_write_at"),
+    ],
+)
+def test_pre_deadline_watchdog_rejects_future_observed_clocks(
+    section: str,
+    field: str,
+) -> None:
+    value = armed_status()
+    value[section][field] = "2026-09-04T00:00:00Z"
+
+    with pytest.raises(WatchdogError, match=f"{field} liegt in der Zukunft"):
+        plan_watchdog(value, as_of="2026-09-02T04:31:12Z")
 
 
 def test_planning_does_not_mutate_status() -> None:
@@ -229,6 +313,18 @@ def test_reset_accepts_safe_interval_boundaries(interval_days: int) -> None:
     assert projected["watchdog"]["interval_days"] == interval_days
 
 
+def test_reset_reports_upper_datetime_overflow_as_watchdog_error() -> None:
+    with pytest.raises(WatchdogError, match="Zeitberechnung"):
+        reset_watchdog(
+            armed_status(),
+            now="9999-12-31T00:00:00Z",
+            reset_by="weekly_ingest",
+            run_mode="apply",
+            run_status="success",
+            commit_created=True,
+        )
+
+
 @pytest.mark.parametrize("reset_by", ["", "x" * 121, "line\nbreak"])
 def test_reset_reason_must_be_bounded_and_printable(reset_by: str) -> None:
     with pytest.raises(WatchdogError, match="reset_by"):
@@ -305,6 +401,40 @@ def test_watchdog_cli_reports_invalid_utf8_without_traceback(
 
     result = watchdog_main(
         ["--as-of", DUE, "--mode", "plan", "--status", str(status_path)]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.out == ""
+    assert captured.err.startswith("watchdog:")
+    assert "Traceback" not in captured.err
+
+
+def test_watchdog_cli_reports_upper_datetime_overflow_without_traceback(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    status_path = tmp_path / "status.json"
+    value = armed_status()
+    value["watchdog"]["last_reset_at"] = "9999-10-01T00:00:00Z"
+    value["watchdog"]["next_bark_at"] = "9999-11-15T00:00:00Z"
+    for field in (
+        "last_main_commit_at",
+        "last_successful_run_at",
+        "last_successful_write_at",
+    ):
+        value["pipeline"][field] = "9999-12-01T00:00:00Z"
+    status_path.write_text(stable_json_dumps(value), encoding="utf-8")
+
+    result = watchdog_main(
+        [
+            "--as-of",
+            "9999-12-31T00:00:00Z",
+            "--mode",
+            "plan",
+            "--status",
+            str(status_path),
+        ]
     )
 
     captured = capsys.readouterr()

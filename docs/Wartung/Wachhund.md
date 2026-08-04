@@ -27,6 +27,12 @@ python -m scripts.rki_pipeline.cli watchdog \
 
 Ausgabe ist deterministisches JSON. `due=false` enthält keinen Barkplan. `due=true` enthält Ursache, Wiederholungsstatus, Committext und nächste Fälligkeit, führt aber keine Änderung aus.
 
+## Committext
+
+Fehlt oder veraltet `last_successful_run_at` oder `last_successful_write_at`, lautet der Titel `chore(wachhund): <N> Tage ohne erfolgreichen Schreiblauf erkannt`. Andernfalls – also bei planmäßigem Keepalive oder ausschließlich fehlendem/veraltetem `last_main_commit_at` – lautet er `chore(wachhund): neues Betriebsupdate nach <N> Tagen Inaktivität`.
+
+Der stabile Body enthält Auswertungszeit, internen Trigger `internal-watchdog`, Intervall, die drei getrennten Pipeline-Uhren, Ursachen, Wiederholungsflag und nächste Fälligkeit.
+
 ## Fehler und Recovery
 
 Ungültige Intervalle, Zeitstempel, teilweise initialisierte Zustände, Zukunftsuhren und widersprüchliche Deadlines blockieren. Status bleibt unverändert. Ursache korrigieren und denselben Planbefehl erneut ausführen. Einen veralteten Barkplan nie erzwingen; gegen aktuellen Status neu planen.
