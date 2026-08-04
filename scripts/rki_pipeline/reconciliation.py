@@ -5,12 +5,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 import json
-from pathlib import PurePosixPath, PureWindowsPath
 import re
 from typing import Iterable
 import unicodedata
 
-from scripts.rki_pipeline.io_utils import stable_json_dumps
+from scripts.rki_pipeline.io_utils import normalize_posix_path, stable_json_dumps
 from scripts.rki_pipeline.schema_registry import validate_document
 
 
@@ -48,13 +47,14 @@ class ReconciliationFinding:
         if type(self.subject_id) is not str or _has_control_character(self.subject_id):
             raise ValueError("subject_id enthält Steuerzeichen oder ist ungültig")
         if self.relative_path is not None:
-            if (
-                type(self.relative_path) is not str
-                or _has_control_character(self.relative_path)
-                or PurePosixPath(self.relative_path).is_absolute()
-                or PureWindowsPath(self.relative_path).is_absolute()
-            ):
+            if type(self.relative_path) is not str or _has_control_character(self.relative_path):
                 raise ValueError("relative_path ist nicht relativ oder enthält Steuerzeichen")
+            try:
+                normalized_path = normalize_posix_path(self.relative_path)
+            except ValueError as exc:
+                raise ValueError("relative_path ist nicht kanonisch") from exc
+            if normalized_path != self.relative_path:
+                raise ValueError("relative_path ist nicht kanonisch")
         if (
             type(self.message) is not str
             or len(self.message) > 500

@@ -167,6 +167,28 @@ def test_finding_rejects_unsafe_path_and_message(
         )
 
 
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "artifacts/../report.pdf",
+        "./report.pdf",
+        "artifacts//report.pdf",
+        "artifacts\\report.pdf",
+        "C:report.pdf",
+        "cafe\u0301.pdf",
+    ],
+)
+def test_finding_rejects_noncanonical_relative_path_aliases(relative_path: str) -> None:
+    with pytest.raises(ValueError):
+        ReconciliationFinding(
+            code=FindingCode.CHANGED,
+            subject_kind=SubjectKind.STORAGE,
+            subject_id="artifact-a",
+            relative_path=relative_path,
+            message="changed",
+        )
+
+
 def test_counts_reject_boolean_values() -> None:
     with pytest.raises(ValueError, match="Ganzzahl"):
         ReconciliationCounts(
