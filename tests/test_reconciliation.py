@@ -46,6 +46,8 @@ from scripts.rki_pipeline.storage.base import (
     StorageIntent,
     StorageReference,
 )
+from scripts.rki_pipeline.storage.config import LfsConfig
+from scripts.rki_pipeline.storage.lfs import LfsStorageAdapter
 from scripts.rki_pipeline.manifests import ManifestGraph
 from scripts.rki_pipeline.run_modes import EffectLedger
 
@@ -220,6 +222,55 @@ def test_storage_inventory_extra_reference_is_orphan() -> None:
     assert [(item.code, item.subject_id) for item in findings] == [
         (FindingCode.ORPHAN, "orphan-a"),
     ]
+
+
+def test_storage_reconciliation_matches_legacy_lfs_inventory_by_path(
+    tmp_path: Path,
+    storage_rights,
+) -> None:
+    decision_sha256 = storage_rights.set_decisions(
+        (_RECONCILIATION_SOURCE_ID, _RECONCILIATION_SOURCE_SHA256, "approved"),
+    )[(_RECONCILIATION_SOURCE_ID, _RECONCILIATION_SOURCE_SHA256)]
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    artifact = repository / "rki/Bulletins/Jahre/2026/PDF/current.pdf"
+    artifact.parent.mkdir(parents=True)
+    payload = b"%PDF-1.4\n%%EOF\n"
+    artifact.write_bytes(payload)
+    sha256 = hashlib.sha256(payload).hexdigest()
+    reference = StorageReference(
+        artifact_id="durable-pdf",
+        relative_path="rki/Bulletins/Jahre/2026/PDF/current.pdf",
+        storage_backend=StorageBackend.LFS,
+        storage_object_id=f"sha256:{sha256}",
+        sha256=sha256,
+        size=len(payload),
+        source_id=_RECONCILIATION_SOURCE_ID,
+        source_sha256=_RECONCILIATION_SOURCE_SHA256,
+        document_id=_RECONCILIATION_DOCUMENT_ID,
+        conversion_id=None,
+        decision_sha256=decision_sha256,
+        provenance_state="current",
+        visibility="repository_authorized",
+        rights_state="approved",
+        public_reference=None,
+    )
+    adapter = LfsStorageAdapter(
+        repository_root=repository,
+        config=LfsConfig(
+            artifact_root="rki/Bulletins",
+            max_run_objects=1,
+            max_run_bytes=1,
+            warn_total_bytes=2,
+            block_total_bytes=3,
+        ),
+        authorizer=storage_rights.authorizer,
+    )
+
+    assert reconcile_storage(
+        storage_graph(reference, decision_sha256=decision_sha256),
+        {StorageBackend.LFS: adapter},
+    ) == ()
 
 
 def test_storage_duplicate_inventory_identity_fails_closed() -> None:

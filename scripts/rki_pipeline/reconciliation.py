@@ -224,7 +224,6 @@ def reconcile_storage(
     references = _manifest_storage_references(graph)
     checked_adapters = _storage_adapters(adapters)
     findings: list[ReconciliationFinding] = []
-    manifest_ids = {reference.artifact_id for reference in references}
 
     for reference in references:
         adapter = checked_adapters.get(reference.storage_backend)
@@ -244,6 +243,10 @@ def reconcile_storage(
 
     inventory_ids: set[str] = set()
     by_artifact_id = {reference.artifact_id: reference for reference in references}
+    by_backend_path = {
+        (reference.storage_backend, reference.relative_path): reference
+        for reference in references
+    }
     for backend, adapter in checked_adapters.items():
         try:
             inventory = adapter.list_references()
@@ -262,7 +265,13 @@ def reconcile_storage(
             expected = by_artifact_id.get(reference.artifact_id)
             if expected is not None and reference != expected:
                 raise ReconciliationIntegrityError("Storage-Artefaktidentität ist widersprüchlich")
-            if reference.artifact_id not in manifest_ids:
+            if (
+                expected is None
+                and backend is StorageBackend.LFS
+                and reference.provenance_state == "legacy_needs_review"
+            ):
+                expected = by_backend_path.get((backend, reference.relative_path))
+            if expected is None:
                 findings.append(_storage_finding(FindingCode.ORPHAN, reference))
 
     return tuple(sorted(findings, key=lambda item: item.key))
