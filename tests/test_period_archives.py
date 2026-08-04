@@ -10,6 +10,7 @@ import pytest
 
 from scripts.rki_grabber.models import AffectedPeriods
 from scripts.rki_pipeline import aggregation as aggregation_module
+from scripts.rki_pipeline import cli
 from scripts.rki_pipeline import rights
 from scripts.rki_pipeline import staging as staging_module
 from scripts.rki_pipeline.aggregation import (
@@ -30,13 +31,16 @@ from scripts.rki_pipeline.due_tasks import DueTask, TaskKind
 from scripts.rki_pipeline.io_utils import mark_generated_root, stable_json_dumps
 from scripts.rki_pipeline.manifests import ManifestGraph
 from scripts.rki_pipeline.rights import resolve_rights
-from scripts.rki_pipeline.run_modes import EffectLedger, RunMode
+from scripts.rki_pipeline.run_modes import EffectLedger, RunMode, capture_repository_snapshot
 from scripts.rki_pipeline.storage.base import PreparedObject, RightsStorageAuthorizer
 from tests.test_manifests import _build as build_p06_graph
 from tests.test_manifests import _document as p06_document
 from tests.test_manifests import _second_bitstream as p06_second_bitstream
 from tests.test_manifests import _source as p06_source
 from tests.test_manifests import _storage as p06_storage
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def due(kind: TaskKind, period: str) -> DueTask:
@@ -1582,3 +1586,102 @@ def test_materialize_repairs_corruption_and_rejects_unsafe_targets(
             ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
             authorizer=authorizer,
         )
+
+
+def test_aggregate_cli_plan_is_deterministic_and_read_only(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Catches accidental repository writes or nondeterministic plan evidence."""
+
+    before = capture_repository_snapshot(ROOT, protected_paths=("status.json",), temp_root=None)
+    command = ["aggregate", "--as-of", "2026-01-01T05:00:00Z", "--mode", "plan"]
+
+    assert cli.main(command) == 0
+    first = capsys.readouterr().out
+    assert cli.main(command) == 0
+    second = capsys.readouterr().out
+
+    payload = json.loads(first)
+    assert payload["input_fingerprint"]
+    assert [period["period"] for period in payload["periods"]] == [
+        "2025-W50",
+        "2025-12",
+        "2025",
+    ]
+    assert first == second
+    assert capture_repository_snapshot(ROOT, protected_paths=("status.json",), temp_root=None) == before
+
+
+def test_aggregate_cli_materialize_has_stable_isolated_evidence(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Catches materialize output that leaks temp paths or varies per run."""
+
+    command = ["aggregate", "--as-of", "2026-01-01T05:00:00Z", "--mode", "materialize"]
+
+    assert cli.main(command) == 0
+    first = capsys.readouterr().out
+    assert cli.main(command) == 0
+    second = capsys.readouterr().out
+
+    payload = json.loads(first)
+    assert payload["changed"] is True
+    assert len(payload["archives"]) == 3
+    assert payload["indexes"] == ["rki/Bulletins/Monate/2025/12/Markdown/index.md"]
+    assert payload["manifests"] == [
+        "rki/Bulletins/Manifeste/Archive/week/2025-W50.json",
+        "rki/Bulletins/Manifeste/Archive/month/2025-12.json",
+        "rki/Bulletins/Manifeste/Archive/year/2025.json",
+    ]
+    assert first == second
+
+
+@pytest.mark.parametrize("mode", ["apply", "PLAN", ""])
+def test_aggregate_cli_rejects_unsafe_or_unknown_modes(
+    mode: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Catches widening aggregate beyond plan/materialize."""
+
+    assert cli.main(["aggregate", "--as-of", "2026-01-01T05:00:00Z", "--mode", mode]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "aggregate:" in captured.err
+
+
+@pytest.mark.parametrize(
+    "as_of",
+    [
+        "",
+        "2026-01-01T05:00:00",
+        "2026-01-01Z",
+        "2026-01-01 05:00:00Z",
+        "not-a-timestamp",
+        "2026-02-30T05:00:00Z",
+    ],
+)
+def test_aggregate_cli_rejects_naive_or_invalid_timestamps(
+    as_of: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Catches timezone-free or malformed closure instants."""
+
+    assert cli.main(["aggregate", "--as-of", as_of, "--mode", "plan"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "aggregate:" in captured.err
+
+
+@pytest.mark.parametrize(
+    "argument",
+    ["--unknown", "--output", "--repo", "--network", "--backend", "--token"],
+)
+def test_aggregate_cli_rejects_unknown_or_effectful_switches(
+    argument: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Catches output, repository, backend, network, and token escape hatches."""
+
+    assert cli.main(
+        ["aggregate", "--as-of", "2026-01-01T05:00:00Z", "--mode", "plan", argument, "x"]
+    ) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "aggregate:" in captured.err

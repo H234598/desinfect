@@ -2,6 +2,7 @@
 """Strict period selection for deterministic archive aggregation."""
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 from datetime import date, datetime, time
 import hashlib
@@ -11,6 +12,8 @@ import posixpath
 import re
 from pathlib import Path, PurePosixPath
 import stat
+import sys
+from tempfile import TemporaryDirectory
 from typing import Any, Iterable, Mapping
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -25,7 +28,7 @@ from scripts.rki_pipeline.archive import (
     materialize_archive,
     validate_archive,
 )
-from scripts.rki_pipeline.due_tasks import DueTask, TaskKind
+from scripts.rki_pipeline.due_tasks import DueTask, DueTaskError, TaskKind, parse_utc
 from scripts.rki_pipeline.io_utils import (
     GENERATED_ROOT_SENTINEL,
     UnsafePathError,
@@ -49,6 +52,7 @@ from scripts.rki_pipeline.storage.base import (
     StorageAuthorizationError,
     authorize_storage_operation,
 )
+from scripts.rki_pipeline.rights import load_rights_authority, load_rights_policy, resolve_rights
 
 _BERLIN = ZoneInfo("Europe/Berlin")
 _WEEK = re.compile(r"^(?P<year>[0-9]{4})-W(?P<week>0[1-9]|[1-4][0-9]|5[0-3])$")
@@ -1571,3 +1575,180 @@ def materialize_period_archives(
         input_fingerprint=plan.input_fingerprint,
         changed=True,
     )
+
+
+_CLI_SOURCE_ID = "rki:176904/900000001"
+_CLI_SOURCE_SHA256 = "4665c3b8cfa6de8d9792a8defb977bfd200465b513575419e0a88541000f5b2a"
+_CLI_PAYLOAD = b"# Synthetic deterministic archive fixture\n"
+_CLI_PAYLOAD_SHA256 = "7c86816c4af09e887f9d46fd7441089955578a82e0287d5d234c07b18b3c658c"
+_CLI_UTC = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+
+
+def _cli_fixture(temp_root: Path, as_of: datetime) -> tuple[AggregationPlan, RightsStorageAuthorizer]:
+    """Build one fixed, local-only fixture through normal aggregation contracts."""
+
+    authority = load_rights_authority()
+    policy = load_rights_policy()
+    decision = resolve_rights(_CLI_SOURCE_ID, _CLI_SOURCE_SHA256, authority=authority, policy=policy)
+    if decision.decision_sha256 is None or decision.state.value != "approved":
+        raise AggregationError("Synthetische Aggregationsfixture besitzt keine Freigabe")
+    prepared_root = temp_root / "prepared"
+    prepared_root.mkdir()
+    logical_key = "rki/Bulletins/Jahre/2025/PDF/2025-12-12_fixture.pdf"
+    payload_path = prepared_root / "fixture.pdf"
+    payload_path.write_bytes(_CLI_PAYLOAD)
+    prepared = PreparedObject(
+        artifact_id="period-fixture-pdf",
+        logical_key=logical_key,
+        path=payload_path,
+        temp_root=prepared_root,
+        sha256=_CLI_PAYLOAD_SHA256,
+        size=len(_CLI_PAYLOAD),
+        source_id=_CLI_SOURCE_ID,
+        source_sha256=_CLI_SOURCE_SHA256,
+        decision_sha256=decision.decision_sha256,
+        visibility="repository_authorized",
+        rights_state=decision.state.value,
+        document_id="rki-176904-900000001-v1",
+    )
+    bitstream_id = "rki-bitstream-" + "a" * 64
+    source = {
+        "bitstream_id": bitstream_id,
+        "source_id": _CLI_SOURCE_ID,
+        "title": "Synthetic aggregation bulletin",
+        "handle": "176904/900000001",
+        "version": 1,
+        "publication_date": "2025-12-12",
+        "sha256": _CLI_SOURCE_SHA256,
+        "decision_sha256": decision.decision_sha256,
+        "rights": {"state": decision.state.value},
+    }
+    document = {
+        "document_id": "rki-176904-900000001-v1",
+        "version": 1,
+        "source_id": _CLI_SOURCE_ID,
+        "bitstream_id": bitstream_id,
+        "publication_date": "2025-12-12",
+        "canonical_periods": {"week": "2025-W50", "month": "2025-12", "year": 2025},
+        "paths": {"pdf": logical_key, "markdown": None},
+        "superseded_by": None,
+    }
+    storage = {
+        "artifact_id": "period-fixture-pdf",
+        "relative_path": logical_key,
+        "sha256": _CLI_PAYLOAD_SHA256,
+        "bytes": len(_CLI_PAYLOAD),
+        "source_id": _CLI_SOURCE_ID,
+        "source_sha256": _CLI_SOURCE_SHA256,
+        "document_id": document["document_id"],
+        "conversion_id": None,
+        "decision_sha256": decision.decision_sha256,
+        "visibility": "repository_authorized",
+        "rights_state": decision.state.value,
+    }
+    due_tasks = tuple(
+        DueTask(
+            task_id=f"{kind.value}:{period}",
+            kind=kind,
+            period=period,
+            reason="offline fixture",
+            due_at="2026-01-01T05:00:00Z",
+        )
+        for kind, period in (
+            (TaskKind.WEEK, "2025-W50"),
+            (TaskKind.MONTH, "2025-12"),
+            (TaskKind.YEAR, "2025"),
+        )
+    )
+    return (
+        plan_period_archives(
+            as_of=as_of,
+            due_tasks=due_tasks,
+            affected_periods=AffectedPeriods(),
+            graph=ManifestGraph(
+                sources=(source,),
+                documents=(document,),
+                conversions=(),
+                storage_references=(storage,),
+            ),
+            prepared_by_logical_key={logical_key: prepared},
+        ),
+        RightsStorageAuthorizer(authority=authority, policy=policy),
+    )
+
+
+def _plan_evidence(plan: AggregationPlan) -> dict[str, object]:
+    return {
+        "input_fingerprint": plan.input_fingerprint,
+        "periods": [
+            {
+                "archives": [archive.relative_bundle for archive in period.archives],
+                "index": period.index_path,
+                "kind": period.period.kind.value,
+                "manifest": period.manifest_path,
+                "period": period.period.value,
+            }
+            for period in plan.periods
+        ],
+    }
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="aggregate", allow_abbrev=False)
+    parser.add_argument("--as-of", required=True)
+    parser.add_argument("--mode", required=True)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run fixed offline aggregate plan or temporary materialization smoke."""
+
+    try:
+        args = _build_parser().parse_args(argv)
+    except SystemExit as exc:
+        return int(exc.code)
+    if args.mode not in {RunMode.PLAN.value, RunMode.MATERIALIZE.value}:
+        print("aggregate: mode muss plan oder materialize sein", file=sys.stderr)
+        return 2
+    try:
+        if _CLI_UTC.fullmatch(args.as_of) is None:
+            raise DueTaskError("as_of muss RFC3339 UTC mit T und Z sein")
+        as_of = parse_utc(args.as_of)
+        with TemporaryDirectory(prefix="desinfect-p07-aggregate-") as directory:
+            temp_root = Path(directory).resolve()
+            plan, authorizer = _cli_fixture(temp_root, as_of)
+            if args.mode == RunMode.PLAN.value:
+                evidence = _plan_evidence(plan)
+            else:
+                result = materialize_period_archives(
+                    plan,
+                    temp_root / "products",
+                    temp_root=temp_root,
+                    ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root),
+                    authorizer=authorizer,
+                )
+                evidence = {
+                    "archives": [
+                        {
+                            "archive_id": archive.archive_id,
+                            "bytes": archive.build.size,
+                            "input_fingerprint": archive.build.input_fingerprint,
+                            "output_sha256": archive.build.output_sha256,
+                            "relative_bundle": archive.relative_bundle,
+                        }
+                        for archive in result.archives
+                    ],
+                    "changed": result.changed,
+                    "indexes": [
+                        path.relative_to(result.root).as_posix() for path in result.index_paths
+                    ],
+                    "input_fingerprint": result.input_fingerprint,
+                    "manifests": [
+                        path.relative_to(result.root).as_posix() for path in result.manifest_paths
+                    ],
+                }
+            print(stable_json_dumps(evidence), end="")
+        return 0
+    except (AggregationError, DueTaskError, OSError, ValueError) as exc:
+        print(f"aggregate: {exc}", file=sys.stderr)
+        return 2

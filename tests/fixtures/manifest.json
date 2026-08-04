@@ -151,6 +151,16 @@
       "synthetic": true
     },
     {
+      "bytes": 351,
+      "license_status": "synthetic",
+      "media_type": "application/json",
+      "path": "schemas/period-archive-manifest.json",
+      "provenance": "H234598/desinfect P07.2 synthetic period archive fixture",
+      "purpose": "canonical period-archive manifest schema validation",
+      "sha256": "208b65d6ac15469a82c4744574721c433a436041331bcaa33711132d7cc143e6",
+      "synthetic": true
+    },
+    {
       "bytes": 1034,
       "license_status": "synthetic",
       "media_type": "application/x-ndjson",
