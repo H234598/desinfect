@@ -162,15 +162,38 @@
   "allOf": [
     {
       "if": {"properties": {"kind": {"const": "week"}}, "required": ["kind"]},
-      "then": {"properties": {"period": {"pattern": "^[0-9]{4}-W(?:0[1-9]|[1-4][0-9]|5[0-3])$"}}}
+      "then": {
+        "properties": {
+          "archives": {
+            "items": {"properties": {"kind": {"enum": ["week-pdf", "week-markdown"]}}}
+          },
+          "month_manifests": {"maxItems": 0},
+          "period": {"pattern": "^[0-9]{4}-W(?:0[1-9]|[1-4][0-9]|5[0-3])$"}
+        }
+      }
     },
     {
       "if": {"properties": {"kind": {"const": "month"}}, "required": ["kind"]},
-      "then": {"properties": {"period": {"pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])$"}}}
+      "then": {
+        "properties": {
+          "archives": {
+            "items": {"properties": {"kind": {"enum": ["month-pdf", "month-markdown"]}}}
+          },
+          "month_manifests": {"maxItems": 0},
+          "period": {"pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])$"}
+        }
+      }
     },
     {
       "if": {"properties": {"kind": {"const": "year"}}, "required": ["kind"]},
-      "then": {"properties": {"period": {"pattern": "^[0-9]{4}$"}}}
+      "then": {
+        "properties": {
+          "archives": {
+            "items": {"properties": {"kind": {"enum": ["year-pdf", "year-markdown"]}}}
+          },
+          "period": {"pattern": "^[0-9]{4}$"}
+        }
+      }
     }
   ],
   "properties": {

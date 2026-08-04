@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
 
+from scripts.rki_pipeline import schema_registry as schema_registry_module
 from scripts.rki_pipeline.schema_registry import SchemaContractError, load_registry, load_schema, validate_document
 from scripts import validate_schemas
 
@@ -85,6 +86,20 @@ def test_all_registered_schemas_are_strict_draft_2020_12() -> None:
         assert schema["$schema"].endswith("2020-12/schema")
 
 
+def test_registered_migration_names_resolve_to_runtime_callables() -> None:
+    for entry in load_registry()["contracts"]:
+        migration_name = entry["migration"]
+        if migration_name is None:
+            assert entry["previous_versions"] == []
+            continue
+        migration = getattr(schema_registry_module, migration_name)
+        assert callable(migration)
+        for previous_version in entry["previous_versions"]:
+            assert schema_registry_module.MIGRATIONS[
+                (entry["name"], previous_version, entry["current_version"])
+            ] is migration
+
+
 def test_invalid_registered_schema_raises_contract_error(tmp_path: Path) -> None:
     schema_path = tmp_path / "invalid.schema.json"
     schema_path.write_text(
@@ -130,6 +145,56 @@ def test_period_archive_manifest_validates_and_unknown_field_fails_closed() -> N
     changed["unexpected"] = True
     with pytest.raises(SchemaContractError, match="Additional properties"):
         validate_document("period-archive-manifest", changed)
+
+
+@pytest.mark.parametrize(
+    ("root_kind", "period", "archive_kind", "month_manifests"),
+    [
+        ("week", "2026-W27", "month-pdf", []),
+        ("month", "2026-07", "week-pdf", []),
+        ("year", "2026", "month-pdf", []),
+        (
+            "week",
+            "2026-W27",
+            None,
+            ["rki/Bulletins/Manifeste/Archive/month/2026-07.json"],
+        ),
+        (
+            "month",
+            "2026-07",
+            None,
+            ["rki/Bulletins/Manifeste/Archive/month/2026-07.json"],
+        ),
+    ],
+)
+def test_period_archive_manifest_rejects_cross_kind_collections(
+    root_kind: str,
+    period: str,
+    archive_kind: str | None,
+    month_manifests: list[str],
+) -> None:
+    fixture = json.loads(
+        (ROOT / "tests" / "fixtures" / "schemas" / "period-archive-manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    fixture["kind"] = root_kind
+    fixture["period"] = period
+    fixture["month_manifests"] = month_manifests
+    fixture["archives"] = [] if archive_kind is None else [
+        {
+            "archive_id": "rki-cross-kind-pdf",
+            "kind": archive_kind,
+            "relative_bundle": "rki/Bulletins/Archive",
+            "input_fingerprint": "b" * 64,
+            "output_sha256": "c" * 64,
+            "bytes": 1,
+            "storage_reference": None,
+        }
+    ]
+
+    with pytest.raises(SchemaContractError, match="archives|month_manifests"):
+        validate_document("period-archive-manifest", fixture)
 
 
 @pytest.mark.parametrize(

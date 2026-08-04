@@ -79,7 +79,7 @@ def test_period_before_supported_epoch_fails_closed() -> None:
     ((TaskKind.WEEK, "9999-W52"), (TaskKind.YEAR, "9999")),
 )
 def test_period_beyond_supported_date_range_fails_closed(kind: TaskKind, value: str) -> None:
-    with pytest.raises(PeriodSelectionError, match="unterstützten Bereich|existiert nicht"):
+    with pytest.raises(PeriodSelectionError, match=r"unterstützten Bereich|existiert nicht"):
         period_ref(kind, value)
 
 
@@ -323,6 +323,11 @@ def test_plan_selects_current_documents_and_separates_formats(tmp_path: Path) ->
         for archive in period.archives
         for entry in archive.spec.entries
     )
+    assert {
+        entry.path.split("/", 1)[0]
+        for archive in period.archives
+        for entry in archive.spec.entries
+    } == {"Markdown", "PDF"}
 
 
 def test_empty_format_is_omitted(tmp_path: Path) -> None:
@@ -593,7 +598,9 @@ def test_p06_aliases_flow_through_plan_index_manifest_and_materialize(
     )
     pdf_build = next(item.build for item in result.archives if item.archive_id.endswith("-pdf"))
     with zipfile.ZipFile(pdf_build.path) as archive_file:
-        assert len([name for name in archive_file.namelist() if name.endswith(".pdf")]) == 2
+        pdf_members = [name for name in archive_file.namelist() if name.endswith(".pdf")]
+        assert len(pdf_members) == 2
+        assert all(name.startswith("PDF/") for name in pdf_members)
 
 
 def test_plan_resolves_markdown_storage_reference_by_artifact_id(tmp_path: Path) -> None:
@@ -1542,7 +1549,7 @@ def test_materialize_rejects_mutable_period_iterable_before_snapshot(
             yield from plan.periods
 
     mutable = replace(plan, periods=W27W28())
-    with pytest.raises(AggregationError, match="periods.*tuple"):
+    with pytest.raises(AggregationError, match=r"periods.*tuple"):
         materialize_period_archives(
             mutable,
             tmp_path / "mutable",

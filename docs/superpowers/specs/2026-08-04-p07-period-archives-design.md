@@ -103,6 +103,7 @@ Each bundle remains the P07.1 directory containing `archive.zip` and `archive-ma
 - publication date;
 - title;
 - RKI handle;
+- bitstream ID;
 - DOI or `—`;
 - relative PDF and Markdown links when present;
 - exact conversion state;

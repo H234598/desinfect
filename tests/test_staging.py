@@ -174,13 +174,13 @@ def test_staged_directory_rejects_target_generation_change(tmp_path: Path) -> No
     nested.mkdir()
     (nested / "value.txt").write_text("old", encoding="utf-8")
 
-    with pytest.raises(StagingConflictError, match="parallel|Generation"):
+    with pytest.raises(StagingConflictError, match=r"parallel|Generation"):
         with staged_directory(target, allowed_root=tmp_path) as stage:
             (stage / "value.txt").write_text("new", encoding="utf-8")
             (nested / "value.txt").replace(nested / "replacement.txt")
 
     assert (nested / "replacement.txt").read_text(encoding="utf-8") == "old"
-    assert not (target / "value.txt").read_text(encoding="utf-8") == "new"
+    assert (target / "value.txt").read_text(encoding="utf-8") != "new"
 
 
 def test_staged_directory_validates_explicit_no_change_generation(tmp_path: Path) -> None:
@@ -368,10 +368,10 @@ def test_staged_directory_never_removes_replaced_quarantine(
         parent_fd: int,
         target_name: str,
         quarantine_name: str,
-        identity: tuple[int, int, int],
+        owned_fd: int,
     ) -> int | None:
         nonlocal foreign
-        descriptor = original_claim(parent_fd, target_name, quarantine_name, identity)
+        descriptor = original_claim(parent_fd, target_name, quarantine_name, owned_fd)
         if descriptor is not None:
             quarantine = tmp_path / quarantine_name
             quarantine.rename(ours_away)
@@ -444,6 +444,73 @@ def test_staged_directory_parent_lock_rejects_sibling_target_fast(tmp_path: Path
                 pass
 
     assert not list(tmp_path.glob("*.lock"))
+
+
+@pytest.mark.parametrize(
+    "error_number",
+    (staging_module.errno.ENOLCK, staging_module.errno.EOPNOTSUPP),
+)
+def test_staged_directory_reports_unsupported_parent_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_number: int,
+) -> None:
+    """Unsupported filesystem locking is a stable staging contract error."""
+
+    def unsupported_lock(_descriptor: int, _operation: int) -> None:
+        raise OSError(error_number, "unsupported lock")
+
+    monkeypatch.setattr(staging_module.fcntl, "flock", unsupported_lock)
+
+    with pytest.raises(StagingUnsupportedError, match="nicht unterstützt"):
+        with staged_directory(tmp_path / "site", allowed_root=tmp_path):
+            pass
+
+
+def test_staged_directory_preserves_unrelated_parent_lock_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Descriptor and permission failures keep their original OSError meaning."""
+
+    def invalid_descriptor(_descriptor: int, _operation: int) -> None:
+        raise OSError(staging_module.errno.EBADF, "invalid descriptor")
+
+    monkeypatch.setattr(staging_module.fcntl, "flock", invalid_descriptor)
+
+    with pytest.raises(OSError) as error:
+        with staged_directory(tmp_path / "site", allowed_root=tmp_path):
+            pass
+
+    assert error.value.errno == staging_module.errno.EBADF
+
+
+def test_staged_directory_clears_publication_state_when_owned_target_vanishes(
+    tmp_path: Path,
+) -> None:
+    """Restored backup reports no publication after validator removes new target."""
+
+    target = tmp_path / "site"
+    removed = tmp_path / "removed-publication"
+    _generated(target, "old")
+    state = staging_module.StagingState()
+
+    def remove_and_reject(_target_fd: int) -> None:
+        target.rename(removed)
+        shutil.rmtree(removed)
+        raise RuntimeError("validator removed target")
+
+    with pytest.raises(RuntimeError, match="validator removed target"):
+        with staged_directory(
+            target,
+            allowed_root=tmp_path,
+            state=state,
+            publication_validator=remove_and_reject,
+        ) as stage:
+            (stage / "value.txt").write_text("new", encoding="utf-8")
+
+    assert state.published is False
+    assert (target / "value.txt").read_text(encoding="utf-8") == "old"
 
 
 def test_staged_directory_rejects_symlink_in_generated_output(tmp_path: Path) -> None:

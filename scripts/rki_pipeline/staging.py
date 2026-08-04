@@ -260,6 +260,12 @@ def _target_transaction_lock(parent_fd: int, target_name: str) -> Iterator[None]
             locked = True
         except BlockingIOError as exc:
             raise StagingConflictError(f"Staging-Parent ist belegt: {target_name}") from exc
+        except OSError as exc:
+            if exc.errno in {errno.ENOLCK, errno.EOPNOTSUPP}:
+                raise StagingUnsupportedError(
+                    "Staging-Parent-Lock wird nicht unterstützt"
+                ) from exc
+            raise
         yield
     finally:
         if locked:
@@ -453,7 +459,10 @@ def staged_directory(
                         quarantine_name,
                         published_fd,
                     )
-                    if quarantine_fd is not None:
+                    if quarantine_fd is None:
+                        staging_published = False
+                        publication_state.published = False
+                    else:
                         try:
                             clear_generated_tree_fd(quarantine_fd)
                             if not _named_identity_matches(

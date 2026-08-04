@@ -540,6 +540,7 @@ def _bundle_path(period: PeriodRef, format_name: str) -> str:
 
 def _planned_archives(period: PeriodRef, documents: tuple[PeriodDocument, ...]) -> tuple[PlannedArchive, ...]:
     archives: list[PlannedArchive] = []
+    member_directories = {"markdown": "Markdown", "pdf": "PDF"}
     for format_name in ("markdown", "pdf"):
         payloads = tuple(
             document.markdown if format_name == "markdown" else document.pdf
@@ -553,7 +554,7 @@ def _planned_archives(period: PeriodRef, documents: tuple[PeriodDocument, ...]) 
             if len(set(basename.casefold() for basename in basenames)) != len(basenames):
                 raise ValueError("Portable Kollision")
             entries = tuple(
-                ArchiveEntry(path=f"{format_name.title()}/{basename}", prepared=payload)
+                ArchiveEntry(path=f"{member_directories[format_name]}/{basename}", prepared=payload)
                 for basename, payload in sorted(
                     zip(basenames, entries_payloads, strict=True), key=lambda item: item[0]
                 )
@@ -1749,12 +1750,16 @@ def materialize_period_archives(
                         )
                     )
                 builds_by_period[period_index] = builds
+            renderer_input = (
+                _month_index_renderer_input(plan, historical_weekly_archives)
+                if any(period.index_path is not None for period in plan.periods)
+                else None
+            )
             for period_index, period_plan in enumerate(plan.periods):
                 if period_plan.index_path is not None:
                     index_path = _canonical_path(period_plan.index_path, label="Indexpfad")
-                    renderer_input = _month_index_renderer_input(
-                        plan, historical_weekly_archives
-                    )
+                    if renderer_input is None:
+                        raise AggregationError("Monatsindex-Eingabe fehlt")
                     atomic_write_bytes(
                         stage_root / index_path,
                         render_month_index(
@@ -1852,7 +1857,7 @@ def materialize_period_archives(
 _CLI_SOURCE_ID = "rki:176904/900000001"
 _CLI_SOURCE_SHA256 = "4665c3b8cfa6de8d9792a8defb977bfd200465b513575419e0a88541000f5b2a"
 _CLI_PAYLOAD = b"# Synthetic deterministic archive fixture\n"
-_CLI_PAYLOAD_SHA256 = "7c86816c4af09e887f9d46fd7441089955578a82e0287d5d234c07b18b3c658c"
+_CLI_PAYLOAD_SHA256 = hashlib.sha256(_CLI_PAYLOAD).hexdigest()
 _CLI_UTC = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 
 

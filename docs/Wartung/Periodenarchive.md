@@ -29,7 +29,7 @@ Monatsindex-Metadaten escapen HTML-/Tabellensyntax sowie Backslash und eckige Kl
 
 ## Betrieb und Recovery
 
-`plan` schreibt nichts ins Repository und gibt kanonisches JSON auf stdout aus. `materialize` schreibt nur unter einem temporären Root. Betriebssystemfehler erscheinen im CLI als feste Meldung ohne Hostpfad. Identische Eingaben sind No-op: keine Produktänderung und keine neuen Ledger-Ereignisse. Vor Veröffentlichung schlägt jede Rechte-, Integritäts- oder Manifestprüfung fehl und entfernt Staging; vorherige valide Produkte bleiben erhalten. Beschädigte geplante Produkte werden bei erneuter Materialisierung ersetzt.
+`plan` schreibt nichts ins Repository und gibt kanonisches JSON auf stdout aus. `materialize` schreibt nur unter einem temporären Root. Betriebssystemfehler erscheinen im CLI als feste Meldung ohne Hostpfad. Identische Eingaben sind No-op: keine Produktänderung und keine neuen Ledger-Ereignisse; `test_materialize_noop_preserves_tree_mtimes_and_outer_ledger` prüft dies gegen dieselbe persistente Produktwurzel. Vor Veröffentlichung schlägt jede Rechte-, Integritäts- oder Manifestprüfung fehl und entfernt Staging; vorherige valide Produkte bleiben erhalten. Beschädigte geplante Produkte werden bei erneuter Materialisierung ersetzt.
 
 Bei einem fehlgeschlagenen Lauf: Ursache in Rechte- oder Manifestvertrag korrigieren, danach denselben `plan` erneut prüfen und `materialize` wiederholen. Kein manueller Repository-Write aus diesem Schritt. P05 führt erst nach erfolgreichem plan/materialize/validate die transaktionale Apply-Grenze aus; erst dort sind Repository-Änderung, Commit oder Push erlaubt.
 
