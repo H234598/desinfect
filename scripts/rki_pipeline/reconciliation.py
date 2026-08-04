@@ -234,7 +234,9 @@ def compare_remote_sources(
 
     local_sources = _current_source_projection(catalog)
     remote_sources: dict[tuple[str, str], ArtifactRecord] = {}
+    remote_source_counts: dict[str, int] = {}
     findings: list[ReconciliationFinding] = []
+    replaced_local_keys: set[tuple[str, str]] = set()
 
     for record in remote_records:
         bitstream_id = _remote_bitstream_id(record)
@@ -244,11 +246,24 @@ def compare_remote_sources(
         if key in remote_sources:
             raise ValueError("Remote-Source/Bitstream ist doppelt")
         remote_sources[key] = record
+        remote_source_counts[record.source_id] = remote_source_counts.get(record.source_id, 0) + 1
 
     for key, record in remote_sources.items():
         local = local_sources.get(key)
         subject_id = source_subject_id(*key)
         if local is None:
+            replacement_keys = tuple(
+                local_key
+                for local_key in local_sources
+                if local_key[0] == record.source_id and local_key not in replaced_local_keys
+            )
+            if len(replacement_keys) == 1 and remote_source_counts[record.source_id] == 1:
+                replaced_local_keys.add(replacement_keys[0])
+                _load_candidate_if_available(candidate_loader, record, local_sources[replacement_keys[0]])
+                findings.append(
+                    _source_finding(FindingCode.CHANGED, subject_id, "Remote-Bitstreamidentität driftet")
+                )
+                continue
             findings.append(_source_finding(FindingCode.NEW, subject_id, "Remote-Quelle ist neu"))
             continue
         if _metadata_drifts(local, record):
@@ -257,7 +272,7 @@ def compare_remote_sources(
                 _source_finding(FindingCode.CHANGED, subject_id, "Remote-Metadaten driften")
             )
 
-    for key in local_sources.keys() - remote_sources.keys():
+    for key in local_sources.keys() - remote_sources.keys() - replaced_local_keys:
         findings.append(
             _source_finding(
                 FindingCode.MISSING_REMOTE,

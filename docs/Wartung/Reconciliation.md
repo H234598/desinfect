@@ -55,10 +55,11 @@ Metadaten-`changed` nicht auf.
 
 Storageprüfung verwendet ausschließlich den passenden P04-Adapter. Für LFS
 prüft dieser Pointer und lokales Objekt mit Pfad, Größe und SHA-256; kein
-direkter LFS-Scan ersetzt den Adapter. Rechteprüfung lädt die kanonische
-Authority neu. Für jedes aktuelle Dokument mit Datum müssen valide Woche,
-Monat und Jahr sowie ihre Archive vollständig sein. Ohne vollständiges Datum
-ist nur die Jahresprüfung zulässig; Woche oder Monat werden nicht erfunden.
+direkter LFS-Scan ersetzt den Adapter. Aufrufer müssen eine frisch aus dem
+kanonischen Register geladene Rechteauthority bereitstellen. Für jedes aktuelle
+Dokument mit Datum müssen valide Woche, Monat und Jahr sowie ihre Archive
+vollständig sein. Ohne vollständiges Datum ist nur die Jahresprüfung zulässig;
+Woche oder Monat werden nicht erfunden.
 
 ## Berichte, Wasserstand und Recovery
 

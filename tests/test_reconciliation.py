@@ -1285,6 +1285,28 @@ def test_remote_metadata_avoids_blind_candidate_load(tmp_path: Path) -> None:
     assert [item.code for item in findings] == [FindingCode.CHANGED]
 
 
+def test_remote_bitstream_identity_replacement_is_bounded_changed(tmp_path: Path) -> None:
+    matching = remote_record()
+    replacement = replace(matching, pdf_url=matching.pdf_url.replace("sequence=1", "sequence=2"))
+    calls: list[str] = []
+
+    def loader(record: ArtifactRecord) -> PreparedObject:
+        calls.append(record.source_id)
+        return candidate_prepared_object(tmp_path, record=record)
+
+    findings = compare_remote_sources(
+        remote_catalog(matching), (replacement,), candidate_loader=loader
+    )
+
+    assert calls == [replacement.source_id]
+    assert [(item.code, item.subject_id) for item in findings] == [
+        (
+            FindingCode.CHANGED,
+            source_subject_id(replacement.source_id, bitstream_identity(replacement.pdf_url).bitstream_id),
+        )
+    ]
+
+
 def test_remote_only_record_is_new() -> None:
     catalog = remote_catalog()
     remote = remote_record(
