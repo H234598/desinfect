@@ -1,0 +1,27 @@
+{
+  "name": "@desinfect/watchdog-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25",
+    "npm": ">=11 <12"
+  },
+  "scripts": {
+    "deploy:dry-run": "wrangler deploy --dry-run",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit",
+    "types": "wrangler types",
+    "types:check": "wrangler types --check"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.20.1",
+    "@types/node": "24.13.3",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10",
+    "wrangler": "4.118.0"
+  },
+  "overrides": {
+    "undici": "7.29.0"
+  }
+}
