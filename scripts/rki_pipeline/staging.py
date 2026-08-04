@@ -294,12 +294,13 @@ def _claim_owned_target(
     parent_fd: int,
     target_name: str,
     quarantine_name: str,
-    identity: tuple[int, int, int],
+    owned_fd: int,
 ) -> int | None:
-    """Claim target and hold its quarantine descriptor through cleanup."""
+    """Claim target iff it is the exact publication held by ``owned_fd``."""
 
     if not entry_exists(parent_fd, target_name):
         return None
+    identity = _directory_identity(owned_fd)
     _rename_noreplace(parent_fd, target_name, quarantine_name)
     fsync_directory_fd(parent_fd)
     descriptor = _open_child_directory(parent_fd, quarantine_name)
@@ -355,6 +356,7 @@ def staged_directory(
             os.close(parent_fd)
             raise
         staging_fd: int | None = None
+        published_fd: int | None = None
         staging_created = False
         staging_marked = False
         target_moved = False
@@ -382,8 +384,6 @@ def staged_directory(
 
             assert_generated_root_fd(staging_fd)
             validate_tree_no_symlinks_fd(staging_fd)
-            os.close(staging_fd)
-            staging_fd = None
 
             with _publication_signal_guard():
                 if _target_generation(parent_fd, target_name) != expected_generation:
@@ -412,23 +412,17 @@ def staged_directory(
                 staging_created = False
                 staging_published = True
                 publication_state.published = True
-                target_fd = _open_child_directory(parent_fd, target_name)
-                try:
-                    published_identity = _directory_identity(target_fd)
-                finally:
-                    os.close(target_fd)
+                published_fd = staging_fd
+                staging_fd = None
+                published_identity = _directory_identity(published_fd)
                 if publication_validator is not None:
-                    target_fd = _open_child_directory(parent_fd, target_name)
-                    try:
-                        publication_validator(target_fd)
-                    finally:
-                        os.close(target_fd)
+                    publication_validator(published_fd)
                 if not _named_identity_matches(parent_fd, target_name, published_identity):
                     raise StagingConflictError(
                         f"Publiziertes Ziel wurde parallel ersetzt: {target_name}"
                     )
-            fsync_directory_fd(parent_fd)
-            publication_committed = True
+                fsync_directory_fd(parent_fd)
+                publication_committed = True
 
             if entry_exists(parent_fd, backup_name):
                 try:
@@ -452,12 +446,12 @@ def staged_directory(
                 raise
             try:
                 rollback_error: BaseException | None = None
-                if staging_published and published_identity is not None:
+                if staging_published and published_fd is not None:
                     quarantine_fd = _claim_owned_target(
                         parent_fd,
                         target_name,
                         quarantine_name,
-                        published_identity,
+                        published_fd,
                     )
                     if quarantine_fd is not None:
                         try:
@@ -509,8 +503,12 @@ def staged_directory(
                 except BaseException as exc:
                     cleanup_error = exc
             active_error = sys.exc_info()[0] is not None
-            transaction_lock.__exit__(*sys.exc_info())
-            os.close(parent_fd)
+            try:
+                transaction_lock.__exit__(*sys.exc_info())
+            finally:
+                if published_fd is not None:
+                    os.close(published_fd)
+                os.close(parent_fd)
             if cleanup_error is not None:
                 if active_error:
                     current = sys.exc_info()[1]

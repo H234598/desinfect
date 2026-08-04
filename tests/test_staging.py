@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import os
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -235,6 +238,93 @@ def test_staged_directory_rolls_back_when_publication_validator_rejects(
     assert list(quarantines[0].iterdir()) == []
 
 
+def test_publication_fsync_and_commit_stay_inside_signal_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Signal deferral covers rename through durable publication commit."""
+
+    events: list[str] = []
+    real_rename = staging_module._rename_noreplace
+    real_fsync = staging_module.fsync_directory_fd
+
+    @contextmanager
+    def guard():
+        events.append("guard-enter")
+        try:
+            yield
+        finally:
+            events.append("guard-exit")
+
+    def rename(parent_fd: int, source: str, target: str) -> None:
+        events.append("rename")
+        real_rename(parent_fd, source, target)
+
+    def fsync(parent_fd: int) -> None:
+        events.append("fsync-commit")
+        real_fsync(parent_fd)
+
+    monkeypatch.setattr(staging_module, "_publication_signal_guard", guard)
+    monkeypatch.setattr(staging_module, "_rename_noreplace", rename)
+    monkeypatch.setattr(staging_module, "fsync_directory_fd", fsync)
+
+    with staged_directory(tmp_path / "site", allowed_root=tmp_path) as stage:
+        (stage / "value.txt").write_text("new", encoding="utf-8")
+
+    assert events == ["guard-enter", "rename", "fsync-commit", "guard-exit"]
+
+
+def test_staged_directory_holds_exact_published_fd_through_adversarial_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deleted publication inode stays pinned; validator FD owns rollback identity."""
+
+    target = tmp_path / "site"
+    _generated(target, "old")
+    deleted = tmp_path / "deleted-publication"
+    validator_fd: int | None = None
+    published_inode: int | None = None
+    exact_fd_seen = False
+    original_claim = staging_module._claim_owned_target
+
+    def reject_and_replace(target_fd: int) -> None:
+        nonlocal validator_fd, published_inode
+        validator_fd = target_fd
+        published_inode = os.fstat(target_fd).st_ino
+        target.rename(deleted)
+        shutil.rmtree(deleted)
+        _generated(target, "foreign")
+        assert target.stat().st_ino != published_inode
+        raise RuntimeError("validator replaced deleted target")
+
+    def claim(
+        parent_fd: int,
+        target_name: str,
+        quarantine_name: str,
+        owned_fd: int,
+    ) -> int | None:
+        nonlocal exact_fd_seen
+        assert owned_fd == validator_fd
+        assert os.fstat(owned_fd).st_ino == published_inode
+        exact_fd_seen = True
+        return original_claim(parent_fd, target_name, quarantine_name, owned_fd)
+
+    monkeypatch.setattr(staging_module, "_claim_owned_target", claim)
+
+    with pytest.raises(StagingError, match="Rollback"):
+        with staged_directory(
+            target,
+            allowed_root=tmp_path,
+            publication_validator=reject_and_replace,
+        ) as stage:
+            (stage / "value.txt").write_text("ours", encoding="utf-8")
+
+    assert (target / "value.txt").read_text(encoding="utf-8") == "foreign"
+    assert exact_fd_seen is True
+    assert validator_fd is not None
+    with pytest.raises(OSError):
+        os.fstat(validator_fd)
+
+
 @pytest.mark.parametrize("validator_raises", (False, True))
 def test_staged_directory_never_removes_concurrent_target_after_validator_rename(
     tmp_path: Path, validator_raises: bool
@@ -340,6 +430,17 @@ def test_staged_directory_rejects_nested_same_target_without_lock_artifact(tmp_p
     with staged_directory(target, allowed_root=tmp_path):
         with pytest.raises(StagingConflictError, match="Stagingtransaktion"):
             with staged_directory(target, allowed_root=tmp_path):
+                pass
+
+    assert not list(tmp_path.glob("*.lock"))
+
+
+def test_staged_directory_parent_lock_rejects_sibling_target_fast(tmp_path: Path) -> None:
+    """Parent-wide flock serializes sibling publications without lock artifacts."""
+
+    with staged_directory(tmp_path / "site-a", allowed_root=tmp_path):
+        with pytest.raises(StagingConflictError, match="Parent"):
+            with staged_directory(tmp_path / "site-b", allowed_root=tmp_path):
                 pass
 
     assert not list(tmp_path.glob("*.lock"))
