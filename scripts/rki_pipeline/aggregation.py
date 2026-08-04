@@ -144,10 +144,6 @@ class PeriodArchiveMaterialization:
     changed: bool
 
 
-class _NoAggregationChange(RuntimeError):
-    """Private control flow: staged tree equals existing published tree."""
-
-
 def _period_dates(kind: TaskKind, value: str) -> tuple[date, date]:
     if type(kind) is not TaskKind or kind is TaskKind.RECONCILIATION:
         raise PeriodSelectionError("Period kind ist ungültig")
@@ -1001,7 +997,27 @@ def render_period_manifest(period_plan: PeriodPlan, builds: Mapping[str, Archive
     return payload
 
 
-def _hash_regular_file(parent_fd: int, name: str) -> tuple[int, str]:
+def _same_file_metadata(left: os.stat_result, right: os.stat_result) -> bool:
+    """Compare identity and all file-shape fields relevant to stable reads."""
+
+    return (
+        left.st_dev,
+        left.st_ino,
+        left.st_mode,
+        left.st_size,
+        left.st_mtime_ns,
+        left.st_ctime_ns,
+    ) == (
+        right.st_dev,
+        right.st_ino,
+        right.st_mode,
+        right.st_size,
+        right.st_mtime_ns,
+        right.st_ctime_ns,
+    )
+
+
+def _hash_regular_file(parent_fd: int, name: str, expected: os.stat_result) -> tuple[int, str]:
     """Hash one unchanged regular file through a no-follow descriptor."""
 
     descriptor = os.open(
@@ -1011,7 +1027,7 @@ def _hash_regular_file(parent_fd: int, name: str) -> tuple[int, str]:
     )
     try:
         before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode):
+        if not stat.S_ISREG(before.st_mode) or not _same_file_metadata(expected, before):
             raise AggregationError("Aggregationsbaum enthält keine reguläre Datei")
         digest = hashlib.sha256()
         size = 0
@@ -1019,13 +1035,7 @@ def _hash_regular_file(parent_fd: int, name: str) -> tuple[int, str]:
             digest.update(chunk)
             size += len(chunk)
         after = os.fstat(descriptor)
-        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-            after.st_mtime_ns,
-            after.st_ctime_ns,
-        ):
+        if not _same_file_metadata(before, after):
             raise AggregationError("Aggregationsdatei änderte sich während der Hash-Prüfung")
         return size, digest.hexdigest()
     finally:
@@ -1044,13 +1054,17 @@ def _tree_signature_fd(directory_fd: int, prefix: str = "") -> tuple[tuple[str, 
         if stat.S_ISDIR(metadata.st_mode):
             child_fd = open_directory_beneath(directory_fd, (name,))
             try:
+                if not _same_file_metadata(metadata, os.fstat(child_fd)):
+                    raise AggregationError("Aggregationsverzeichnis änderte sich während der Prüfung")
                 rows.extend(_tree_signature_fd(child_fd, relative))
+                if not _same_file_metadata(metadata, os.fstat(child_fd)):
+                    raise AggregationError("Aggregationsverzeichnis änderte sich während der Prüfung")
             finally:
                 os.close(child_fd)
             continue
         if not stat.S_ISREG(metadata.st_mode):
             raise AggregationError("Aggregationsbaum enthält keine reguläre Datei")
-        size, digest = _hash_regular_file(directory_fd, name)
+        size, digest = _hash_regular_file(directory_fd, name, metadata)
         if size != metadata.st_size:
             raise AggregationError("Aggregationsdatei änderte sich während der Hash-Prüfung")
         rows.append((relative, stat.S_IMODE(metadata.st_mode), size, digest))
@@ -1114,11 +1128,24 @@ def _snapshot_plan(aggregation_plan: AggregationPlan) -> AggregationPlan:
     if type(aggregation_plan.input_fingerprint) is not str:
         raise AggregationError("AggregationPlan.input_fingerprint muss eine Zeichenkette sein")
     periods = tuple(aggregation_plan.periods)
+    if any(type(period_plan) is not PeriodPlan for period_plan in periods):
+        raise AggregationError("AggregationPlan enthält keinen exakten PeriodPlan")
+    if any(type(period_plan.period) is not PeriodRef for period_plan in periods):
+        raise AggregationError("PeriodPlan enthält keine exakte PeriodRef")
     for period_plan in periods:
-        if type(period_plan) is not PeriodPlan:
-            raise AggregationError("AggregationPlan enthält keinen exakten PeriodPlan")
-        if type(period_plan.period) is not PeriodRef:
-            raise AggregationError("PeriodPlan enthält keine exakte PeriodRef")
+        try:
+            if period_plan.period != period_ref(period_plan.period.kind, period_plan.period.value):
+                raise AggregationError("PeriodPlan enthält keine kanonische PeriodRef")
+        except PeriodSelectionError as exc:
+            raise AggregationError("PeriodPlan enthält keine kanonische PeriodRef") from exc
+    if periods != tuple(sorted(periods, key=lambda item: (_KIND_ORDER[item.period.kind], item.period.start))):
+        raise AggregationError("AggregationPlan-Perioden sind nicht kanonisch sortiert")
+    seen_periods: set[tuple[TaskKind, str]] = set()
+    for period_plan in periods:
+        period_key = (period_plan.period.kind, period_plan.period.value)
+        if period_key in seen_periods:
+            raise AggregationError("AggregationPlan enthält doppelte Perioden")
+        seen_periods.add(period_key)
         if type(period_plan.documents) is not tuple or type(period_plan.archives) is not tuple:
             raise AggregationError("PeriodPlan-Container müssen exakte tuple sein")
         for document in period_plan.documents:
@@ -1127,6 +1154,25 @@ def _snapshot_plan(aggregation_plan: AggregationPlan) -> AggregationPlan:
                 for payload in (document.pdf, document.markdown)
             ):
                 raise AggregationError("PeriodPlan enthält kein exaktes PeriodDocument")
+        if period_plan.documents != tuple(
+            sorted(
+                period_plan.documents,
+                key=lambda item: (item.publication_date, item.document_id, item.source_id),
+            )
+        ):
+            raise AggregationError("PeriodPlan-Dokumente sind nicht kanonisch sortiert")
+        expected_index = (
+            f"rki/Bulletins/Monate/{period_plan.period.start.year:04d}/"
+            f"{period_plan.period.start.month:02d}/Markdown/index.md"
+            if period_plan.period.kind is TaskKind.MONTH
+            else None
+        )
+        expected_manifest = (
+            f"rki/Bulletins/Manifeste/Archive/{period_plan.period.kind.value}/"
+            f"{period_plan.period.value}.json"
+        )
+        if period_plan.index_path != expected_index or period_plan.manifest_path != expected_manifest:
+            raise AggregationError("PeriodPlan-Ausgabepfade sind nicht kanonisch")
         for archive in period_plan.archives:
             if type(archive) is not PlannedArchive or type(archive.spec) is not ArchiveSpec:
                 raise AggregationError("PeriodPlan enthält kein exaktes PlannedArchive")
@@ -1135,6 +1181,12 @@ def _snapshot_plan(aggregation_plan: AggregationPlan) -> AggregationPlan:
                 for entry in archive.spec.entries
             ):
                 raise AggregationError("ArchiveSpec.entries muss ein exaktes ArchiveEntry-tuple sein")
+        try:
+            expected_archives = _planned_archives(period_plan.period, period_plan.documents)
+        except (AggregationError, ValueError) as exc:
+            raise AggregationError("PeriodPlan-Archive sind nicht kanonisch") from exc
+        if period_plan.archives != expected_archives:
+            raise AggregationError("PeriodPlan-Archive sind nicht kanonisch")
     snapshot = AggregationPlan(periods=periods, input_fingerprint=aggregation_plan.input_fingerprint)
     if snapshot.input_fingerprint != _plan_fingerprint(snapshot.periods):
         raise AggregationError("AggregationPlan-Fingerprint ist nicht kanonisch")
@@ -1180,7 +1232,9 @@ def _validate_archive_payloads(plan: AggregationPlan) -> None:
             raise AggregationError("Archiv-Art passt nicht zur Periode")
 
 
-def _copy_regular_file(source_fd: int, destination_fd: int, name: str, mode: int) -> None:
+def _copy_regular_file(
+    source_fd: int, destination_fd: int, name: str, expected: os.stat_result
+) -> None:
     """Copy one stable regular file between held directory descriptors."""
 
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -1188,15 +1242,15 @@ def _copy_regular_file(source_fd: int, destination_fd: int, name: str, mode: int
     destination: int | None = None
     try:
         before = os.fstat(source)
-        if not stat.S_ISREG(before.st_mode):
+        if not stat.S_ISREG(before.st_mode) or not _same_file_metadata(expected, before):
             raise AggregationError("Quellbaum enthält keine reguläre Datei")
         destination = os.open(
             name,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
-            mode,
+            stat.S_IMODE(expected.st_mode),
             dir_fd=destination_fd,
         )
-        os.fchmod(destination, mode)
+        os.fchmod(destination, stat.S_IMODE(expected.st_mode))
         while chunk := os.read(source, 1024 * 1024):
             view = memoryview(chunk)
             while view:
@@ -1206,13 +1260,7 @@ def _copy_regular_file(source_fd: int, destination_fd: int, name: str, mode: int
                 view = view[written:]
         os.fsync(destination)
         after = os.fstat(source)
-        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-            after.st_mtime_ns,
-            after.st_ctime_ns,
-        ):
+        if not _same_file_metadata(before, after):
             raise AggregationError("Quellbaum änderte sich während FD-Kopie")
     finally:
         if destination is not None:
@@ -1220,11 +1268,13 @@ def _copy_regular_file(source_fd: int, destination_fd: int, name: str, mode: int
         os.close(source)
 
 
-def _copy_tree(source_fd: int, destination_fd: int) -> None:
+def _copy_tree(source_fd: int, destination_fd: int, *, skip_root_sentinel: bool = False) -> None:
     """Copy a generated tree FD-relativ, no-follow, preserving regular modes."""
 
     for name in sorted(os.listdir(source_fd)):
         metadata = os.stat(name, dir_fd=source_fd, follow_symlinks=False)
+        if skip_root_sentinel and name == GENERATED_ROOT_SENTINEL:
+            continue
         if stat.S_ISLNK(metadata.st_mode):
             raise AggregationError("Symlink im bestehenden Aggregationsbaum ist unzulässig")
         if stat.S_ISDIR(metadata.st_mode):
@@ -1232,14 +1282,18 @@ def _copy_tree(source_fd: int, destination_fd: int) -> None:
             source_child = open_directory_beneath(source_fd, (name,))
             destination_child = open_directory_beneath(destination_fd, (name,))
             try:
+                if not _same_file_metadata(metadata, os.fstat(source_child)):
+                    raise AggregationError("Quellverzeichnis änderte sich während FD-Kopie")
                 _copy_tree(source_child, destination_child)
+                if not _same_file_metadata(metadata, os.fstat(source_child)):
+                    raise AggregationError("Quellverzeichnis änderte sich während FD-Kopie")
                 os.fchmod(destination_child, stat.S_IMODE(metadata.st_mode))
                 os.fsync(destination_child)
             finally:
                 os.close(source_child)
                 os.close(destination_child)
         elif stat.S_ISREG(metadata.st_mode):
-            _copy_regular_file(source_fd, destination_fd, name, stat.S_IMODE(metadata.st_mode))
+            _copy_regular_file(source_fd, destination_fd, name, metadata)
         else:
             raise AggregationError("Bestehender Aggregationsbaum enthält keinen regulären Eintrag")
 
@@ -1254,8 +1308,7 @@ def _copy_existing_tree(root: Path, relative: PurePosixPath, stage_fd: int) -> N
             return
         try:
             assert_generated_root_fd(source_fd)
-            os.unlink(GENERATED_ROOT_SENTINEL, dir_fd=stage_fd)
-            _copy_tree(source_fd, stage_fd)
+            _copy_tree(source_fd, stage_fd, skip_root_sentinel=True)
         finally:
             os.close(source_fd)
 
@@ -1359,12 +1412,19 @@ def materialize_period_archives(
     manifest_relatives: list[str] = []
     pending_events: tuple[tuple[str, str, int], ...] = ()
     staging_state = StagingState()
+    stage_signature: tuple[tuple[str, int, int, str], ...] | None = None
+
+    def validate_published(target_fd: int) -> None:
+        if stage_signature is None or _tree_signature_fd(target_fd) != stage_signature:
+            raise AggregationError("Veröffentlichte Aggregationsgeneration stimmt nicht mit Staging überein")
+
     try:
         with staged_directory(
             final_root,
             allowed_root=root,
             replace_existing=True,
             state=staging_state,
+            publication_validator=validate_published,
         ) as stage:
             stage_fd = os.open(stage, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
             try:
@@ -1418,28 +1478,12 @@ def materialize_period_archives(
             finally:
                 os.close(stage_fd)
             if stage_signature == _existing_tree_signature(root, relative):
-                raise _NoAggregationChange()
-            pending_events = tuple(
-                ((final_root / product_relative).as_posix(), digest, size)
-                for product_relative, digest, size in _product_files(stage_signature)
-            )
-    except _NoAggregationChange:
-        del ledger.events[event_count:]
-        return PeriodArchiveMaterialization(
-            root=final_root,
-            archives=tuple(
-                MaterializedPeriodArchive(
-                    archive_id=item.archive_id,
-                    relative_bundle=item.relative_bundle,
-                    build=_final_build(item.build, final_root, item.relative_bundle),
+                staging_state.no_change = True
+            else:
+                pending_events = tuple(
+                    ((final_root / product_relative).as_posix(), digest, size)
+                    for product_relative, digest, size in _product_files(stage_signature)
                 )
-                for item in stage_archives
-            ),
-            index_paths=tuple(final_root / item for item in index_relatives),
-            manifest_paths=tuple(final_root / item for item in manifest_relatives),
-            input_fingerprint=plan.input_fingerprint,
-            changed=False,
-        )
     except AggregationError:
         if not staging_state.published:
             del ledger.events[event_count:]
@@ -1462,6 +1506,23 @@ def materialize_period_archives(
         if not staging_state.published:
             del ledger.events[event_count:]
         raise AggregationError("Archivaggregation konnte nicht materialisiert werden") from exc
+
+    if staging_state.no_change_validated:
+        return PeriodArchiveMaterialization(
+            root=final_root,
+            archives=tuple(
+                MaterializedPeriodArchive(
+                    archive_id=item.archive_id,
+                    relative_bundle=item.relative_bundle,
+                    build=_final_build(item.build, final_root, item.relative_bundle),
+                )
+                for item in stage_archives
+            ),
+            index_paths=tuple(final_root / item for item in index_relatives),
+            manifest_paths=tuple(final_root / item for item in manifest_relatives),
+            input_fingerprint=plan.input_fingerprint,
+            changed=False,
+        )
 
     try:
         for event_target, digest, size in pending_events:

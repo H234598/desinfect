@@ -1335,7 +1335,7 @@ def test_materialize_rejects_document_payload_without_matching_archive(
         input_fingerprint=aggregation_module._plan_fingerprint(malformed.periods),
     )
 
-    with pytest.raises(AggregationError, match="Periodenarchiv"):
+    with pytest.raises(AggregationError, match="Archive"):
         materialize_period_archives(
             malformed,
             tmp_path / "malformed",
@@ -1360,6 +1360,39 @@ def test_materialize_rejects_mutable_period_iterable_before_snapshot(
         materialize_period_archives(
             mutable,
             tmp_path / "mutable",
+            temp_root=tmp_path,
+            ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+            authorizer=authorizer,
+        )
+
+
+@pytest.mark.parametrize("mutation", ("manifest", "entry", "period", "epoch"))
+def test_materialize_rejects_forged_period_plan_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    plan, authorizer, _first, _ledger = _materialize_fixture(tmp_path, monkeypatch)
+    period = plan.periods[0]
+    if mutation == "manifest":
+        forged_period = replace(period, manifest_path="rki/Bulletins/Manifeste/Archive/year/2026.json")
+    else:
+        archive = period.archives[0]
+        if mutation == "entry":
+            spec = replace(archive.spec, entries=(replace(archive.spec.entries[0], path="forged"),))
+        elif mutation == "period":
+            spec = replace(archive.spec, period="2026-06")
+        else:
+            spec = replace(archive.spec, source_date_epoch=archive.spec.source_date_epoch + 1)
+        forged_period = replace(period, archives=(replace(archive, spec=spec), *period.archives[1:]))
+    forged = replace(plan, periods=(forged_period,))
+    forged = replace(
+        forged,
+        input_fingerprint=aggregation_module._plan_fingerprint(forged.periods),
+    )
+
+    with pytest.raises(AggregationError, match="kanonisch"):
+        materialize_period_archives(
+            forged,
+            tmp_path / f"forged-{mutation}",
             temp_root=tmp_path,
             ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
             authorizer=authorizer,

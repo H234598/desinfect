@@ -7,12 +7,13 @@ from contextlib import contextmanager
 import ctypes
 from dataclasses import dataclass
 import errno
+import fcntl
 import os
 from pathlib import Path
 import signal
 import stat
 import sys
-from typing import Iterator
+from typing import Callable, Iterator
 import uuid
 
 from scripts.rki_pipeline.io_utils import (
@@ -46,6 +47,8 @@ class StagingState:
     """Observable publication state for ledger/error reconciliation."""
 
     published: bool = False
+    no_change: bool = False
+    no_change_validated: bool = False
 
 
 def _rename_noreplace(parent_fd: int, source: str, target: str) -> None:
@@ -186,6 +189,40 @@ def _target_generation(parent_fd: int, name: str) -> tuple[tuple[object, ...], .
         os.close(target_fd)
 
 
+def _claimed_generation_matches(
+    expected: tuple[tuple[object, ...], ...] | None,
+    claimed: tuple[tuple[object, ...], ...] | None,
+) -> bool:
+    """Compare a claimed backup, allowing its root ctime/mtime rename effects."""
+
+    if expected is None or claimed is None or not expected or not claimed:
+        return expected == claimed
+    return expected[0][:5] == claimed[0][:5] and expected[1:] == claimed[1:]
+
+
+def _target_lock(parent_fd: int, target_name: str) -> int:
+    """Acquire persistent advisory lock for one descriptor-relative target.
+
+    The lock inode intentionally remains in the generated parent directory. It
+    is opened no-follow and never unlinked, avoiding a replacement race between
+    concurrent publishers that use this staging primitive.
+    """
+
+    name = f".{target_name}.lock"
+    descriptor = os.open(
+        name,
+        os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+        dir_fd=parent_fd,
+    )
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISREG(metadata.st_mode):
+        os.close(descriptor)
+        raise StagingError(f"Target-Lock ist keine reguläre Datei: {name}")
+    fcntl.flock(descriptor, fcntl.LOCK_EX)
+    return descriptor
+
+
 @contextmanager
 def staged_directory(
     target: Path,
@@ -194,6 +231,7 @@ def staged_directory(
     force: bool = False,
     replace_existing: bool = True,
     state: StagingState | None = None,
+    publication_validator: Callable[[int], None] | None = None,
 ) -> Iterator[Path]:
     """Build a generated directory and atomically replace *target*.
 
@@ -209,9 +247,12 @@ def staged_directory(
     backup_name = f".{target_name}.backup"
     publication_state = state if state is not None else StagingState()
     publication_state.published = False
+    publication_state.no_change = False
+    publication_state.no_change_validated = False
 
     with open_root_directory(allowed_root, create=True) as root_fd:
         parent_fd = open_directory_beneath(root_fd, relative.parts[:-1], create=True)
+        lock_fd = _target_lock(parent_fd, target_name)
         staging_fd: int | None = None
         staging_created = False
         staging_marked = False
@@ -242,36 +283,39 @@ def staged_directory(
             os.close(staging_fd)
             staging_fd = None
 
-            if _target_generation(parent_fd, target_name) != expected_generation:
-                raise StagingConflictError(f"Zielgeneration wurde parallel geändert: {target_name}")
-            if entry_exists(parent_fd, target_name):
-                if not replace_existing:
-                    raise StagingConflictError(
-                        f"Ziel wurde parallel veröffentlicht: {target_name}"
-                    )
-                _assert_marked_directory(parent_fd, target_name)
-                os.replace(
-                    target_name,
-                    backup_name,
-                    src_dir_fd=parent_fd,
-                    dst_dir_fd=parent_fd,
-                )
-                target_moved = True
-                fsync_directory_fd(parent_fd)
-
             with _publication_signal_guard():
-                if replace_existing:
-                    os.replace(
-                        staging_name,
-                        target_name,
-                        src_dir_fd=parent_fd,
-                        dst_dir_fd=parent_fd,
-                    )
-                else:
-                    _rename_noreplace(parent_fd, staging_name, target_name)
+                if _target_generation(parent_fd, target_name) != expected_generation:
+                    raise StagingConflictError(f"Zielgeneration wurde parallel geändert: {target_name}")
+                if publication_state.no_change:
+                    publication_state.no_change_validated = True
+                    return
+                if expected_generation is not None:
+                    if not replace_existing:
+                        raise StagingConflictError(
+                            f"Ziel wurde parallel veröffentlicht: {target_name}"
+                        )
+                    _assert_marked_directory(parent_fd, target_name)
+                    _rename_noreplace(parent_fd, target_name, backup_name)
+                    target_moved = True
+                    if not _claimed_generation_matches(
+                        expected_generation, _target_generation(parent_fd, backup_name)
+                    ):
+                        _rename_noreplace(parent_fd, backup_name, target_name)
+                        target_moved = False
+                        raise StagingConflictError(
+                            f"Zielgeneration wurde parallel geändert: {target_name}"
+                        )
+                    fsync_directory_fd(parent_fd)
+                _rename_noreplace(parent_fd, staging_name, target_name)
                 staging_created = False
                 staging_published = True
                 publication_state.published = True
+                if publication_validator is not None:
+                    target_fd = _open_child_directory(parent_fd, target_name)
+                    try:
+                        publication_validator(target_fd)
+                    finally:
+                        os.close(target_fd)
             fsync_directory_fd(parent_fd)
             publication_committed = True
 
@@ -301,12 +345,7 @@ def staged_directory(
                     staging_published = False
                     publication_state.published = False
                 if target_moved and entry_exists(parent_fd, backup_name):
-                    os.replace(
-                        backup_name,
-                        target_name,
-                        src_dir_fd=parent_fd,
-                        dst_dir_fd=parent_fd,
-                    )
+                    _rename_noreplace(parent_fd, backup_name, target_name)
                     target_moved = False
                     fsync_directory_fd(parent_fd)
             except BaseException as rollback_error:
@@ -329,6 +368,8 @@ def staged_directory(
                 except BaseException as exc:
                     cleanup_error = exc
             active_error = sys.exc_info()[0] is not None
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
             os.close(parent_fd)
             if cleanup_error is not None:
                 if active_error:

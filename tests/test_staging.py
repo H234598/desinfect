@@ -180,6 +180,58 @@ def test_staged_directory_rejects_target_generation_change(tmp_path: Path) -> No
     assert not (target / "value.txt").read_text(encoding="utf-8") == "new"
 
 
+def test_staged_directory_validates_explicit_no_change_generation(tmp_path: Path) -> None:
+    """No-op skips publication only after target generation is revalidated."""
+
+    target = tmp_path / "site"
+    _generated(target, "old")
+    state = staging_module.StagingState()
+    with staged_directory(target, allowed_root=tmp_path, state=state) as stage:
+        (stage / "value.txt").write_text("discard", encoding="utf-8")
+        state.no_change = True
+
+    assert state.no_change_validated is True
+    assert (target / "value.txt").read_text(encoding="utf-8") == "old"
+    assert not list(tmp_path.glob("*.staging-*"))
+
+
+def test_staged_directory_rejects_mutation_after_no_change_mark(tmp_path: Path) -> None:
+    """A post-signature target mutation cannot return an unvalidated no-op."""
+
+    target = tmp_path / "site"
+    _generated(target, "old")
+    state = staging_module.StagingState()
+    with pytest.raises(StagingConflictError, match="generation"):
+        with staged_directory(target, allowed_root=tmp_path, state=state):
+            state.no_change = True
+            (target / "value.txt").write_text("external", encoding="utf-8")
+
+    assert state.no_change_validated is False
+    assert (target / "value.txt").read_text(encoding="utf-8") == "external"
+
+
+def test_staged_directory_rolls_back_when_publication_validator_rejects(
+    tmp_path: Path,
+) -> None:
+    """A post-rename validator binds published bytes before commit cleanup."""
+
+    target = tmp_path / "site"
+    _generated(target, "old")
+
+    def reject(_target_fd: int) -> None:
+        raise RuntimeError("signature mismatch")
+
+    with pytest.raises(RuntimeError, match="signature mismatch"):
+        with staged_directory(
+            target,
+            allowed_root=tmp_path,
+            publication_validator=reject,
+        ) as stage:
+            (stage / "value.txt").write_text("new", encoding="utf-8")
+
+    assert (target / "value.txt").read_text(encoding="utf-8") == "old"
+
+
 def test_staged_directory_rejects_symlink_in_generated_output(tmp_path: Path) -> None:
     """A generated output tree containing a symlink is never published."""
 
