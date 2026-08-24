@@ -1,6 +1,6 @@
 # Externer Wachhund
 
-Dieses Verzeichnis enthält Worker, Singleton-Durable-Object, feste GitHub-App-Operationen und P09.3-State-Machine. Ohne vollständige GitHub-App-Bindings bleibt der Cron lokal und führt keinen Netzwerkaufruf aus. Produktiver Deploy und Secret-Einrichtung folgen in P09.4.
+Dieses Verzeichnis enthält Worker, Singleton-Durable-Object, feste GitHub-App-Operationen und P09.3-State-Machine. Ohne vollständige GitHub-App-Bindings bleibt der Cron lokal und führt keinen Netzwerkaufruf aus. P09.4 begrenzt Deployments auf manuellen, geschützten Staging-vor-Production-Ablauf.
 
 ## Lokale Gates
 
@@ -20,7 +20,7 @@ npm audit --audit-level=high
 - Cron: täglich `02:00 UTC`; Cron Trigger laufen laut Cloudflare in UTC.
 - Durable Object: genau `desinfect-watchdog` über Binding `WATCHDOG_COORDINATOR`.
 - Storage: SQLite über deklaratives Wrangler-`exports`.
-- HTTP: jeder Request erhält `404`; es gibt keinen öffentlichen Schreibendpunkt.
+- HTTP: `GET /healthz` liefert nur Dienststatus und Deployment-Git-SHA; jeder andere Request erhält `404`. Es gibt keinen öffentlichen Schreibendpunkt.
 - Ziel: ausschließlich `H234598/desinfect` und `rki-dispatcher.yml`.
 - Intervalle: `WATCHDOG_INTERVAL_DAYS=45`, `WATCHDOG_GRACE_HOURS=12`, `DISPATCH_COOLDOWN_HOURS=24`; Runtime validiert sichere Grenzen.
 
@@ -61,6 +61,7 @@ Implementiert sind:
 
 - `runbooks/CLOUDFLARE-GITHUB-AUTH.md`: Secrets, Tokenfluss, Schwellwerte und manuelle App/Installation-Basis.
 - `docs/Wartung/Cloudflare-Waechter.md`: State, Alarme, Degraded Mode und Rückbau.
+- `runbooks/CLOUDFLARE-WATCHDOG.md`: geschützter Deploy, Health-/Versionsprüfung und Rollback.
 
 Aktuelle Primärreferenzen:
 

@@ -8,7 +8,8 @@
     "npm": ">=11 <12"
   },
   "scripts": {
-    "deploy:dry-run": "wrangler deploy --dry-run",
+    "deploy": "wrangler deploy",
+    "deploy:dry-run": "wrangler deploy --dry-run --env=\"\"",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit",
     "types": "wrangler types",

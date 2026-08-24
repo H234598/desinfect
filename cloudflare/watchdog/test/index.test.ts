@@ -105,4 +105,27 @@ describe("watchdog Worker foundation", () => {
 
     expect(response.status).toBe(404);
   });
+
+  it("exposes only a read-only health endpoint with deployment version", async () => {
+    const response = await worker.fetch(
+      new Request("https://watchdog.invalid/healthz"),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual({
+      service: "desinfect-watchdog",
+      status: "ok",
+      version: "local",
+    });
+
+    const writeAttempt = await worker.fetch(
+      new Request("https://watchdog.invalid/healthz", { method: "POST" }),
+      env,
+      createExecutionContext(),
+    );
+    expect(writeAttempt.status).toBe(404);
+  });
 });

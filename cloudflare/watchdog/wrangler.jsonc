@@ -10,7 +10,8 @@
     "GITHUB_WORKFLOW_FILE": "rki-dispatcher.yml",
     "WATCHDOG_INTERVAL_DAYS": "45",
     "WATCHDOG_GRACE_HOURS": "12",
-    "DISPATCH_COOLDOWN_HOURS": "24"
+    "DISPATCH_COOLDOWN_HOURS": "24",
+    "DEPLOYMENT_VERSION": "local"
   },
   "triggers": {
     "crons": ["0 2 * * *"]
@@ -32,5 +33,34 @@
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
+  },
+  "env": {
+    "staging": {
+      "name": "desinfect-watchdog-staging",
+      "vars": {
+        "GITHUB_OWNER": "H234598",
+        "GITHUB_REPO": "desinfect",
+        "GITHUB_WORKFLOW_FILE": "rki-dispatcher.yml",
+        "WATCHDOG_INTERVAL_DAYS": "45",
+        "WATCHDOG_GRACE_HOURS": "12",
+        "DISPATCH_COOLDOWN_HOURS": "24",
+        "DEPLOYMENT_VERSION": "local"
+      },
+      "triggers": {
+        "crons": []
+      },
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "WATCHDOG_COORDINATOR",
+            "class_name": "WatchdogCoordinator"
+          }
+        ]
+      },
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1
+      }
+    }
   }
 }
