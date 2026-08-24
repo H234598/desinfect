@@ -60,6 +60,18 @@ describe("createSignedGithubAppJwt", () => {
     expect(token.expiresAt - token.issuedAt).toBe(540);
     expect(claims.iat).toBe(Math.floor(nowMs / 1000) - 60);
   });
+
+  it("rejects a non-finite signing clock", () => {
+    const keys = createKeyPair();
+
+    expect(() =>
+      createSignedGithubAppJwt({
+        appId: "123456",
+        privateKey: keys.privateKey,
+        nowMs: Number.NaN,
+      }),
+    ).toThrow("nowMs must be finite");
+  });
 });
 
 describe("GithubApiClient", () => {
@@ -155,6 +167,32 @@ describe("GithubApiClient", () => {
     await expect(client.createInstallationAccessToken()).rejects.toThrow(
       "installation token payload malformed",
     );
+  });
+
+  it("cancels an oversized GitHub response stream", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(262_145));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const client = new GithubApiClient(
+      validRuntimeConfig,
+      {
+        appId: "123456",
+        installationId: "654321",
+        appPrivateKey: keys.privateKey,
+      },
+      { fetch: vi.fn().mockResolvedValue(new Response(body)), nowMs },
+    );
+
+    await expect(client.createInstallationAccessToken()).rejects.toThrow(
+      "response body exceeds 262144 bytes",
+    );
+    expect(cancelled).toBe(true);
   });
 
   it("no-ops active workflow and does not call enable/dispatch", async () => {

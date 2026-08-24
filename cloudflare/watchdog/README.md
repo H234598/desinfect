@@ -45,12 +45,12 @@ P09.2 ergänzt:
 - RSA-SHA256 JWT für die GitHub-App im Worker-Runtime.
 - Installationstoken mit festen Rechten (`actions: write`, `contents: read`) und Laufzeitlimit.
 - feste GitHub-REST-Endpunkte nur für `H234598/desinfect` und `rki-dispatcher.yml`:
-  - `contents/status.json?ref=main`
-  - `commits?sha=main&per_page=1`
-  - `actions/workflows/{workflow_file}`
-  - `.../{workflow_file}/enable`
-  - `.../{workflow_file}/dispatches`
-  - `.../{workflow_file}/runs?branch=main&event=workflow_dispatch&per_page=<fix>`
+  - `/repos/H234598/desinfect/contents/status.json?ref=main`
+  - `/repos/H234598/desinfect/commits?sha=main&per_page=1`
+  - `/repos/H234598/desinfect/actions/workflows/rki-dispatcher.yml`
+  - `/repos/H234598/desinfect/actions/workflows/rki-dispatcher.yml/enable`
+  - `/repos/H234598/desinfect/actions/workflows/rki-dispatcher.yml/dispatches`
+  - `/repos/H234598/desinfect/actions/workflows/rki-dispatcher.yml/runs?branch=main&event=workflow_dispatch&per_page=<maxCount>`
 - feste API-Headers (`Accept`, `Authorization`, `User-Agent`, `X-GitHub-Api-Version`), fixe Fehlergrenzen und no-trace/No-Storage-Handling.
 
 ## Runbooks

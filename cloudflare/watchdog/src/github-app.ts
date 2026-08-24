@@ -49,6 +49,9 @@ export function createSignedGithubAppJwt({
   ttlSeconds = DEFAULT_JWT_TTL_SECONDS,
   clockSkewSeconds = DEFAULT_CLOCK_SKEW_SECONDS,
 }: SignedJwtOptions): SignedJwtResult {
+  if (!Number.isFinite(nowMs)) {
+    throw new Error("nowMs must be finite");
+  }
   const now = Math.floor(Math.max(0, nowMs) / 1000);
   const issuedAt = now - clockSkewSeconds;
   const expiresAt = issuedAt + ttlSeconds;

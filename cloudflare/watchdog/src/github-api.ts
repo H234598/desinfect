@@ -366,20 +366,26 @@ async function readBoundedResponseText(response: Response): Promise<string> {
   const chunks: string[] = [];
   let total = 0;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      total += value.byteLength;
+      if (total > MAX_RESPONSE_BYTES) {
+        throw new Error(`response body exceeds ${MAX_RESPONSE_BYTES} bytes`);
+      }
+      chunks.push(decoder.decode(value, { stream: true }));
     }
-    total += value.byteLength;
-    if (total > MAX_RESPONSE_BYTES) {
-      throw new Error(`response body exceeds ${MAX_RESPONSE_BYTES} bytes`);
-    }
-    chunks.push(decoder.decode(value, { stream: true }));
+    chunks.push(decoder.decode());
+    return chunks.join("");
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
+  } finally {
+    reader.releaseLock();
   }
-  chunks.push(decoder.decode());
-
-  return chunks.join("");
 }
 
 function responseToError(operation: string, response: Response, bodyText: string): GithubApiError {
