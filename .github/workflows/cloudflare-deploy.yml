@@ -15,10 +15,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: cloudflare-watchdog-deploy
-  cancel-in-progress: false
-
 jobs:
   validate:
     name: Validate Worker without deployment
@@ -54,6 +50,9 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    concurrency:
+      group: cloudflare-watchdog-deploy
+      cancel-in-progress: false
     environment:
       name: cloudflare-watchdog-staging
     env:
@@ -96,6 +95,9 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_production
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    concurrency:
+      group: cloudflare-watchdog-deploy
+      cancel-in-progress: false
     environment:
       name: cloudflare-watchdog-production
     env:

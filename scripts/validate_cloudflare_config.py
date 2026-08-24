@@ -116,10 +116,11 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
         issues.append(_issue(workflow_path, "CFD007", "ungepinnte Wrangler-/Installer-Ausführung verboten"))
     staging_deploy = _step(staging, "Deploy staging without cron")
     production_deploy = _step(production, "Deploy production with cron")
-    if staging_deploy is None or "npm --prefix cloudflare/watchdog run deploy -- --env staging" not in str(staging_deploy.get("run", "")):
+    staging_run = str(staging_deploy.get("run", "")) if staging_deploy else ""
+    if staging_run != 'npm --prefix cloudflare/watchdog run deploy -- --env staging --var "DEPLOYMENT_VERSION:${GITHUB_SHA}"':
         issues.append(_issue(workflow_path, "CFD008", "Staging muss gelockten Wrangler mit --env staging verwenden"))
     production_run = str(production_deploy.get("run", "")) if production_deploy else ""
-    if not production_run.startswith('npm --prefix cloudflare/watchdog run deploy -- --env="" --var'):
+    if production_run != 'npm --prefix cloudflare/watchdog run deploy -- --env="" --var "DEPLOYMENT_VERSION:${GITHUB_SHA}"':
         issues.append(_issue(workflow_path, "CFD008", "Production muss kanonische Wrangler-Umgebung verwenden"))
     for label, job in (("staging", staging), ("production", production)):
         health = _step(job, "Verify deployed health and version") or {}

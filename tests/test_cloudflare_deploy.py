@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 
+import pytest
 import yaml
 
 from scripts.validate_cloudflare_config import validate_repository
@@ -59,6 +60,18 @@ def test_pull_requests_and_main_pushes_validate_without_deploying() -> None:
     validate = data["jobs"]["validate"]  # type: ignore[index]
     assert "environment" not in validate
     assert "secrets." not in str(validate)
+    assert "concurrency" not in data
+    assert "concurrency" not in validate
+
+
+def test_only_deploy_jobs_share_the_fixed_serialization_group() -> None:
+    jobs = workflow()["jobs"]
+    expected = {
+        "group": "cloudflare-watchdog-deploy",
+        "cancel-in-progress": False,
+    }
+    assert jobs["deploy_staging"]["concurrency"] == expected
+    assert jobs["deploy_production"]["concurrency"] == expected
 
 
 def test_manual_main_deploy_runs_staging_before_production() -> None:
@@ -147,3 +160,37 @@ def test_validator_rejects_missing_health_version_check(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert any(issue.code == "CFD009" for issue in validate_repository(root))
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement"),
+    (
+        (
+            'npm --prefix cloudflare/watchdog run deploy -- --env staging --var "DEPLOYMENT_VERSION:${GITHUB_SHA}"',
+            "npm --prefix cloudflare/watchdog run deploy -- --env staging",
+        ),
+        (
+            'npm --prefix cloudflare/watchdog run deploy -- --env staging --var "DEPLOYMENT_VERSION:${GITHUB_SHA}"',
+            'npm --prefix cloudflare/watchdog run deploy -- --env staging --var "RELEASE_VERSION:${GITHUB_SHA}"',
+        ),
+        (
+            'npm --prefix cloudflare/watchdog run deploy -- --env="" --var "DEPLOYMENT_VERSION:${GITHUB_SHA}"',
+            'npm --prefix cloudflare/watchdog run deploy -- --env=""',
+        ),
+        (
+            'npm --prefix cloudflare/watchdog run deploy -- --env="" --var "DEPLOYMENT_VERSION:${GITHUB_SHA}"',
+            'npm --prefix cloudflare/watchdog run deploy -- --env="" --var "RELEASE_VERSION:${GITHUB_SHA}"',
+        ),
+    ),
+)
+def test_validator_requires_exact_deployment_version_argument(
+    tmp_path: Path,
+    original: str,
+    replacement: str,
+) -> None:
+    root = contract_copy(tmp_path)
+    path = root / ".github" / "workflows" / "cloudflare-deploy.yml"
+    text = path.read_text(encoding="utf-8")
+    assert original in text
+    path.write_text(text.replace(original, replacement, 1), encoding="utf-8")
+    assert any(issue.code == "CFD008" for issue in validate_repository(root))
