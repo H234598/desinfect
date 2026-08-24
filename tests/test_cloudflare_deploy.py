@@ -129,11 +129,12 @@ def test_validator_rejects_bracket_notation_secret_in_validate_job(
     secret_expression: str,
 ) -> None:
     root = contract_copy(tmp_path)
+    assert validate_repository(root) == []
     path = root / ".github" / "workflows" / "cloudflare-deploy.yml"
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     data["jobs"]["validate"]["env"] = {"LEAKED_TOKEN": secret_expression}
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
-    assert any(issue.code == "CFD004" for issue in validate_repository(root))
+    assert [issue.code for issue in validate_repository(root)] == ["CFD004"]
 
 
 def test_validator_rejects_staging_cron(tmp_path: Path) -> None:
