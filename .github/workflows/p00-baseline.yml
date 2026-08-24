@@ -200,6 +200,12 @@ jobs:
           set -Eeuo pipefail
           python3 scripts/validate_ci_mutation_safety.py
 
+      - name: Validate Cloudflare deployment boundaries
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/validate_cloudflare_config.py
+
       - name: Smoke-test runtime, grabber, storage, dispatcher, and pipeline CLIs
         shell: bash
         run: |

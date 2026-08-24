@@ -7,6 +7,7 @@
       "tag": "v7",
       "sha": "3d3c42e5aac5ba805825da76410c181273ba90b1",
       "used_by": [
+        ".github/workflows/cloudflare-deploy.yml",
         ".github/workflows/p00-baseline.yml"
       ]
     },
@@ -15,6 +16,7 @@
       "tag": "v6",
       "sha": "249970729cb0ef3589644e2896645e5dc5ba9c38",
       "used_by": [
+        ".github/workflows/cloudflare-deploy.yml",
         ".github/workflows/p00-baseline.yml"
       ]
     },

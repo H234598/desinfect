@@ -1,0 +1,133 @@
+name: Cloudflare Watchdog
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy_production:
+        description: Deploy production after same-run staging health check
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-watchdog-deploy
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate Worker without deployment
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up Node 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: cloudflare/watchdog/package-lock.json
+      - name: Install locked Worker dependencies
+        run: npm --prefix cloudflare/watchdog ci --ignore-scripts
+      - name: Validate bounded Cloudflare configuration
+        run: python3 scripts/validate_cloudflare_config.py
+      - name: Test and typecheck Worker
+        run: |
+          npm --prefix cloudflare/watchdog test
+          npm --prefix cloudflare/watchdog run typecheck
+          npm --prefix cloudflare/watchdog run types:check
+      - name: Build deployment without publishing
+        run: npm --prefix cloudflare/watchdog run deploy:dry-run
+
+  deploy_staging:
+    name: Deploy and verify staging
+    needs: [validate]
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: cloudflare-watchdog-staging
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up Node 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: cloudflare/watchdog/package-lock.json
+      - name: Install locked Worker dependencies
+        run: npm --prefix cloudflare/watchdog ci --ignore-scripts
+      - name: Deploy staging without cron
+        run: npm --prefix cloudflare/watchdog run deploy -- --env staging --var "DEPLOYMENT_VERSION:${GITHUB_SHA}"
+      - name: Verify deployed health and version
+        env:
+          EXPECTED_VERSION: ${{ github.sha }}
+          WATCHDOG_HEALTH_URL: ${{ secrets.CLOUDFLARE_WATCHDOG_HEALTH_URL }}
+        run: |
+          set -Eeuo pipefail
+          response="$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 "$WATCHDOG_HEALTH_URL")"
+          HEALTH_RESPONSE="$response" node <<'NODE'
+          const payload = JSON.parse(process.env.HEALTH_RESPONSE ?? "null");
+          const expected = process.env.EXPECTED_VERSION;
+          if (payload?.service !== "desinfect-watchdog" || payload?.status !== "ok" || payload.version !== expected) {
+            throw new Error("deployed watchdog health/version mismatch");
+          }
+          NODE
+
+  deploy_production:
+    name: Deploy and verify production
+    needs: [validate, deploy_staging]
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: cloudflare-watchdog-production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up Node 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: cloudflare/watchdog/package-lock.json
+      - name: Install locked Worker dependencies
+        run: npm --prefix cloudflare/watchdog ci --ignore-scripts
+      - name: Deploy production with cron
+        run: npm --prefix cloudflare/watchdog run deploy -- --env="" --var "DEPLOYMENT_VERSION:${GITHUB_SHA}"
+      - name: Verify deployed health and version
+        env:
+          EXPECTED_VERSION: ${{ github.sha }}
+          WATCHDOG_HEALTH_URL: ${{ secrets.CLOUDFLARE_WATCHDOG_HEALTH_URL }}
+        run: |
+          set -Eeuo pipefail
+          response="$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 "$WATCHDOG_HEALTH_URL")"
+          HEALTH_RESPONSE="$response" node <<'NODE'
+          const payload = JSON.parse(process.env.HEALTH_RESPONSE ?? "null");
+          const expected = process.env.EXPECTED_VERSION;
+          if (payload?.service !== "desinfect-watchdog" || payload?.status !== "ok" || payload.version !== expected) {
+            throw new Error("deployed watchdog health/version mismatch");
+          }
+          NODE

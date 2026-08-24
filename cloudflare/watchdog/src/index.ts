@@ -98,7 +98,18 @@ export class WatchdogCoordinator extends DurableObject<WatchdogEnv> {
 }
 
 const worker = {
-  async fetch(_request: Request, _env: Env, _ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/healthz") {
+      return Response.json(
+        {
+          service: "desinfect-watchdog",
+          status: "ok",
+          version: env.DEPLOYMENT_VERSION,
+        },
+        { headers: { "cache-control": "no-store" } },
+      );
+    }
     return new Response(null, { status: 404 });
   },
 
