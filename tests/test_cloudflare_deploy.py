@@ -120,6 +120,22 @@ def test_validator_rejects_tagged_action(tmp_path: Path) -> None:
     assert any(issue.code == "CFD006" for issue in validate_repository(root))
 
 
+@pytest.mark.parametrize(
+    "secret_expression",
+    ("${{ secrets['TOKEN'] }}", '${{ secrets["TOKEN"] }}'),
+)
+def test_validator_rejects_bracket_notation_secret_in_validate_job(
+    tmp_path: Path,
+    secret_expression: str,
+) -> None:
+    root = contract_copy(tmp_path)
+    path = root / ".github" / "workflows" / "cloudflare-deploy.yml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["jobs"]["validate"]["env"] = {"LEAKED_TOKEN": secret_expression}
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    assert any(issue.code == "CFD004" for issue in validate_repository(root))
+
+
 def test_validator_rejects_staging_cron(tmp_path: Path) -> None:
     root = contract_copy(tmp_path)
     path = root / "cloudflare" / "watchdog" / "wrangler.jsonc"

@@ -87,7 +87,7 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
     if not all(isinstance(job, dict) for job in (validate, staging, production)):
         return [*issues, _issue(workflow_path, "CFD003", "Jobs müssen Mappings sein")]
 
-    if "environment" in validate or "secrets." in str(validate):
+    if "environment" in validate or re.search(r"\bsecrets\s*(?:\.|\[)", str(validate)):
         issues.append(_issue(workflow_path, "CFD004", "PR-/Push-Validierung darf keine Umgebung oder Secrets verwenden"))
     if staging.get("if") != DISPATCH_MAIN or staging.get("needs") != ["validate"]:
         issues.append(_issue(workflow_path, "CFD004", "Staging muss manuell auf main und nach Validate laufen"))
