@@ -122,6 +122,41 @@ describe("GithubApiClient", () => {
     expect(headers.get("authorization")).toContain("Bearer");
   });
 
+  it.each([
+    ["missing", { token: "ghs_test_token_1" }],
+    ["expired", { token: "ghs_test_token_1", expires_at: "2026-08-03T23:59:59Z" }],
+  ])("rejects an installation token with %s expiry", async (_case, tokenPayload) => {
+    const client = new GithubApiClient(
+      validRuntimeConfig,
+      {
+        appId: "123456",
+        installationId: "654321",
+        appPrivateKey: keys.privateKey,
+      },
+      { fetch: vi.fn().mockResolvedValue(buildResponse(tokenPayload)), nowMs },
+    );
+
+    await expect(client.createInstallationAccessToken()).rejects.toThrow(
+      "installation token payload malformed",
+    );
+  });
+
+  it("rejects a non-object installation token payload", async () => {
+    const client = new GithubApiClient(
+      validRuntimeConfig,
+      {
+        appId: "123456",
+        installationId: "654321",
+        appPrivateKey: keys.privateKey,
+      },
+      { fetch: vi.fn().mockResolvedValue(buildResponse(null)), nowMs },
+    );
+
+    await expect(client.createInstallationAccessToken()).rejects.toThrow(
+      "installation token payload malformed",
+    );
+  });
+
   it("no-ops active workflow and does not call enable/dispatch", async () => {
     const fetchMock = vi
       .fn()

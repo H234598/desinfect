@@ -108,7 +108,7 @@ export class GithubApiClient {
       permissions: { actions: "write", contents: "read" },
       repositories: [this.config.repo],
     });
-    const payload = await this.request<InstallationAccessToken>(
+    const payload = await this.request<unknown>(
       "create installation token",
       `/app/installations/${encodeURIComponent(this.secrets.installationId)}/access_tokens`,
       {
@@ -121,7 +121,7 @@ export class GithubApiClient {
       true,
       signedJwt,
     );
-    return validateToken(payload);
+    return validateToken(payload, this.nowMs);
   }
 
   async getStatusJson(): Promise<Record<string, unknown>> {
@@ -315,17 +315,22 @@ function validateSecrets(secrets: GithubSecrets): GithubSecrets {
   };
 }
 
-function validateToken(tokenPayload: InstallationAccessToken): string {
+function validateToken(tokenPayload: unknown, nowMs: number): string {
+  if (typeof tokenPayload !== "object" || tokenPayload === null || Array.isArray(tokenPayload)) {
+    throw new Error("installation token payload malformed");
+  }
+  const { token, expires_at: expiresAtRaw } = tokenPayload as Partial<InstallationAccessToken>;
+  const expiresAt = Date.parse(expiresAtRaw ?? "");
   if (
-    typeof tokenPayload.token !== "string" ||
-    tokenPayload.token.length < 10 ||
-    (tokenPayload.expires_at !== undefined && (
-      typeof tokenPayload.expires_at !== "string" || Number.isNaN(Date.parse(tokenPayload.expires_at))
-    ))
+    typeof token !== "string" ||
+    token.length < 10 ||
+    typeof expiresAtRaw !== "string" ||
+    Number.isNaN(expiresAt) ||
+    expiresAt <= nowMs
   ) {
     throw new Error("installation token payload malformed");
   }
-  return tokenPayload.token;
+  return token;
 }
 
 function isRetryable(status: number, headers: Headers): boolean {
