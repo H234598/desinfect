@@ -3,7 +3,7 @@
 ## Geheimnisse
 
 - `GITHUB_APP_ID` (decimal string)
-- `GITHUB_APP_INSTALLATION_ID` (decimal string)
+- `GITHUB_INSTALLATION_ID` (decimal string)
 - `GITHUB_APP_PRIVATE_KEY` (PEM private key)
 
 `GITHUB_APP_PRIVATE_KEY` wird als Cloudflare-Secret gesetzt:
@@ -12,7 +12,7 @@
 npx wrangler secret put GITHUB_APP_PRIVATE_KEY
 ```
 
-`GITHUB_APP_ID` und `GITHUB_APP_INSTALLATION_ID` sind bei GitHub als feste Ziel-IDs vorgesehen.
+`GITHUB_APP_ID` und `GITHUB_INSTALLATION_ID` sind bei GitHub als feste Ziel-IDs vorgesehen.
 Sie können als Worker-Secrets oder feste Vars geführt werden.
 
 ## API-Vertrag
@@ -49,4 +49,11 @@ Sie können als Worker-Secrets oder feste Vars geführt werden.
 
 ## P09.3 Schnittstellen
 
-P09.3 ergänzt DO-Lock, Cooldown, Idempotenzschlüssel, Alarm und Dispatch-Postcheck.
+P09.3 ergänzt DO-Lock, Cooldown, Idempotenzschlüssel, Alarm und Dispatch-Postcheck:
+
+- State-Key: `watchdog-state-v1`, Schema `1`; unbekannte oder beschädigte Version scheitert geschlossen.
+- Idempotenz: Git-Blob-SHA von `status.json` + `next_bark_at` + fester Workflow + fester Taskset.
+- Reservierung: `pending` wird vor Enable/Dispatch persistiert. `pending` und `dispatched` sperren auch bei geändertem Status-SHA jeden neuen Dispatch bis zur Nachkontrolle.
+- Cooldown: vor erneutem Status-/Recovery-Lauf; vorhandener früherer Postcheck-Alarm wird nicht nach hinten verschoben.
+- Postcheck: erster Alarm nach 6 Stunden, danach begrenzter exponentieller Backoff, maximal drei Versuche. Erfolg markiert `verified`; Fehlschlag markiert `failed`; kein Postcheck redispatcht.
+- Fehlende App-Bindings: Cron bleibt beim lokalen Foundation-Status und erzeugt keinen GitHub-Aufruf.

@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import worker, { WatchdogCoordinator } from "../src/index";
 import { coordinatorFor } from "../src/routing";
+import { WATCHDOG_STATE_KEY } from "../src/watchdog-state";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -35,6 +36,18 @@ describe("watchdog Worker foundation", () => {
       expect(instance).toBeInstanceOf(WatchdogCoordinator);
       expect(state.storage.sql.exec<{ value: number }>("SELECT 1 AS value").one()).toEqual({
         value: 1,
+      });
+    });
+  });
+
+  it("initializes versioned persistent watchdog state in blockConcurrencyWhile", async () => {
+    const stub = coordinatorFor(env);
+    await stub.foundationStatus();
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      await expect(state.storage.get(WATCHDOG_STATE_KEY)).resolves.toMatchObject({
+        schemaVersion: 1,
+        operation: null,
       });
     });
   });

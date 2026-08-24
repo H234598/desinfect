@@ -82,6 +82,43 @@ describe("GithubApiClient", () => {
     vi.restoreAllMocks();
   });
 
+  it("returns the validated Git blob SHA with the decoded status document", async () => {
+    const status = {
+      repository: "H234598/desinfect",
+      watchdog: { interval_days: 45, next_bark_at: "2026-09-18T00:00:00Z" },
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        buildResponse({
+          token: "ghs_test_token_1",
+          expires_at: "2026-08-04T01:00:00Z",
+        }),
+      )
+      .mockResolvedValueOnce(
+        buildResponse({
+          type: "file",
+          encoding: "base64",
+          sha: "a".repeat(40),
+          content: Buffer.from(JSON.stringify(status)).toString("base64"),
+        }),
+      );
+    const client = new GithubApiClient(
+      validRuntimeConfig,
+      {
+        appId: "123456",
+        installationId: "654321",
+        appPrivateKey: keys.privateKey,
+      },
+      { fetch: fetchMock, nowMs },
+    );
+
+    await expect(client.getStatusSnapshot()).resolves.toEqual({
+      statusSha: "a".repeat(40),
+      status,
+    });
+  });
+
   it("reads workflow state from fixed repo and fixed workflow path", async () => {
     const fetchMock = vi
       .fn()

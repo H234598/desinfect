@@ -1,6 +1,6 @@
-# Externer Wachhund – Projektfundament
+# Externer Wachhund
 
-Dieses Verzeichnis enthält das lokale Cloudflare-Worker-/Durable-Object-Fundament für P09.1. Es führt noch keinen GitHub-Aufruf und keinen Dispatch aus.
+Dieses Verzeichnis enthält Worker, Singleton-Durable-Object, feste GitHub-App-Operationen und P09.3-State-Machine. Ohne vollständige GitHub-App-Bindings bleibt der Cron lokal und führt keinen Netzwerkaufruf aus. Produktiver Deploy und Secret-Einrichtung folgen in P09.4.
 
 ## Lokale Gates
 
@@ -26,21 +26,25 @@ npm audit --audit-level=high
 
 ## Secrets
 
-`wrangler.jsonc` enthält nur nicht geheime Konfiguration. P09.2 bindet den privaten GitHub-App-Schlüssel ausschließlich als Cloudflare-Secret:
+`wrangler.jsonc` enthält nur nicht geheime Konfiguration. Der private GitHub-App-Schlüssel wird ausschließlich als Cloudflare-Secret gebunden:
 
 ```bash
 npx wrangler secret put GITHUB_APP_PRIVATE_KEY
 ```
 
-Secretwert nie in Shellargument, Log, Datei oder Git schreiben. App- und Installation-ID folgen ebenfalls erst mit P09.2.
+Secretwert nie in Shellargument, Log, Datei oder Git schreiben. Laufzeit benötigt zusätzlich `GITHUB_APP_ID` und `GITHUB_INSTALLATION_ID`; P09.4 richtet alle drei Bindings kontrolliert ein.
 
-## Abgrenzung
+## P09.3 State und Nachkontrolle
 
-P09.1 enthält absichtlich keine JWT-, GitHub-REST-, Dispatch-, Idempotenz-, Alarm- oder Deploylogik. Rückbau: `cloudflare/watchdog/` und zugehörige CI-Zeilen entfernen; GitHub-Pipeline bleibt unabhängig.
+- `blockConcurrencyWhile` initialisiert `watchdog-state-v1` mit festem Schema.
+- Schlüssel bindet Git-Blob-SHA von `status.json`, fälliges Bark-Fenster, festen Workflow und festen Taskset.
+- Reservierung wird vor Recovery persistiert; laufender oder unbestätigter Schlüssel blockiert jeden weiteren Dispatch.
+- Nach Dispatch folgt ein Alarm nach sechs Stunden. Fehlende oder temporär nicht lesbare Runs erhalten höchstens drei gespeicherte Postchecks mit begrenztem Backoff; niemals Redispatch.
+- Malformed Status, falsches Repository, Intervall-Drift, ungültiger SHA und unbekannte State-Version scheitern geschlossen.
 
-## P09.2 Vorschau
+## Feste GitHub-API-Grenzen
 
-P09.2 ergänzt:
+Implementiert sind:
 
 - RSA-SHA256 JWT für die GitHub-App im Worker-Runtime.
 - Installationstoken mit festen Rechten (`actions: write`, `contents: read`) und Laufzeitlimit.
@@ -56,6 +60,7 @@ P09.2 ergänzt:
 ## Runbooks
 
 - `runbooks/CLOUDFLARE-GITHUB-AUTH.md`: Secrets, Tokenfluss, Schwellwerte und manuelle App/Installation-Basis.
+- `docs/Wartung/Cloudflare-Waechter.md`: State, Alarme, Degraded Mode und Rückbau.
 
 Aktuelle Primärreferenzen:
 
