@@ -7,7 +7,7 @@
 
 | Gesamt | Offen | In Arbeit | Im Review | Umgesetzt | Blockiert |
 |---:|---:|---:|---:|---:|---:|
-| 60 | 28 | 0 | 0 | 32 | 0 |
+| 60 | 27 | 0 | 0 | 32 | 1 |
 
 ## Abgeschlossene Phasen
 
@@ -71,9 +71,18 @@
 - Abgenommen am: `2026-08-24T21:52:43Z`
 - Abgenommen durch: `H234598`
 
+## Blockierter Implementierungsstand P09.4
+
+- P09.4 ist nicht umgesetzt; produktive Runtimeabnahme fehlt.
+- PR #35 wurde mit geprüftem Head `d72b0a12c950c3beb2552af9909c66b975cb2cfa` als `f9ce544e8b094db3d919ae920c989214e25bac86` gemergt.
+- PR-Gates: Cloudflare `32786594070`, Baseline `32786594072`, CodeRabbit approved und qlty erfolgreich.
+- Nach-Merge-Gates: Cloudflare `32786895489` und Baseline `32786895469` erfolgreich.
+- Blocker: Das Repository besitzt nur das Environment `github-pages`; `cloudflare-watchdog-staging`, `cloudflare-watchdog-production` und deren Secrets fehlen. Sicherer Staging-/Production-Rollout und produktive Abnahme sind deshalb nicht möglich.
+- Keine Abnahmezeit und keine abnehmende Person eingetragen.
+
 ## Nächster Schritt
 
-P09.4 bleibt `offen`, bis geschützter Cloudflare-Deploy, Betriebsgrenzen und produktive Abnahme belegt sind.
+P10.1 kann als unabhängiger interner Schritt parallel weitergeführt werden. P09.4 bleibt bis zur Einrichtung beider geschützter Cloudflare-Environments samt Secrets und erfolgreicher Runtimeabnahme `blockiert`.
 
 ## Gesperrte Architekturentscheidungen
 
