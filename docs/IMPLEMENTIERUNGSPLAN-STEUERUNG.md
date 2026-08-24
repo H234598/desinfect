@@ -1,6 +1,6 @@
 ---
 title: Implementierungsplan V3 – Steuerung
-status: P09.2 abgeschlossen; P09.3 als nächste Phase
+status: P09.3 abgeschlossen; P09.4 als nächste Phase
 source_plan_sha256: aa50863cde1313a7039691b4ca596c1ab498d0fab0008da324de5cb69f12ffc4
 repository: H234598/desinfect
 branch: main
@@ -44,11 +44,13 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 - **P09.1-Gate:** geprüfter Head `3c27489`; GitHub Actions `30916701898` sowie Nach-Merge-Lauf `30917009538` erfolgreich; CodeRabbit und qlty erfolgreich; einziger Reviewthread aufgelöst; 1327 Pytest-, 9 Unittest-, 2 Node- und 14 Workers-Vitest-Tests sowie TypeScript-Typprüfung, Wrangler-Typdriftprüfung, Deployment-Dry-Run und npm audit erfolgreich.
 - **P09.2:** PR #31, Merge `d02447cf5bd701dbdb961d22aa2d64609a69a369`
 - **P09.2-Gate:** geprüfter Head `a7f07af`; GitHub Actions `32776756666` sowie Nach-Merge-Lauf `32777045027` erfolgreich; qlty erfolgreich; alle drei CodeRabbit-Findings umgesetzt und Reviewthreads aufgelöst; 1327 Pytest-, 9 Unittest-, 2 Node- und 23 Workers-Vitest-Tests sowie TypeScript-Typprüfung, Wrangler-Typdriftprüfung, Deployment-Dry-Run, Lock-Validator und npm audit erfolgreich.
-- **Fortschritt:** 31 von 60 Arbeitspaketen umgesetzt; 29 offen; 0 in Arbeit; 0 im Review; 0 blockiert.
+- **P09.3:** PR #33, Merge `accec2b4e5cbb92970b4157641fce69c7bcb10c5`
+- **P09.3-Gate:** geprüfter Head `c37f864`; GitHub Actions `32781301922` sowie Nach-Merge-Lauf `32781564903` erfolgreich; CodeRabbit approved und qlty erfolgreich; beide Reviewthreads aufgelöst; 1327 Pytest-, 9 Unittest-, 2 Node- und 36 Workers-Vitest-Tests sowie TypeScript-Typprüfung, Wrangler-Typdriftprüfung, Deployment-Dry-Run und npm audit erfolgreich.
+- **Fortschritt:** 32 von 60 Arbeitspaketen umgesetzt; 28 offen; 0 in Arbeit; 0 im Review; 0 blockiert.
 
-## Nächste Phase P09.3
+## Nächste Phase P09.4
 
-P09.2 ist umgesetzt. P09.3 bleibt `offen`, bis DO-Sperre, Idempotenz, Alarm und Nachkontrolle implementiert, gemergt und remote abgenommen sind.
+P09.3 ist umgesetzt. P09.4 bleibt `offen`, bis geschützter Cloudflare-Deploy, Betriebsgrenzen und produktive Abnahme belegt sind.
 
 ## Arbeitspakete
 
@@ -83,7 +85,7 @@ P09.2 ist umgesetzt. P09.3 bleibt `offen`, bis DO-Sperre, Idempotenz, Alarm und 
 - [x] **P08.2** Job Summary, Diagnoseartefakte und Rolling Issue _(umgesetzt, PR #27, Merge `12ac906cdf9982cd91d0bcab5a5e1d783a765ddf`)_
 - [x] **P09.1** Cloudflare-Worker-/DO-Projektfundament _(umgesetzt, PR #29, Merge `276e206381d9143547fddfc62cf51d6915cf046f`)_
 - [x] **P09.2** GitHub-App-JWT und feste API-Operationen _(umgesetzt, PR #31, Merge `d02447cf5bd701dbdb961d22aa2d64609a69a369`)_
-- [ ] **P09.3** DO-Sperre, Idempotenz, Alarm und Nachkontrolle
+- [x] **P09.3** DO-Sperre, Idempotenz, Alarm und Nachkontrolle _(umgesetzt, PR #33, Merge `accec2b4e5cbb92970b4157641fce69c7bcb10c5`)_
 - [ ] **P09.4** Cloudflare-Deploy und Betriebsgrenzen
 - [ ] **P10.1** Contentmodell, Wikilinks und Callouts
 - [ ] **P10.2** Atomarer Webbuild und MkDocs Strict
