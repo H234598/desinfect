@@ -43,6 +43,7 @@ export class GithubApiError extends Error {
 export interface ContentsFile {
   type: "file";
   encoding: "base64";
+  sha: string;
   content: string;
 }
 
@@ -124,7 +125,10 @@ export class GithubApiClient {
     return validateToken(payload, this.nowMs);
   }
 
-  async getStatusJson(): Promise<Record<string, unknown>> {
+  async getStatusSnapshot(): Promise<{
+    statusSha: string;
+    status: Record<string, unknown>;
+  }> {
     const token = await this.createInstallationAccessToken();
     const payload = await this.request<ContentsFile>(
       "fetch status.json",
@@ -136,7 +140,17 @@ export class GithubApiClient {
     if (payload.type !== "file" || payload.encoding !== "base64") {
       throw new Error("status.json payload has unexpected format");
     }
-    return decodeStatusJsonPayload(payload.content);
+    if (!/^[0-9a-f]{40}$/.test(payload.sha)) {
+      throw new Error("status.json Git blob SHA is malformed");
+    }
+    return {
+      statusSha: payload.sha,
+      status: decodeStatusJsonPayload(payload.content),
+    };
+  }
+
+  async getStatusJson(): Promise<Record<string, unknown>> {
+    return (await this.getStatusSnapshot()).status;
   }
 
   async getLatestCommitSha(): Promise<string> {
