@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import worker, { WatchdogCoordinator } from "../src/index";
 import { coordinatorFor } from "../src/routing";
-import { WATCHDOG_STATE_KEY } from "../src/watchdog-state";
+import { POSTCHECK_DELAY_MS, WATCHDOG_STATE_KEY } from "../src/watchdog-state";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -48,6 +48,36 @@ describe("watchdog Worker foundation", () => {
       await expect(state.storage.get(WATCHDOG_STATE_KEY)).resolves.toMatchObject({
         schemaVersion: 1,
         operation: null,
+      });
+    });
+  });
+
+  it("defers an alarm without consuming retries when GitHub credentials are absent", async () => {
+    const nowMs = Date.parse("2026-08-16T06:00:00Z");
+    vi.spyOn(Date, "now").mockReturnValue(nowMs);
+    const stub = coordinatorFor(env);
+
+    await runInDurableObject(stub, async (instance, state) => {
+      await state.storage.put(WATCHDOG_STATE_KEY, {
+        schemaVersion: 1,
+        operation: {
+          key: "pending-key",
+          phase: "pending",
+          statusSha: "a".repeat(40),
+          dueAt: "2026-08-15T00:00:00.000Z",
+          startedAtMs: Date.parse("2026-08-16T00:00:00Z"),
+          dispatchAtMs: null,
+          postcheckAttempts: 0,
+        },
+        cooldownUntilMs: Date.parse("2026-08-17T00:00:00Z"),
+        alarmAtMs: nowMs,
+      });
+
+      await instance.alarm();
+
+      await expect(state.storage.get(WATCHDOG_STATE_KEY)).resolves.toMatchObject({
+        operation: { phase: "pending", postcheckAttempts: 0 },
+        alarmAtMs: nowMs + POSTCHECK_DELAY_MS,
       });
     });
   });

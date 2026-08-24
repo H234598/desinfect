@@ -30,7 +30,7 @@ Cloudflare Cron und Alarme können mehrfach zugestellt werden. Der DO serialisie
 ## Degraded Mode und Rückbau
 
 - GitHub nicht erreichbar: gespeicherte Nachkontrolle mit begrenztem Backoff; danach `failed`.
-- App-Binding fehlt: keine Netzwerkaktion.
+- App-Binding fehlt: keine Netzwerkaktion; ausstehender Alarm wird ohne Retryverbrauch um sechs Stunden verschoben.
 - Malformed Status/State: Fehler, keine Mutation auf GitHub.
 - Rückbau: Cron deaktivieren, vorhandenen DO-Alarm löschen, Zustand erst nach Evidenz sichern und dann kontrolliert entfernen. Secretreset darf eine Sperre nie umgehen.
 - GitHub-Dispatcher bleibt unabhängig und kann manuell betrieben werden.

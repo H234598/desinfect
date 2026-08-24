@@ -110,6 +110,36 @@ describe("WatchdogStateMachine", () => {
     });
   });
 
+  it("uses the next-bark alarm to reconcile a newly due status", async () => {
+    const dueMs = Date.parse("2026-08-15T00:00:00Z");
+    const storage = new MemoryStorage();
+    const github = new FakeGithub(statusSnapshot(dueStatus()));
+    const machine = new WatchdogStateMachine({ storage, github, config });
+    await machine.initialize();
+
+    await expect(machine.reconcile(dueMs - 1)).resolves.toMatchObject({ action: "not_due" });
+    expect(storage.alarmAt).toBe(dueMs);
+
+    await expect(machine.handleAlarm(dueMs)).resolves.toMatchObject({ action: "dispatched" });
+    expect(github.recoveries).toBe(1);
+  });
+
+  it("defers a credential-blocked next-bark alarm before an operation exists", async () => {
+    const nowMs = Date.parse("2026-08-15T00:00:00Z");
+    const storage = new MemoryStorage();
+    const github = new FakeGithub(statusSnapshot(dueStatus()));
+    const machine = new WatchdogStateMachine({ storage, github, config });
+    await machine.initialize();
+
+    await machine.deferAlarm(nowMs);
+
+    expect(storage.alarmAt).toBe(nowMs + POSTCHECK_DELAY_MS);
+    await expect(storage.get(WATCHDOG_STATE_KEY)).resolves.toMatchObject({
+      operation: null,
+      alarmAtMs: nowMs + POSTCHECK_DELAY_MS,
+    });
+  });
+
   it("persists the dispatch key and never duplicates it during alarm retries", async () => {
     const nowMs = Date.parse("2026-08-16T00:00:00Z");
     const storage = new MemoryStorage();

@@ -56,4 +56,4 @@ P09.3 ergänzt DO-Lock, Cooldown, Idempotenzschlüssel, Alarm und Dispatch-Postc
 - Reservierung: `pending` wird vor Enable/Dispatch persistiert. `pending` und `dispatched` sperren auch bei geändertem Status-SHA jeden neuen Dispatch bis zur Nachkontrolle.
 - Cooldown: vor erneutem Status-/Recovery-Lauf; vorhandener früherer Postcheck-Alarm wird nicht nach hinten verschoben.
 - Postcheck: erster Alarm nach 6 Stunden, danach begrenzter exponentieller Backoff, maximal drei Versuche. Erfolg markiert `verified`; Fehlschlag markiert `failed`; kein Postcheck redispatcht.
-- Fehlende App-Bindings: Cron bleibt beim lokalen Foundation-Status und erzeugt keinen GitHub-Aufruf.
+- Fehlende App-Bindings: Cron bleibt beim lokalen Foundation-Status. Ein bereits ausstehender Alarm wird ohne GitHub-Aufruf und ohne verbrauchten Postcheck-Versuch um sechs Stunden verschoben.

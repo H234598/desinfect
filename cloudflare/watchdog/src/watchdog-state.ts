@@ -140,6 +140,20 @@ export class WatchdogStateMachine {
     return this.runExclusive(async () => this.handleAlarmExclusive(nowMs));
   }
 
+  async deferAlarm(nowMs: number): Promise<void> {
+    await this.runExclusive(async () => {
+      this.requireFiniteClock(nowMs);
+      const state = await this.loadState();
+      if (
+        state.operation === null ||
+        state.operation.phase === "pending" ||
+        state.operation.phase === "dispatched"
+      ) {
+        await this.setAlarm(state, nowMs + POSTCHECK_DELAY_MS);
+      }
+    });
+  }
+
   private async reconcileExclusive(nowMs: number): Promise<WatchdogActionResult> {
     this.requireFiniteClock(nowMs);
     const state = await this.loadState();
@@ -167,6 +181,7 @@ export class WatchdogStateMachine {
       this.config.watchdogIntervalDays,
     );
     if (dueAt === null) {
+      await this.clearAlarm(state);
       return { action: "unarmed" };
     }
     if (nowMs < dueAt.ms) {
@@ -215,11 +230,11 @@ export class WatchdogStateMachine {
     this.requireFiniteClock(nowMs);
     const state = await this.loadState();
     const operation = state.operation;
-    if (operation === null || operation.phase === "verified" || operation.phase === "failed") {
+    if (operation === null) {
+      return this.reconcileExclusive(nowMs);
+    }
+    if (operation.phase === "verified" || operation.phase === "failed") {
       await this.clearAlarm(state);
-      if (operation === null) {
-        return { action: "verified" };
-      }
       return { action: operation.phase === "failed" ? "failed" : "verified", key: operation.key };
     }
 

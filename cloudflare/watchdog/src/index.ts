@@ -88,7 +88,12 @@ export class WatchdogCoordinator extends DurableObject<WatchdogEnv> {
   }
 
   override async alarm(): Promise<void> {
-    await this.machine.handleAlarm(Date.now());
+    const nowMs = Date.now();
+    if (!hasGithubCredentials(this.env)) {
+      await this.machine.deferAlarm(nowMs);
+      return;
+    }
+    await this.machine.handleAlarm(nowMs);
   }
 }
 
