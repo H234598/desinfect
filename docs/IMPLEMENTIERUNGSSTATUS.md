@@ -7,7 +7,7 @@
 
 | Gesamt | Offen | In Arbeit | Im Review | Umgesetzt | Blockiert |
 |---:|---:|---:|---:|---:|---:|
-| 60 | 29 | 0 | 0 | 31 | 0 |
+| 60 | 28 | 0 | 0 | 32 | 0 |
 
 ## Abgeschlossene Phasen
 
@@ -24,6 +24,7 @@
 | P08 | #25, #27 | `6fccb8d`, `12ac906` | Actions und Nach-Merge-Gates erfolgreich; qlty, CodeRabbit-Feedback abgeschlossen, 4 Reviewthreads |
 | P09.1 | #29 | `276e206381d9143547fddfc62cf51d6915cf046f` | Actions `30916701898`, Nach-Merge `30917009538`, CodeRabbit, qlty |
 | P09.2 | #31 | `d02447cf5bd701dbdb961d22aa2d64609a69a369` | Actions `32776756666`, Nach-Merge `32777045027`, qlty, 3 CodeRabbit-Findings behoben |
+| P09.3 | #33 | `accec2b4e5cbb92970b4157641fce69c7bcb10c5` | Actions `32781301922`, Nach-Merge `32781564903`, CodeRabbit approved, qlty, 2 Reviewthreads |
 
 ## Abgeschlossene Phase P06
 
@@ -60,9 +61,19 @@
 - Abgenommen am: `2026-08-24T21:03:55Z`
 - Abgenommen durch: `H234598`
 
+## Abnahme P09.3
+
+- PR #33 per Squash mit geprüftem Head `c37f864a9cbc1bfc48a536ad0aabf108641bb64f` gemergt
+- Nach-Merge-Lauf `32781564903` erfolgreich
+- ungelöste Reviewthreads: 0
+- 1327 Pytest-, 9 Unittest-, 2 Node- und 36 Workers-Vitest-Tests erfolgreich
+- TypeScript-, Wrangler-, Deploy-Dry-Run- und Audit-Gates erfolgreich
+- Abgenommen am: `2026-08-24T21:52:43Z`
+- Abgenommen durch: `H234598`
+
 ## Nächster Schritt
 
-P09.3 bleibt `offen`, bis DO-Sperre, Idempotenz, Alarm und Nachkontrolle implementiert, gemergt und remote abgenommen sind.
+P09.4 bleibt `offen`, bis geschützter Cloudflare-Deploy, Betriebsgrenzen und produktive Abnahme belegt sind.
 
 ## Gesperrte Architekturentscheidungen
 
