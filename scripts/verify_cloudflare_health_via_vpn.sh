@@ -14,17 +14,78 @@ fi
 
 health_url=$2
 expected_version=$4
+provisioning_deadline_seconds=${VPN_PROVISIONING_DEADLINE_SECONDS:-900}
+provisioning_retry_interval_seconds=${VPN_PROVISIONING_RETRY_INTERVAL_SECONDS:-15}
 runtime_root=${RUNNER_TEMP:-/tmp}
-runtime_dir=$(mktemp -d "$runtime_root/cloudflare-health-vpn.XXXXXX")
 tun_device=tun-health
-pid_file="$runtime_dir/openvpn.pid"
-auth_file="$runtime_dir/auth"
-vpn_log="$runtime_dir/openvpn.log"
 python_bin=${PYTHON_BIN:-python3}
 vpn_started=0
 tun_owned=0
 launcher_pid=''
 config_file=''
+health_failure_category=other
+
+is_positive_integer() {
+  case "$1" in
+    ''|*[!0-9]*|0) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+provisioning_monotonic_seconds() {
+  uptime_line=$(cat /proc/uptime) || return 1
+  uptime_seconds=${uptime_line%%.*}
+  case "$uptime_seconds" in
+    ''|*[!0-9]*) return 1 ;;
+    *) printf '%s\n' "$uptime_seconds" ;;
+  esac
+}
+
+if ! is_positive_integer "$provisioning_deadline_seconds" || ! is_positive_integer "$provisioning_retry_interval_seconds"; then
+  printf '%s\n' 'VPN provisioning retry settings are invalid' >&2
+  exit 2
+fi
+provisioning_started_at=$(provisioning_monotonic_seconds)
+case "$provisioning_started_at" in
+  ''|*[!0-9]*)
+    printf '%s\n' 'VPN provisioning clock is unavailable' >&2
+    exit 1
+    ;;
+esac
+provisioning_deadline=$((provisioning_started_at + provisioning_deadline_seconds))
+provisioning_last_at=$provisioning_started_at
+provisioning_clock_error=''
+
+update_provisioning_clock() {
+  provisioning_now=$(provisioning_monotonic_seconds) || {
+    provisioning_clock_error=unavailable
+    return 1
+  }
+  case "$provisioning_now" in
+    ''|*[!0-9]*)
+      provisioning_clock_error=unavailable
+      return 1
+      ;;
+  esac
+  if [ "$provisioning_now" -lt "$provisioning_last_at" ]; then
+    provisioning_clock_error=backwards
+    return 1
+  fi
+  provisioning_last_at=$provisioning_now
+  provisioning_clock_error=''
+}
+
+report_provisioning_clock_error() {
+  case "$provisioning_clock_error" in
+    backwards) printf '%s\n' 'VPN provisioning clock moved backwards' >&2 ;;
+    *) printf '%s\n' 'VPN provisioning clock is unavailable' >&2 ;;
+  esac
+}
+
+runtime_dir=$(mktemp -d "$runtime_root/cloudflare-health-vpn.XXXXXX")
+pid_file="$runtime_dir/openvpn.pid"
+auth_file="$runtime_dir/auth"
+vpn_log="$runtime_dir/openvpn.log"
 
 is_openvpn_pid() {
   candidate_pid=$1
@@ -223,6 +284,29 @@ EOF
   test -n "$resolved_address"
 }
 
+record_health_failure_category() {
+  health_failure_category=$(printf '%s\n' "$1" | awk '
+    NR != 1 { exit 1 }
+    /^health check failed: category=(dns|tls)( [a-z][a-z0-9_]*=[A-Za-z0-9._:-]+)*$/ {
+      for (field_index = 5; field_index <= NF; field_index++) {
+        split($field_index, field, "=")
+        if (field[1] == "category") exit 1
+      }
+      split($4, category, "=")
+      print category[2]
+      recognized = 1
+      next
+    }
+    { exit 1 }
+    END { if (NR != 1 || !recognized) exit 1 }
+  ') || health_failure_category=other
+  case "$health_failure_category" in
+    dns|tls) ;;
+    *) health_failure_category=other ;;
+  esac
+  printf 'VPN health verification failed: category=%s\n' "$health_failure_category" >&2
+}
+
 verify_country() {
   country=$1
   config_name=$2
@@ -255,28 +339,87 @@ verify_country() {
     printf 'VPN target route unavailable via %s\n' "$country" >&2
     return 1
   fi
-  sudo -n "$python_bin" scripts/verify_cloudflare_health.py \
+  if health_output=$(sudo -n "$python_bin" scripts/verify_cloudflare_health.py \
     --url "$health_url" \
     --expected-version "$expected_version" \
     --resolved-address "$resolved_address" \
-    --bind-device "$tun_device"
+    --bind-device "$tun_device" 2>&1); then
+    return 0
+  fi
+  record_health_failure_category "$health_output"
+  return 1
 }
 
-for candidate in \
-  "DE:vpn-de.premiumize.me.ovpn:$VPN_CONFIG_DE" \
-  "NL:vpn-nl.premiumize.me.ovpn:$VPN_CONFIG_NL" \
-  "CH:vpn-ch.premiumize.me.ovpn:$VPN_CONFIG_CH"; do
-  country=${candidate%%:*}
-  candidate=${candidate#*:}
-  config_name=${candidate%%:*}
-  config_value=${candidate#*:}
-  if verify_country "$country" "$config_name" "$config_value"; then
-    printf 'VPN health verification succeeded via %s\n' "$country"
-    exit 0
+while :; do
+  provisioning_cycle_retryable=1
+  for candidate in \
+    "DE:vpn-de.premiumize.me.ovpn:$VPN_CONFIG_DE" \
+    "NL:vpn-nl.premiumize.me.ovpn:$VPN_CONFIG_NL" \
+    "CH:vpn-ch.premiumize.me.ovpn:$VPN_CONFIG_CH"; do
+    if ! update_provisioning_clock; then
+      report_provisioning_clock_error
+      exit 1
+    fi
+    if [ "$provisioning_now" -ge "$provisioning_deadline" ]; then
+      printf '%s\n' 'VPN health provisioning deadline reached' >&2
+      exit 1
+    fi
+    country=${candidate%%:*}
+    candidate=${candidate#*:}
+    config_name=${candidate%%:*}
+    config_value=${candidate#*:}
+    health_failure_category=other
+    if verify_country "$country" "$config_name" "$config_value"; then
+      if ! cleanup_vpn; then
+        printf '%s\n' 'VPN cleanup failed; refusing health success' >&2
+        exit 1
+      fi
+      if ! update_provisioning_clock; then
+        report_provisioning_clock_error
+        exit 1
+      fi
+      if [ "$provisioning_now" -ge "$provisioning_deadline" ]; then
+        printf '%s\n' 'VPN health provisioning deadline reached' >&2
+        exit 1
+      fi
+      printf 'VPN health verification succeeded via %s\n' "$country"
+      exit 0
+    fi
+    if ! cleanup_vpn; then
+      printf '%s\n' 'VPN cleanup failed; refusing next country' >&2
+      exit 1
+    fi
+    case "$health_failure_category" in
+      dns|tls) ;;
+      *) provisioning_cycle_retryable=0 ;;
+    esac
+  done
+
+  if [ "$provisioning_cycle_retryable" -ne 1 ]; then
+    break
   fi
-  if ! cleanup_vpn; then
-    printf '%s\n' 'VPN cleanup failed; refusing next country' >&2
-    exit 1
+  if ! update_provisioning_clock; then
+    report_provisioning_clock_error
+    break
+  fi
+  provisioning_remaining=$((provisioning_deadline - provisioning_now))
+  if [ "$provisioning_remaining" -le 0 ]; then
+    printf '%s\n' 'VPN health provisioning deadline reached' >&2
+    break
+  fi
+  provisioning_sleep_seconds=$provisioning_retry_interval_seconds
+  if [ "$provisioning_sleep_seconds" -gt "$provisioning_remaining" ]; then
+    provisioning_sleep_seconds=$provisioning_remaining
+  fi
+  printf '%s\n' 'VPN health provisioning retrying after DNS/TLS failure' >&2
+  sleep "$provisioning_sleep_seconds"
+  if ! update_provisioning_clock; then
+    report_provisioning_clock_error
+    break
+  fi
+  if [ "$provisioning_now" -ge "$provisioning_deadline" ]; then
+    printf '%s\n' 'VPN health provisioning deadline reached' >&2
+    break
   fi
 done
 

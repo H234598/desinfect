@@ -14,6 +14,11 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 ACTION_SHA = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 DISPATCH_MAIN = "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'"
+VPN_PROVISIONING_DEADLINE_SECONDS = 900
+VPN_DEPLOY_TIMEOUT_RESERVE_MINUTES = 10
+VPN_DEPLOY_TIMEOUT_MINUTES = (
+    (VPN_PROVISIONING_DEADLINE_SECONDS + 59) // 60 + VPN_DEPLOY_TIMEOUT_RESERVE_MINUTES
+)
 
 
 class ConfigIssue(NamedTuple):
@@ -139,6 +144,16 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
     if production_run != 'npm --prefix cloudflare/watchdog run deploy -- --env="" --var "DEPLOYMENT_VERSION:${GITHUB_SHA}"':
         issues.append(_issue(workflow_path, "CFD008", "Production muss kanonische Wrangler-Umgebung verwenden"))
     for label, job in (("staging", staging), ("production", production)):
+        timeout_minutes = job.get("timeout-minutes")
+        if type(timeout_minutes) is not int or timeout_minutes != VPN_DEPLOY_TIMEOUT_MINUTES:
+            issues.append(
+                _issue(
+                    workflow_path,
+                    "CFD009",
+                    f"{label}: Job-Timeout muss {VPN_DEPLOY_TIMEOUT_MINUTES} Minuten "
+                    f"(900s Readiness + {VPN_DEPLOY_TIMEOUT_RESERVE_MINUTES}m Reserve) sein",
+                )
+            )
         deploy_name = "Deploy staging without cron" if label == "staging" else "Deploy production with cron"
         deploy_index = _step_index(job, deploy_name)
         install_index = _step_index(job, "Install OpenVPN for VPN health verification")
@@ -171,6 +186,8 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
                 "VPN_CONFIG_NL": "${{ secrets.CLOUDFLARE_HEALTH_VPN_NL_CONFIG }}",
                 "VPN_CONFIG_CH": "${{ secrets.CLOUDFLARE_HEALTH_VPN_CH_CONFIG }}",
                 "VPN_AUTH": "${{ secrets.CLOUDFLARE_HEALTH_VPN_AUTH }}",
+                "VPN_PROVISIONING_DEADLINE_SECONDS": "900",
+                "VPN_PROVISIONING_RETRY_INTERVAL_SECONDS": "15",
             }
             or health_run
             != 'sh scripts/verify_cloudflare_health_via_vpn.sh --url "$WATCHDOG_HEALTH_URL" --expected-version "$EXPECTED_VERSION"'
@@ -197,6 +214,20 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
             '--resolved-address "$resolved_address"',
             '--bind-device "$tun_device"',
             "VPN cleanup failed; refusing next country",
+            "${VPN_PROVISIONING_DEADLINE_SECONDS:-900}",
+            "${VPN_PROVISIONING_RETRY_INTERVAL_SECONDS:-15}",
+            "record_health_failure_category",
+            "health check failed: category=(dns|tls)",
+            "NR != 1",
+            'field[1] == "category"',
+            "provisioning_cycle_retryable=1",
+            "provisioning_monotonic_seconds",
+            "update_provisioning_clock",
+            "provisioning_last_at",
+            'if [ "$provisioning_now" -ge "$provisioning_deadline" ]; then',
+            "cat /proc/uptime",
+            "provisioning_remaining",
+            'sleep "$provisioning_sleep_seconds"',
         )
         socket_hardening_tokens = (
             "socket.SO_BINDTODEVICE",
