@@ -1498,6 +1498,98 @@ def test_real_mkdocs_child_can_use_held_fd_stages(repo: Path) -> None:
     assert not (repo / "build/docs").exists()
 
 
+def test_real_partial_mkdocs_preview_allows_links_to_omitted_pages(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Strict partial previews tolerate links whose local targets were intentionally omitted."""
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    before = snapshot_sources(repo)
+
+    result = build_site(
+        repo,
+        check=True,
+        dry_run=True,
+        strict=True,
+        force=False,
+        site_url=None,
+        only=(PurePosixPath("index.md"),),
+    )
+
+    assert "index.html" in result.site_hashes
+    assert "Handdesinfektion/index.html" not in result.site_hashes
+    assert "Flaechendesinfektion/index.html" not in result.site_hashes
+    assert snapshot_sources(repo) == before
+    assert not (repo / "site").exists()
+    assert not (repo / "build/docs").exists()
+
+
+def test_real_partial_mkdocs_preview_rejects_unknown_local_link(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A genuinely missing local target must still fail a strict partial preview."""
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    source = repo / "content/index.md"
+    source.write_text(
+        source.read_text(encoding="utf-8") + "\n[Fehlend](Nicht-vorhanden.md)\n",
+        encoding="utf-8",
+    )
+    before = snapshot_sources(repo)
+
+    assert (
+        main(
+            [
+                "--repo-root",
+                str(repo),
+                "--check",
+                "--dry-run",
+                "--strict",
+                "--only",
+                "index.md",
+            ]
+        )
+        == 2
+    )
+
+    assert snapshot_sources(repo) == before
+    assert not (repo / "site").exists()
+    assert not (repo / "build/docs").exists()
+
+
+def test_real_partial_mkdocs_preview_rejects_remote_browser_resource(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Partial preview must retain the generated-site remote-resource boundary."""
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    source = repo / "content/index.md"
+    source.write_text(
+        source.read_text(encoding="utf-8") + '\n<script src="//asset.example/app.js"></script>\n',
+        encoding="utf-8",
+    )
+    before = snapshot_sources(repo)
+
+    assert (
+        main(
+            [
+                "--repo-root",
+                str(repo),
+                "--check",
+                "--dry-run",
+                "--strict",
+                "--only",
+                "index.md",
+            ]
+        )
+        == 2
+    )
+
+    assert snapshot_sources(repo) == before
+    assert not (repo / "site").exists()
+    assert not (repo / "build/docs").exists()
+
+
 def test_navigation_validation_uses_configured_content_root(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

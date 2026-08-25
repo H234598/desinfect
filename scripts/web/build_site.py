@@ -43,6 +43,7 @@ from scripts.web.build_docs import (
     docs_preview_session,
     load_publication_config,
     snapshot_sources,
+    write_generated_markdown,
 )
 from scripts.web.build_navigation import (
     NavigationError,
@@ -579,6 +580,7 @@ def write_temp_mkdocs_config(
     site_url: str | None,
     source_date_epoch: int,
     partial: bool,
+    excluded_docs: tuple[PurePosixPath, ...] = (),
 ) -> Path:
     """Write one MkDocs config through a held FD-backed config directory."""
 
@@ -592,6 +594,8 @@ def write_temp_mkdocs_config(
             raise SiteBuildError("mkdocs configuration must be a mapping")
         _validate_static_mkdocs_config(parsed, content_root=content_root)
         parsed = runtime_navigation_config(parsed, partial=partial)
+        if excluded_docs:
+            parsed["exclude_docs"] = "\n".join(path.as_posix() for path in excluded_docs)
         if not docs_dir.is_absolute() or not site_dir.is_absolute():
             raise SiteBuildError("mkdocs docs_dir and site_dir must be absolute directories")
         absolute_docs = (
@@ -631,6 +635,33 @@ def write_temp_mkdocs_config(
         raise
     except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError) as exc:
         raise SiteBuildError(f"cannot create temporary MkDocs config: {source}") from exc
+
+
+def _partial_link_target_placeholders(
+    content_root: Path, docs_dir: Path
+) -> tuple[PurePosixPath, ...]:
+    """Make omitted known pages resolvable without weakening strict link validation."""
+
+    existing = {
+        relative
+        for relative, _path in _regular_files(
+            docs_dir,
+            required=True,
+            allow_root_symlink=True,
+        )
+    }
+    omitted = tuple(
+        page.generated_path
+        for page in build_content_index(content_root).pages
+        if page.generated_path not in existing
+    )
+    for relative in omitted:
+        write_generated_markdown(
+            docs_dir / Path(relative.as_posix()),
+            "# Vorschauziel\n",
+            stage=docs_dir,
+        )
+    return omitted
 
 
 def _fd_descriptor(path: Path) -> int | None:
@@ -704,6 +735,9 @@ def _run_site_build(
 ) -> Mapping[str, str]:
     try:
         publication = load_publication_config(repo_root)
+        excluded_docs = (
+            _partial_link_target_placeholders(publication.content_root, docs_dir) if partial else ()
+        )
         config_target = publication.build_root / ".mkdocs-config-preview" / "config"
         with preview_directory(config_target, allowed_root=repo_root) as config_stage:
             config_path: Path | None = None
@@ -717,6 +751,7 @@ def _run_site_build(
                     site_url=site_url,
                     source_date_epoch=epoch,
                     partial=partial,
+                    excluded_docs=excluded_docs,
                 )
                 descriptors = tuple(
                     sorted(
