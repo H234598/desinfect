@@ -154,6 +154,8 @@ def test_deploy_runs_vpn_only_for_exact_version_health_verification() -> None:
         "VPN_CONFIG_NL": "${{ secrets.CLOUDFLARE_HEALTH_VPN_NL_CONFIG }}",
         "VPN_CONFIG_CH": "${{ secrets.CLOUDFLARE_HEALTH_VPN_CH_CONFIG }}",
         "VPN_AUTH": "${{ secrets.CLOUDFLARE_HEALTH_VPN_AUTH }}",
+        "VPN_PROVISIONING_DEADLINE_SECONDS": "900",
+        "VPN_PROVISIONING_RETRY_INTERVAL_SECONDS": "15",
     }
     expected_verify = (
         'sh scripts/verify_cloudflare_health_via_vpn.sh --url "$WATCHDOG_HEALTH_URL" '
@@ -181,10 +183,15 @@ def _vpn_test_environment(
     openvpn_exit_after_pid_countries: str = "",
     wrong_pid_countries: str = "",
     health_failures: str = "",
+    health_category_sequence: str = "",
     resolver_hang_countries: str = "",
     routed_families: str = "4,6",
     de_config: str | None = None,
     ignore_term: bool = False,
+    provisioning_deadline_seconds: str = "900",
+    provisioning_retry_interval_seconds: str = "1",
+    epoch_start: str = "0",
+    epoch_step: str = "1",
 ) -> dict[str, str]:
     """Create process doubles below the script's OpenVPN and health boundaries."""
 
@@ -197,13 +204,35 @@ def _vpn_test_environment(
     overlap = tmp_path / "vpn-overlap"
     timeout_args = tmp_path / "timeout-args"
     daemon_pids = tmp_path / "openvpn-daemon-pids"
+    sleep_args = tmp_path / "sleep-args"
+    epoch_file = tmp_path / "epoch"
+    health_category_file = tmp_path / "health-category-sequence"
+    epoch_file.write_text(f"{epoch_start}\n", encoding="utf-8")
+    if health_category_sequence:
+        health_category_file.write_text(
+            "\n".join(health_category_sequence.split(",")) + "\n",
+            encoding="utf-8",
+        )
     _write_executable(
         fake_bin / "sudo",
         "#!/bin/sh\nif test \"${1:-}\" = -n; then shift; fi\nexec \"$@\"\n",
     )
     _write_executable(
         fake_bin / "sleep",
-        "#!/bin/sh\nexit 0\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$VPN_SLEEP_ARGS\"\nexit 0\n",
+    )
+    _write_executable(
+        fake_bin / "cat",
+        """#!/bin/sh
+set -eu
+if test "$#" = 1 && test "$1" = /proc/uptime; then
+  value=$(/bin/cat "$VPN_EPOCH_FILE")
+  printf '%s.00 0.00\\n' "$value"
+  printf '%s\\n' "$((value + VPN_EPOCH_STEP))" > "$VPN_EPOCH_FILE"
+  exit 0
+fi
+exec /bin/cat "$@"
+""",
     )
     _write_executable(
         fake_bin / "timeout",
@@ -328,8 +357,20 @@ fi
 printf '%s\n' "$*" >> "$VPN_HEALTH_ARGS"
 name=$(cat "$VPN_STATE")
 printf '%s\\n' "$name" >> "$VPN_HEALTH_ATTEMPTS"
-case ",${VPN_HEALTH_FAILURES}," in
-  *",${name},"*) exit 1 ;;
+category=''
+if test -s "$VPN_HEALTH_CATEGORY_FILE"; then
+  category=$(sed -n '1p' "$VPN_HEALTH_CATEGORY_FILE")
+  sed -n '2,$p' "$VPN_HEALTH_CATEGORY_FILE" > "$VPN_HEALTH_CATEGORY_FILE.next"
+  mv "$VPN_HEALTH_CATEGORY_FILE.next" "$VPN_HEALTH_CATEGORY_FILE"
+else
+  case ",${VPN_HEALTH_FAILURES}," in
+    *",${name},"*) category=http ;;
+  esac
+fi
+case "$category" in
+  ''|ok) ;;
+  http) printf '%s\\n' 'health check failed: category=http http_status=403' >&2; exit 1 ;;
+  *) printf 'health check failed: category=%s\\n' "$category" >&2; exit 1 ;;
 esac
 """,
     )
@@ -342,8 +383,12 @@ esac
         "VPN_ATTEMPTS": str(attempts),
         "VPN_HEALTH_ATTEMPTS": str(health_attempts),
         "VPN_HEALTH_ARGS": str(tmp_path / "health-args"),
+        "VPN_HEALTH_CATEGORY_FILE": str(health_category_file),
         "VPN_ROUTE_ATTEMPTS": str(route_attempts),
         "VPN_OVERLAP": str(overlap),
+        "VPN_SLEEP_ARGS": str(sleep_args),
+        "VPN_EPOCH_FILE": str(epoch_file),
+        "VPN_EPOCH_STEP": epoch_step,
         "VPN_TIMEOUT_ARGS": str(timeout_args),
         "VPN_DAEMON_PIDS": str(daemon_pids),
         "VPN_OPENVPN_FAILURES": openvpn_failures,
@@ -360,6 +405,8 @@ esac
         "VPN_CONFIG_NL": "client\nremote endpoint.invalid 1194\nproto udp\nauth-user-pass\n<ca>\ncertificate-data\n</ca>\n",
         "VPN_CONFIG_CH": "client\nremote endpoint.invalid 1194\nproto udp\nauth-user-pass\n<ca>\ncertificate-data\n</ca>\n",
         "VPN_AUTH": "vpn-user-secret\\nvpn-password-secret",
+        "VPN_PROVISIONING_DEADLINE_SECONDS": provisioning_deadline_seconds,
+        "VPN_PROVISIONING_RETRY_INTERVAL_SECONDS": provisioning_retry_interval_seconds,
     }
 
 
@@ -437,6 +484,169 @@ def test_vpn_health_fails_closed_after_all_country_health_failures(tmp_path: Pat
         "vpn-ch.premiumize.me.ovpn",
     ]
     assert not (tmp_path / "vpn-state").exists()
+
+
+def test_vpn_health_tls_recovers_in_the_next_country_without_readiness_wait(tmp_path: Path) -> None:
+    """Catches a TLS provisioning failure that skips the deterministic NL fallback."""
+
+    result = _run_vpn_health(
+        tmp_path,
+        health_category_sequence="tls,ok",
+        provisioning_retry_interval_seconds="7",
+    )
+
+    assert result.returncode == 0
+    assert (tmp_path / "openvpn-attempts").read_text(encoding="utf-8").splitlines() == [
+        "vpn-de.premiumize.me.ovpn",
+        "vpn-nl.premiumize.me.ovpn",
+    ]
+    assert "7" not in (tmp_path / "sleep-args").read_text(encoding="utf-8").splitlines()
+
+
+def test_vpn_health_retries_tls_after_clean_de_nl_ch_cycle(tmp_path: Path) -> None:
+    """Catches missing bounded readiness retry after first Custom-Domain TLS provisioning."""
+
+    result = _run_vpn_health(
+        tmp_path,
+        health_category_sequence="tls,tls,tls,ok",
+        provisioning_deadline_seconds="10",
+        provisioning_retry_interval_seconds="7",
+    )
+
+    assert result.returncode == 0
+    assert (tmp_path / "openvpn-attempts").read_text(encoding="utf-8").splitlines() == [
+        "vpn-de.premiumize.me.ovpn",
+        "vpn-nl.premiumize.me.ovpn",
+        "vpn-ch.premiumize.me.ovpn",
+        "vpn-de.premiumize.me.ovpn",
+    ]
+    assert "7" in (tmp_path / "sleep-args").read_text(encoding="utf-8").splitlines()
+    assert not (tmp_path / "vpn-state").exists()
+    assert not (tmp_path / "vpn-overlap").exists()
+    for pid in (tmp_path / "openvpn-daemon-pids").read_text(encoding="utf-8").splitlines():
+        assert not Path(f"/proc/{pid}").exists()
+
+
+def test_vpn_health_retries_dns_after_clean_de_nl_ch_cycle(tmp_path: Path) -> None:
+    """Catches DNS provisioning retries that would otherwise fail despite later readiness."""
+
+    result = _run_vpn_health(
+        tmp_path,
+        health_category_sequence="dns,dns,dns,ok",
+        provisioning_deadline_seconds="10",
+        provisioning_retry_interval_seconds="7",
+    )
+
+    assert result.returncode == 0
+    assert (tmp_path / "openvpn-attempts").read_text(encoding="utf-8").splitlines() == [
+        "vpn-de.premiumize.me.ovpn",
+        "vpn-nl.premiumize.me.ovpn",
+        "vpn-ch.premiumize.me.ovpn",
+        "vpn-de.premiumize.me.ovpn",
+    ]
+    assert "7" in (tmp_path / "sleep-args").read_text(encoding="utf-8").splitlines()
+
+
+def test_vpn_health_stops_tls_readiness_retries_at_global_deadline(tmp_path: Path) -> None:
+    """Catches a TLS-only readiness loop that can consume the whole GitHub job."""
+
+    result = _run_vpn_health(
+        tmp_path,
+        health_category_sequence="tls,tls,tls,tls,tls,tls,tls",
+        provisioning_deadline_seconds="2",
+        provisioning_retry_interval_seconds="7",
+    )
+
+    assert result.returncode == 1
+    assert (tmp_path / "openvpn-attempts").read_text(encoding="utf-8").splitlines() == [
+        "vpn-de.premiumize.me.ovpn",
+        "vpn-nl.premiumize.me.ovpn",
+        "vpn-ch.premiumize.me.ovpn",
+        "vpn-de.premiumize.me.ovpn",
+        "vpn-nl.premiumize.me.ovpn",
+        "vpn-ch.premiumize.me.ovpn",
+    ]
+    assert "7" not in (tmp_path / "sleep-args").read_text(encoding="utf-8").splitlines()
+    assert not (tmp_path / "vpn-state").exists()
+
+
+def test_vpn_health_provisioning_deadline_uses_monotonic_kernel_uptime() -> None:
+    """Catches wall-clock jumps extending or shortening the global readiness deadline."""
+
+    source = VPN_HEALTH_SCRIPT.read_text(encoding="utf-8")
+
+    assert "cat /proc/uptime" in source
+    assert "date +%s" not in source
+
+
+@pytest.mark.parametrize(
+    "health_category_sequence",
+    ("tls,tls,http", "dns,tls,version"),
+    ids=("final-http-403", "final-version-mismatch"),
+)
+def test_vpn_health_does_not_wait_after_mixed_provisioning_and_final_health_failure(
+    tmp_path: Path, health_category_sequence: str
+) -> None:
+    """Catches one DNS/TLS result turning a final HTTP/version rejection into a retry loop."""
+
+    result = _run_vpn_health(
+        tmp_path,
+        health_category_sequence=health_category_sequence,
+        provisioning_deadline_seconds="10",
+        provisioning_retry_interval_seconds="7",
+    )
+
+    assert result.returncode == 1
+    assert (tmp_path / "openvpn-attempts").read_text(encoding="utf-8").splitlines() == [
+        "vpn-de.premiumize.me.ovpn",
+        "vpn-nl.premiumize.me.ovpn",
+        "vpn-ch.premiumize.me.ovpn",
+    ]
+    assert "7" not in (tmp_path / "sleep-args").read_text(encoding="utf-8").splitlines()
+
+
+def test_vpn_health_does_not_wait_after_mixed_provisioning_and_final_vpn_failure(
+    tmp_path: Path,
+) -> None:
+    """Catches DNS/TLS results retrying after final OpenVPN connection failure."""
+
+    result = _run_vpn_health(
+        tmp_path,
+        health_category_sequence="dns,tls",
+        openvpn_failures="vpn-ch.premiumize.me.ovpn",
+        provisioning_deadline_seconds="10",
+        provisioning_retry_interval_seconds="7",
+    )
+
+    assert result.returncode == 1
+    assert (tmp_path / "openvpn-attempts").read_text(encoding="utf-8").splitlines() == [
+        "vpn-de.premiumize.me.ovpn",
+        "vpn-nl.premiumize.me.ovpn",
+        "vpn-ch.premiumize.me.ovpn",
+    ]
+    assert "7" not in (tmp_path / "sleep-args").read_text(encoding="utf-8").splitlines()
+
+
+@pytest.mark.parametrize("category", ("http", "version"), ids=("http-403", "version-mismatch"))
+def test_vpn_health_does_not_wait_for_non_provisioning_failure(
+    tmp_path: Path, category: str
+) -> None:
+    """Catches HTTP or version rejection being incorrectly treated as DNS/TLS provisioning."""
+
+    result = _run_vpn_health(
+        tmp_path,
+        health_category_sequence=",".join((category, category, category)),
+        provisioning_deadline_seconds="10",
+        provisioning_retry_interval_seconds="7",
+    )
+
+    assert result.returncode == 1
+    assert (tmp_path / "openvpn-attempts").read_text(encoding="utf-8").splitlines() == [
+        "vpn-de.premiumize.me.ovpn",
+        "vpn-nl.premiumize.me.ovpn",
+        "vpn-ch.premiumize.me.ovpn",
+    ]
+    assert "7" not in (tmp_path / "sleep-args").read_text(encoding="utf-8").splitlines()
 
 
 def test_vpn_health_falls_back_when_openvpn_exited_after_writing_its_own_pid(
@@ -1123,6 +1333,25 @@ def test_validator_rejects_missing_health_version_check(tmp_path: Path) -> None:
     assert any(issue.code == "CFD009" for issue in validate_repository(root))
 
 
+@pytest.mark.parametrize(
+    "setting",
+    ("VPN_PROVISIONING_DEADLINE_SECONDS", "VPN_PROVISIONING_RETRY_INTERVAL_SECONDS"),
+)
+def test_validator_rejects_missing_vpn_provisioning_readiness_setting(
+    tmp_path: Path, setting: str
+) -> None:
+    """Catches a deploy health gate with an implicit or unbounded readiness contract."""
+
+    root = contract_copy(tmp_path)
+    path = root / ".github" / "workflows" / "cloudflare-deploy.yml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    for name in ("deploy_staging", "deploy_production"):
+        data["jobs"][name]["steps"][-1]["env"].pop(setting, None)
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    assert any(issue.code == "CFD009" for issue in validate_repository(root))
+
+
 def test_validator_rejects_non_shared_health_readiness_command(tmp_path: Path) -> None:
     root = contract_copy(tmp_path)
     path = root / ".github" / "workflows" / "cloudflare-deploy.yml"
@@ -1174,6 +1403,21 @@ def test_validator_rejects_missing_vpn_hardening_invariant(tmp_path: Path) -> No
     assert any(issue.code == "CFD009" for issue in validate_repository(root))
 
 
+def test_validator_rejects_missing_vpn_provisioning_category_guard(tmp_path: Path) -> None:
+    """Catches retrying arbitrary health failures instead of only DNS/TLS provisioning."""
+
+    root = contract_copy(tmp_path)
+    path = root / "scripts" / "verify_cloudflare_health_via_vpn.sh"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "record_health_failure_category", "removed_health_failure_category"
+        ),
+        encoding="utf-8",
+    )
+
+    assert any(issue.code == "CFD009" for issue in validate_repository(root))
+
+
 def test_validator_rejects_missing_tunnel_socket_binding(tmp_path: Path) -> None:
     """Catches a wrapper flag that no longer forces the health socket through the VPN."""
 
@@ -1197,6 +1441,19 @@ def test_validator_rejects_unbounded_target_resolver(tmp_path: Path) -> None:
             'timeout --foreground --signal=TERM --kill-after=5s 15s "$python_bin"',
             '"$python_bin"',
         ),
+        encoding="utf-8",
+    )
+
+    assert any(issue.code == "CFD009" for issue in validate_repository(root))
+
+
+def test_validator_rejects_non_monotonic_vpn_provisioning_deadline(tmp_path: Path) -> None:
+    """Catches a wall-clock readiness deadline that can move backwards or forwards."""
+
+    root = contract_copy(tmp_path)
+    path = root / "scripts" / "verify_cloudflare_health_via_vpn.sh"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("cat /proc/uptime", "date +%s"),
         encoding="utf-8",
     )
 

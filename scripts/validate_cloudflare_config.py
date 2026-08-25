@@ -171,6 +171,8 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
                 "VPN_CONFIG_NL": "${{ secrets.CLOUDFLARE_HEALTH_VPN_NL_CONFIG }}",
                 "VPN_CONFIG_CH": "${{ secrets.CLOUDFLARE_HEALTH_VPN_CH_CONFIG }}",
                 "VPN_AUTH": "${{ secrets.CLOUDFLARE_HEALTH_VPN_AUTH }}",
+                "VPN_PROVISIONING_DEADLINE_SECONDS": "900",
+                "VPN_PROVISIONING_RETRY_INTERVAL_SECONDS": "15",
             }
             or health_run
             != 'sh scripts/verify_cloudflare_health_via_vpn.sh --url "$WATCHDOG_HEALTH_URL" --expected-version "$EXPECTED_VERSION"'
@@ -197,6 +199,16 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
             '--resolved-address "$resolved_address"',
             '--bind-device "$tun_device"',
             "VPN cleanup failed; refusing next country",
+            "${VPN_PROVISIONING_DEADLINE_SECONDS:-900}",
+            "${VPN_PROVISIONING_RETRY_INTERVAL_SECONDS:-15}",
+            "record_health_failure_category",
+            "health check failed: category=dns",
+            "health check failed: category=tls",
+            "provisioning_cycle_retryable=1",
+            "provisioning_monotonic_seconds",
+            "cat /proc/uptime",
+            "provisioning_remaining",
+            'sleep "$provisioning_sleep_seconds"',
         )
         socket_hardening_tokens = (
             "socket.SO_BINDTODEVICE",

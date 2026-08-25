@@ -88,6 +88,8 @@ jobs:
           VPN_CONFIG_NL: ${{ secrets.CLOUDFLARE_HEALTH_VPN_NL_CONFIG }}
           VPN_CONFIG_CH: ${{ secrets.CLOUDFLARE_HEALTH_VPN_CH_CONFIG }}
           VPN_AUTH: ${{ secrets.CLOUDFLARE_HEALTH_VPN_AUTH }}
+          VPN_PROVISIONING_DEADLINE_SECONDS: "900"
+          VPN_PROVISIONING_RETRY_INTERVAL_SECONDS: "15"
         run: sh scripts/verify_cloudflare_health_via_vpn.sh --url "$WATCHDOG_HEALTH_URL" --expected-version "$EXPECTED_VERSION"
 
   deploy_production:
@@ -134,4 +136,6 @@ jobs:
           VPN_CONFIG_NL: ${{ secrets.CLOUDFLARE_HEALTH_VPN_NL_CONFIG }}
           VPN_CONFIG_CH: ${{ secrets.CLOUDFLARE_HEALTH_VPN_CH_CONFIG }}
           VPN_AUTH: ${{ secrets.CLOUDFLARE_HEALTH_VPN_AUTH }}
+          VPN_PROVISIONING_DEADLINE_SECONDS: "900"
+          VPN_PROVISIONING_RETRY_INTERVAL_SECONDS: "15"
         run: sh scripts/verify_cloudflare_health_via_vpn.sh --url "$WATCHDOG_HEALTH_URL" --expected-version "$EXPECTED_VERSION"
