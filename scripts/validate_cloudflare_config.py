@@ -62,6 +62,7 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
     worker_path = root / "cloudflare" / "watchdog" / "src" / "index.ts"
     runbook_path = root / "runbooks" / "CLOUDFLARE-WATCHDOG.md"
     health_script_path = root / "scripts" / "verify_cloudflare_health.py"
+    vpn_health_script_path = root / "scripts" / "verify_cloudflare_health_via_vpn.sh"
     issues: list[ConfigIssue] = []
 
     workflow_value, error = _load(workflow_path, yaml.safe_load)
@@ -124,20 +125,34 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
     if production_run != 'npm --prefix cloudflare/watchdog run deploy -- --env="" --var "DEPLOYMENT_VERSION:${GITHUB_SHA}"':
         issues.append(_issue(workflow_path, "CFD008", "Production muss kanonische Wrangler-Umgebung verwenden"))
     for label, job in (("staging", staging), ("production", production)):
-        health = _step(job, "Verify deployed health and version") or {}
+        install = _step(job, "Install OpenVPN for VPN health verification") or {}
+        if str(install.get("run", "")).strip() != (
+            "if ! command -v openvpn >/dev/null 2>&1; then\n"
+            "  sudo apt-get update\n"
+            "  sudo apt-get install --no-install-recommends --yes openvpn\n"
+            "fi"
+        ):
+            issues.append(_issue(workflow_path, "CFD009", f"{label}: minimale OpenVPN-Installation fehlt"))
+        health = _step(job, "Verify deployed health and version through VPN") or {}
         health_run = str(health.get("run", ""))
         health_env = health.get("env", {})
         if (
             not isinstance(health_env, dict)
-            or health_env.get("EXPECTED_VERSION") != "${{ github.sha }}"
-            or "CLOUDFLARE_WATCHDOG_HEALTH_URL"
-            not in str(health_env.get("WATCHDOG_HEALTH_URL", ""))
+            or health_env
+            != {
+                "EXPECTED_VERSION": "${{ github.sha }}",
+                "WATCHDOG_HEALTH_URL": "${{ secrets.CLOUDFLARE_WATCHDOG_HEALTH_URL }}",
+                "VPN_CONFIG_DE": "${{ secrets.CLOUDFLARE_HEALTH_VPN_DE_CONFIG }}",
+                "VPN_CONFIG_NL": "${{ secrets.CLOUDFLARE_HEALTH_VPN_NL_CONFIG }}",
+                "VPN_CONFIG_CH": "${{ secrets.CLOUDFLARE_HEALTH_VPN_CH_CONFIG }}",
+                "VPN_AUTH": "${{ secrets.CLOUDFLARE_HEALTH_VPN_AUTH }}",
+            }
             or health_run
-            != 'python3 scripts/verify_cloudflare_health.py --url "$WATCHDOG_HEALTH_URL" --expected-version "$EXPECTED_VERSION"'
+            != 'sh scripts/verify_cloudflare_health_via_vpn.sh --url "$WATCHDOG_HEALTH_URL" --expected-version "$EXPECTED_VERSION"'
         ):
-            issues.append(_issue(workflow_path, "CFD009", f"{label}: gemeinsame HTTPS-Health-/Versionsprüfung fehlt"))
-    if not health_script_path.is_file():
-        issues.append(_issue(health_script_path, "CFD009", "Readiness-Prüfskript fehlt"))
+            issues.append(_issue(workflow_path, "CFD009", f"{label}: VPN-Health-/Versionsprüfung fehlt"))
+    if not health_script_path.is_file() or not vpn_health_script_path.is_file():
+        issues.append(_issue(vpn_health_script_path, "CFD009", "VPN-Readiness-Prüfskript fehlt"))
 
     package_value, error = _load(package_path, json.loads)
     if error:

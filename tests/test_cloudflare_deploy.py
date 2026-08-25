@@ -10,6 +10,7 @@ import shutil
 import signal
 import socket
 import ssl
+import subprocess
 import time
 
 import pytest
@@ -20,6 +21,7 @@ from scripts.validate_cloudflare_config import validate_repository
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "cloudflare-deploy.yml"
+VPN_HEALTH_SCRIPT = ROOT / "scripts" / "verify_cloudflare_health_via_vpn.sh"
 
 
 def triggers(data: dict[str, object]) -> dict[str, object]:
@@ -43,6 +45,7 @@ def contract_copy(tmp_path: Path) -> Path:
         "cloudflare/watchdog/src/index.ts",
         "runbooks/CLOUDFLARE-WATCHDOG.md",
         "scripts/verify_cloudflare_health.py",
+        "scripts/verify_cloudflare_health_via_vpn.sh",
     )
     for relative in paths:
         source = ROOT / relative
@@ -125,13 +128,202 @@ def test_deploy_uses_locked_cli_and_checks_exact_health_version() -> None:
             "npm --prefix cloudflare/watchdog ci --ignore-scripts"
         )
     for name in ("deploy_staging", "deploy_production"):
-        health = named_step(jobs[name], "Verify deployed health and version")
+        health = named_step(jobs[name], "Verify deployed health and version through VPN")
         assert health["env"]["EXPECTED_VERSION"] == "${{ github.sha }}"
         assert health["env"]["WATCHDOG_HEALTH_URL"] == "${{ secrets.CLOUDFLARE_WATCHDOG_HEALTH_URL }}"
         assert health["run"] == (
-            'python3 scripts/verify_cloudflare_health.py --url "$WATCHDOG_HEALTH_URL" '
+            'sh scripts/verify_cloudflare_health_via_vpn.sh --url "$WATCHDOG_HEALTH_URL" '
             '--expected-version "$EXPECTED_VERSION"'
         )
+
+
+def test_deploy_runs_vpn_only_for_exact_version_health_verification() -> None:
+    """Catches VPN exposure outside health, missing fallback secrets, or a bypassed verifier."""
+
+    jobs = workflow()["jobs"]
+    expected_install = (
+        "if ! command -v openvpn >/dev/null 2>&1; then\n"
+        "  sudo apt-get update\n"
+        "  sudo apt-get install --no-install-recommends --yes openvpn\n"
+        "fi"
+    )
+    expected_env = {
+        "EXPECTED_VERSION": "${{ github.sha }}",
+        "WATCHDOG_HEALTH_URL": "${{ secrets.CLOUDFLARE_WATCHDOG_HEALTH_URL }}",
+        "VPN_CONFIG_DE": "${{ secrets.CLOUDFLARE_HEALTH_VPN_DE_CONFIG }}",
+        "VPN_CONFIG_NL": "${{ secrets.CLOUDFLARE_HEALTH_VPN_NL_CONFIG }}",
+        "VPN_CONFIG_CH": "${{ secrets.CLOUDFLARE_HEALTH_VPN_CH_CONFIG }}",
+        "VPN_AUTH": "${{ secrets.CLOUDFLARE_HEALTH_VPN_AUTH }}",
+    }
+    expected_verify = (
+        'sh scripts/verify_cloudflare_health_via_vpn.sh --url "$WATCHDOG_HEALTH_URL" '
+        '--expected-version "$EXPECTED_VERSION"'
+    )
+    for name in ("deploy_staging", "deploy_production"):
+        steps = jobs[name]["steps"]
+        install = named_step(jobs[name], "Install OpenVPN for VPN health verification")
+        verify = named_step(jobs[name], "Verify deployed health and version through VPN")
+        assert install["run"].strip() == expected_install
+        assert verify["env"] == expected_env
+        assert verify["run"] == expected_verify
+        assert steps.index(install) > steps.index(named_step(jobs[name], "Deploy staging without cron") if name == "deploy_staging" else named_step(jobs[name], "Deploy production with cron"))
+
+
+def _write_executable(path: Path, source: str) -> None:
+    path.write_text(source, encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _vpn_test_environment(tmp_path: Path, *, openvpn_failures: str = "", health_failures: str = "") -> dict[str, str]:
+    """Create process doubles below the script's OpenVPN and health boundaries."""
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    state = tmp_path / "vpn-state"
+    attempts = tmp_path / "openvpn-attempts"
+    health_attempts = tmp_path / "health-attempts"
+    _write_executable(
+        fake_bin / "sudo",
+        "#!/bin/sh\nexec \"$@\"\n",
+    )
+    _write_executable(
+        fake_bin / "sleep",
+        "#!/bin/sh\nexit 0\n",
+    )
+    _write_executable(
+        fake_bin / "openvpn",
+        """#!/bin/sh
+set -eu
+config=''
+pidfile=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --config) config="$2"; shift 2 ;;
+    --writepid) pidfile="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+name=$(basename "$config")
+printf '%s\\n' "$name" >> "$VPN_ATTEMPTS"
+case ",${VPN_OPENVPN_FAILURES}," in
+  *",${name},"*) exit 1 ;;
+esac
+/bin/sleep 60 &
+printf '%s\\n' "$!" > "$pidfile"
+printf '%s\\n' "$name" > "$VPN_STATE"
+""",
+    )
+    _write_executable(
+        fake_bin / "ip",
+        """#!/bin/sh
+set -eu
+case "$1:$2" in
+  link:show) test -f "$VPN_STATE" ;;
+  route:get) test -f "$VPN_STATE" && printf '%s\\n' '1.1.1.1 dev tun-health' ;;
+  link:delete) rm -f "$VPN_STATE" ;;
+  *) exit 1 ;;
+esac
+""",
+    )
+    _write_executable(
+        fake_bin / "fake-python",
+        """#!/bin/sh
+set -eu
+name=$(cat "$VPN_STATE")
+printf '%s\\n' "$name" >> "$VPN_HEALTH_ATTEMPTS"
+case ",${VPN_HEALTH_FAILURES}," in
+  *",${name},"*) exit 1 ;;
+esac
+""",
+    )
+    return {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "RUNNER_TEMP": str(tmp_path),
+        "PYTHON_BIN": str(fake_bin / "fake-python"),
+        "VPN_STATE": str(state),
+        "VPN_ATTEMPTS": str(attempts),
+        "VPN_HEALTH_ATTEMPTS": str(health_attempts),
+        "VPN_OPENVPN_FAILURES": openvpn_failures,
+        "VPN_HEALTH_FAILURES": health_failures,
+        "VPN_CONFIG_DE": "de-config-secret",
+        "VPN_CONFIG_NL": "nl-config-secret",
+        "VPN_CONFIG_CH": "ch-config-secret",
+        "VPN_AUTH": "vpn-user-secret\\nvpn-password-secret",
+    }
+
+
+def _run_vpn_health(tmp_path: Path, **kwargs: str) -> subprocess.CompletedProcess[str]:
+    environment = _vpn_test_environment(tmp_path, **kwargs)
+    return subprocess.run(
+        [
+            "sh",
+            str(VPN_HEALTH_SCRIPT),
+            "--url",
+            "https://watchdog.example/healthz",
+            "--expected-version",
+            "abc123",
+        ],
+        check=False,
+        capture_output=True,
+        env=environment,
+        text=True,
+    )
+
+
+def test_vpn_health_falls_back_de_nl_ch_and_redacts_temporary_secrets(tmp_path: Path) -> None:
+    """Catches reordering, skipped fallback, retained temp files, or leaked secret data."""
+
+    result = _run_vpn_health(
+        tmp_path,
+        openvpn_failures="vpn-de.premiumize.me.ovpn",
+        health_failures="vpn-nl.premiumize.me.ovpn",
+    )
+
+    assert result.returncode == 0
+    assert (tmp_path / "openvpn-attempts").read_text(encoding="utf-8").splitlines() == [
+        "vpn-de.premiumize.me.ovpn",
+        "vpn-nl.premiumize.me.ovpn",
+        "vpn-ch.premiumize.me.ovpn",
+    ]
+    assert not (tmp_path / "vpn-state").exists()
+    assert not list(tmp_path.glob("cloudflare-health-vpn.*"))
+    output = result.stdout + result.stderr
+    assert "config-secret" not in output
+    assert "vpn-user-secret" not in output
+    assert "vpn-password-secret" not in output
+
+
+def test_vpn_health_stops_after_de_health_success_and_cleans_up(tmp_path: Path) -> None:
+    """Catches unnecessary fallback after a successful public health verification."""
+
+    result = _run_vpn_health(tmp_path)
+
+    assert result.returncode == 0
+    assert (tmp_path / "openvpn-attempts").read_text(encoding="utf-8").splitlines() == [
+        "vpn-de.premiumize.me.ovpn"
+    ]
+    assert (tmp_path / "health-attempts").read_text(encoding="utf-8").splitlines() == [
+        "vpn-de.premiumize.me.ovpn"
+    ]
+    assert not (tmp_path / "vpn-state").exists()
+
+
+def test_vpn_health_fails_closed_after_all_country_health_failures(tmp_path: Path) -> None:
+    """Catches a false positive when all three VPN egress health checks reject."""
+
+    result = _run_vpn_health(
+        tmp_path,
+        health_failures="vpn-de.premiumize.me.ovpn,vpn-nl.premiumize.me.ovpn,vpn-ch.premiumize.me.ovpn",
+    )
+
+    assert result.returncode == 1
+    assert (tmp_path / "health-attempts").read_text(encoding="utf-8").splitlines() == [
+        "vpn-de.premiumize.me.ovpn",
+        "vpn-nl.premiumize.me.ovpn",
+        "vpn-ch.premiumize.me.ovpn",
+    ]
+    assert not (tmp_path / "vpn-state").exists()
 
 
 class FakeResponse:
@@ -541,7 +733,7 @@ def test_validator_rejects_non_shared_health_readiness_command(tmp_path: Path) -
     path = root / ".github" / "workflows" / "cloudflare-deploy.yml"
     path.write_text(
         path.read_text(encoding="utf-8").replace(
-            'python3 scripts/verify_cloudflare_health.py --url "$WATCHDOG_HEALTH_URL" --expected-version "$EXPECTED_VERSION"',
+            'sh scripts/verify_cloudflare_health_via_vpn.sh --url "$WATCHDOG_HEALTH_URL" --expected-version "$EXPECTED_VERSION"',
             "curl https://watchdog.example/healthz",
             1,
         ),

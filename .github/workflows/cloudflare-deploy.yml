@@ -74,11 +74,21 @@ jobs:
         run: npm --prefix cloudflare/watchdog ci --ignore-scripts
       - name: Deploy staging without cron
         run: npm --prefix cloudflare/watchdog run deploy -- --env staging --var "DEPLOYMENT_VERSION:${GITHUB_SHA}"
-      - name: Verify deployed health and version
+      - name: Install OpenVPN for VPN health verification
+        run: |
+          if ! command -v openvpn >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends --yes openvpn
+          fi
+      - name: Verify deployed health and version through VPN
         env:
           EXPECTED_VERSION: ${{ github.sha }}
           WATCHDOG_HEALTH_URL: ${{ secrets.CLOUDFLARE_WATCHDOG_HEALTH_URL }}
-        run: python3 scripts/verify_cloudflare_health.py --url "$WATCHDOG_HEALTH_URL" --expected-version "$EXPECTED_VERSION"
+          VPN_CONFIG_DE: ${{ secrets.CLOUDFLARE_HEALTH_VPN_DE_CONFIG }}
+          VPN_CONFIG_NL: ${{ secrets.CLOUDFLARE_HEALTH_VPN_NL_CONFIG }}
+          VPN_CONFIG_CH: ${{ secrets.CLOUDFLARE_HEALTH_VPN_CH_CONFIG }}
+          VPN_AUTH: ${{ secrets.CLOUDFLARE_HEALTH_VPN_AUTH }}
+        run: sh scripts/verify_cloudflare_health_via_vpn.sh --url "$WATCHDOG_HEALTH_URL" --expected-version "$EXPECTED_VERSION"
 
   deploy_production:
     name: Deploy and verify production
@@ -110,8 +120,18 @@ jobs:
         run: npm --prefix cloudflare/watchdog ci --ignore-scripts
       - name: Deploy production with cron
         run: npm --prefix cloudflare/watchdog run deploy -- --env="" --var "DEPLOYMENT_VERSION:${GITHUB_SHA}"
-      - name: Verify deployed health and version
+      - name: Install OpenVPN for VPN health verification
+        run: |
+          if ! command -v openvpn >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends --yes openvpn
+          fi
+      - name: Verify deployed health and version through VPN
         env:
           EXPECTED_VERSION: ${{ github.sha }}
           WATCHDOG_HEALTH_URL: ${{ secrets.CLOUDFLARE_WATCHDOG_HEALTH_URL }}
-        run: python3 scripts/verify_cloudflare_health.py --url "$WATCHDOG_HEALTH_URL" --expected-version "$EXPECTED_VERSION"
+          VPN_CONFIG_DE: ${{ secrets.CLOUDFLARE_HEALTH_VPN_DE_CONFIG }}
+          VPN_CONFIG_NL: ${{ secrets.CLOUDFLARE_HEALTH_VPN_NL_CONFIG }}
+          VPN_CONFIG_CH: ${{ secrets.CLOUDFLARE_HEALTH_VPN_CH_CONFIG }}
+          VPN_AUTH: ${{ secrets.CLOUDFLARE_HEALTH_VPN_AUTH }}
+        run: sh scripts/verify_cloudflare_health_via_vpn.sh --url "$WATCHDOG_HEALTH_URL" --expected-version "$EXPECTED_VERSION"
