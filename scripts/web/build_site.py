@@ -81,12 +81,21 @@ _RESOURCE_LINK_RELATIONS = frozenset(
     }
 )
 _CSS_URL = re.compile(
-    r"url\s*\(\s*(?P<target>\"[^\"]*\"|'[^']*'|[^)]*)\s*\)",
+    r"url\s*\(\s*(?P<target>\"[^\"]*\"?|'[^']*'?|[^)]*)\s*(?:\)|$)",
     re.IGNORECASE,
 )
 _CSS_IMPORT = re.compile(
-    r"@import\s+(?P<target>\"[^\"]*\"|'[^']*'|[^;\s]+)",
+    r"@import\s+(?P<target>\"[^\"]*\"?|'[^']*'?|[^;\s]+)",
     re.IGNORECASE,
+)
+_CSS_COMMENT = re.compile(r"/\*.*?(?:\*/|$)", re.DOTALL)
+_CSS_ESCAPE = re.compile(
+    r"\\(?:"
+    r"(?P<hex>[0-9a-f]{1,6})(?:\r\n|[\t\n\f\r ])?"
+    r"|(?P<continuation>\r\n|[\n\f\r])"
+    r"|(?P<character>.)"
+    r")",
+    re.IGNORECASE | re.DOTALL,
 )
 _ASCII_C0_SPACE = "".join(chr(value) for value in range(0x21))
 _ASCII_WHITESPACE = "\t\n\f\r "
@@ -150,9 +159,10 @@ class _ExternalAssetParser(HTMLParser):
         "iframe": ("src",),
         "image": ("href", "xlink:href"),
         "img": ("src",),
+        "input": ("src",),
         "link": ("href",),
         "object": ("data",),
-        "script": ("src",),
+        "script": ("src", "href", "xlink:href"),
         "source": ("src",),
         "svg:feimage": ("href", "xlink:href"),
         "svg:image": ("href", "xlink:href"),
@@ -222,6 +232,11 @@ class _ExternalAssetParser(HTMLParser):
         if tag == "style" and self._style_buffers:
             self.urls.extend(external_css_asset_urls("".join(self._style_buffers.pop())))
 
+    def close(self) -> None:
+        super().close()
+        while self._style_buffers:
+            self.urls.extend(external_css_asset_urls("".join(self._style_buffers.pop())))
+
 
 def external_asset_urls(html: str) -> list[str]:
     """Return external browser-resource URLs referenced by generated HTML."""
@@ -234,18 +249,39 @@ def external_asset_urls(html: str) -> list[str]:
 
 def _css_target(raw: str) -> str:
     target = raw.strip()
-    if len(target) >= 2 and target[0] == target[-1] and target[0] in {'"', "'"}:
-        target = target[1:-1].strip()
+    if target[:1] in {'"', "'"}:
+        quote = target[0]
+        target = target[1:]
+        if target.endswith(quote):
+            target = target[:-1]
+        target = target.strip()
     return target
+
+
+def _decode_css_escape(match: re.Match[str]) -> str:
+    if match.group("continuation") is not None:
+        return ""
+    if match.group("hex") is None:
+        return match.group("character")
+    codepoint = int(match.group("hex"), 16)
+    if codepoint == 0 or codepoint > sys.maxunicode or 0xD800 <= codepoint <= 0xDFFF:
+        return "\N{REPLACEMENT CHARACTER}"
+    return chr(codepoint)
+
+
+def _normalized_css(css: str) -> str:
+    without_comments = _CSS_COMMENT.sub(" ", css)
+    return _CSS_ESCAPE.sub(_decode_css_escape, without_comments)
 
 
 def external_css_asset_urls(css: str) -> list[str]:
     """Return external browser-resource URLs referenced by generated CSS."""
 
+    normalized = _normalized_css(css)
     candidates = [
         (match.start(), _css_target(match.group("target")))
         for pattern in (_CSS_URL, _CSS_IMPORT)
-        for match in pattern.finditer(css)
+        for match in pattern.finditer(normalized)
     ]
     return [target for _, target in sorted(candidates) if _external_url(target)]
 

@@ -123,6 +123,36 @@ def test_external_css_asset_urls_allow_local_and_data_targets() -> None:
 
 
 @pytest.mark.parametrize(
+    "css",
+    (
+        r"body { background: u\72l(\68ttps://asset.example/escaped.png); }",
+        r"body { background: \000075\000072\00006c(\000068ttps://asset.example/six.png); }",
+        r"body { background: url(\68 ttps://asset.example/spaced.png); }",
+        r"body { background: url(https\:\/\/asset.example/characters.png); }",
+        "body { background: url(ht\\\ntps://asset.example/continued.png); }",
+        r"@\69mport '\68ttps://asset.example/escaped.css';",
+        "body { background: url(/* generated */ https://asset.example/comment.png); }",
+        'body { background: url("https://asset.example/unclosed.png); }',
+    ),
+)
+def test_external_css_asset_urls_decode_browser_syntax(css: str) -> None:
+    """Escapes, comments, and ambiguous remote targets cannot hide fetches."""
+
+    assert build_site_module.external_css_asset_urls(css)
+
+
+def test_external_css_asset_urls_allow_escaped_local_and_commented_data_targets() -> None:
+    """CSS normalization does not turn local or data targets into remote assets."""
+
+    css = r"""
+    .local { background: u\72l('../images/local.png'); }
+    .inline { background: url(/* generated */ data:image/svg+xml;base64,AAAA); }
+    """
+
+    assert build_site_module.external_css_asset_urls(css) == []
+
+
+@pytest.mark.parametrize(
     "html",
     (
         '<script src="\x01 h\tttps://asset.example/app.js"></script>',
@@ -140,8 +170,12 @@ def test_external_css_asset_urls_allow_local_and_data_targets() -> None:
         '<svg><image href="https://asset.example/image.svg"></image></svg>',
         '<svg><use xlink:href="//asset.example/icons.svg#x"></use></svg>',
         '<svg><feImage href="https://asset.example/filter.svg"></feImage></svg>',
+        '<svg><script href="https://asset.example/app.js"></script></svg>',
+        '<svg><script xlink:href="//asset.example/app.js"></script></svg>',
+        '<input type="image" src="https://asset.example/button.png">',
         '<div style="background: url(https://asset.example/inline.png)"></div>',
         "<style>body { background: url(//asset.example/block.png); }</style>",
+        "<style>body { background: url(https://asset.example/unclosed.png); }",
         "<iframe srcdoc=\"&lt;img src='https://asset.example/nested.png'>\"></iframe>",
     ),
 )
@@ -163,6 +197,8 @@ def test_external_asset_urls_allow_navigation_and_local_resources() -> None:
     <video src="data:video/mp4;base64,AAAA" poster="/poster.png"></video>
     <object data="#local-object"></object>
     <svg><use href="#local-icon"></use></svg>
+    <svg><script href="/local-script.js"></script></svg>
+    <input type="image" src="data:image/png;base64,AAAA">
     <div style="background: url(data:image/png;base64,AAAA)"></div>
     <style>body { background: url('/local.png'); }</style>
     <iframe srcdoc="&lt;a href='https://content.example/nested'>allowed&lt;/a>"></iframe>
@@ -1340,6 +1376,23 @@ def test_external_font_config_fails_before_runner_and_preserves_old_site(
         ("base.html", '<base href=" //asset.example/root/">'),
         ("media.html", '<video poster="https://asset.example/poster.png"></video>'),
         ("object.html", '<object data="HTTP://asset.example/object.bin"></object>'),
+        (
+            "svg-script.html",
+            '<svg><script xlink:href="https://asset.example/app.js"></script></svg>',
+        ),
+        ("input.html", '<input type="image" src="//asset.example/button.png">'),
+        (
+            "unclosed-style.html",
+            "<style>body { background: url(https://asset.example/unclosed.png); }",
+        ),
+        (
+            "assets/escaped.css",
+            r"body { background: u\72l(\68ttps://asset.example/escaped.png); }",
+        ),
+        (
+            "assets/comment.css",
+            "body { background: url(/* generated */ https://asset.example/comment.png); }",
+        ),
     ),
 )
 def test_external_generated_resource_preserves_old_site(
