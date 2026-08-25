@@ -44,6 +44,12 @@ from scripts.web.build_docs import (
     load_publication_config,
     snapshot_sources,
 )
+from scripts.web.build_navigation import (
+    NavigationError,
+    runtime_navigation_config,
+    validate_navigation,
+)
+from scripts.web.content_index import build_content_index
 
 
 class SiteBuildError(RuntimeError):
@@ -63,6 +69,8 @@ _FD_DIRECTORY_PATH = re.compile(r"^(?:/proc/self/fd|/dev/fd)/(0|[1-9][0-9]*)$")
 _STATIC_MKDOCS_KEYS = {
     "extra_css",
     "markdown_extensions",
+    "nav",
+    "not_in_nav",
     "plugins",
     "site_name",
     "theme",
@@ -455,7 +463,7 @@ def _contains_external_url(value: object) -> bool:
     return False
 
 
-def _validate_static_mkdocs_config(parsed: dict[object, object]) -> None:
+def _validate_static_mkdocs_config(parsed: dict[object, object], *, repo_root: Path) -> None:
     theme = parsed.get("theme")
     if isinstance(theme, Mapping):
         asset_fields = (
@@ -507,10 +515,16 @@ def _validate_static_mkdocs_config(parsed: dict[object, object]) -> None:
         "admonition",
         "pymdownx.details",
         "pymdownx.superfences",
+        "attr_list",
+        "md_in_html",
     ]:
         raise SiteBuildError("mkdocs Markdown extensions are unsupported")
     if parsed.get("extra_css") != ["assets/stylesheets/extra.css"]:
         raise SiteBuildError("mkdocs extra_css must contain only the local stylesheet")
+    try:
+        validate_navigation(parsed, build_content_index(repo_root / "content"))
+    except NavigationError as exc:
+        raise SiteBuildError(str(exc)) from exc
 
 
 def _regular_site_hashes(stage: Path) -> Mapping[str, str]:
@@ -542,10 +556,14 @@ def _require_regular_file(path: Path) -> None:
         raise SiteBuildError(f"required site output is not a regular file: {path}")
 
 
-def _validate_site_tree(stage: Path) -> Mapping[str, str]:
-    _require_regular_file(stage / "index.html")
+def _validate_site_tree(stage: Path, *, partial: bool) -> Mapping[str, str]:
+    if not partial:
+        _require_regular_file(stage / "index.html")
     _require_regular_file(stage / "404.html")
-    return _regular_site_hashes(stage)
+    hashes = _regular_site_hashes(stage)
+    if partial and not any(path != "404.html" and path.endswith(".html") for path in hashes):
+        raise SiteBuildError("partial site output contains no selected HTML page")
+    return hashes
 
 
 def write_temp_mkdocs_config(
@@ -556,6 +574,7 @@ def write_temp_mkdocs_config(
     site_dir: Path,
     site_url: str | None,
     source_date_epoch: int,
+    partial: bool,
 ) -> Path:
     """Write one MkDocs config through a held FD-backed config directory."""
 
@@ -567,7 +586,8 @@ def write_temp_mkdocs_config(
         parsed = yaml.safe_load(source.read_text(encoding="utf-8"))
         if not isinstance(parsed, dict):
             raise SiteBuildError("mkdocs configuration must be a mapping")
-        _validate_static_mkdocs_config(parsed)
+        _validate_static_mkdocs_config(parsed, repo_root=repo_root)
+        parsed = runtime_navigation_config(parsed, partial=partial)
         if not docs_dir.is_absolute() or not site_dir.is_absolute():
             raise SiteBuildError("mkdocs docs_dir and site_dir must be absolute directories")
         absolute_docs = (
@@ -676,6 +696,7 @@ def _run_site_build(
     site_dir: Path,
     site_url: str | None,
     epoch: int,
+    partial: bool,
 ) -> Mapping[str, str]:
     try:
         publication = load_publication_config(repo_root)
@@ -690,6 +711,7 @@ def _run_site_build(
                     site_dir=site_dir,
                     site_url=site_url,
                     source_date_epoch=epoch,
+                    partial=partial,
                 )
                 descriptors = tuple(
                     sorted(
@@ -715,7 +737,7 @@ def _run_site_build(
                     != 0
                 ):
                     raise SiteBuildError("MkDocs strict build failed")
-                result = _validate_site_tree(site_dir)
+                result = _validate_site_tree(site_dir, partial=partial)
             except BaseException as primary:
                 if config_path is not None:
                     try:
@@ -813,6 +835,7 @@ def build_site(
                         site_dir=site_stage,
                         site_url=validated_url,
                         epoch=epoch,
+                        partial=bool(selected),
                     )
                     if snapshot_sources(root) != before:
                         raise SiteBuildError("source-hash drift during site build")
@@ -832,6 +855,7 @@ def build_site(
                     site_dir=site_stage,
                     site_url=validated_url,
                     epoch=epoch,
+                    partial=False,
                 )
                 if snapshot_sources(root) != before:
                     raise SiteBuildError("source-hash drift during site build")

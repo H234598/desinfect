@@ -280,8 +280,8 @@ def test_build_docs_publishes_transformed_copy_and_preserves_sources(repo: Path)
     result = build_docs(repo, force=False)
     rendered = (repo / "build/docs/index.md").read_text(encoding="utf-8")
 
-    assert "[Handdesinfektion](Handdesinfektion.md)" in rendered
-    assert "[[Handdesinfektion]]" not in rendered
+    assert "[Händedesinfektion](Handdesinfektion.md){ .landing-card }" in rendered
+    assert "[[" not in rendered
     assert result.published is True
     assert snapshot_sources(repo) == before
     assert (repo / "build/docs/.desinfect-generated").is_file()
@@ -1049,6 +1049,7 @@ def test_fd_site_stage_survives_ancestor_swap(
             site_dir=fd_stage,
             site_url=None,
             epoch=0,
+            partial=False,
         )
 
         assert "index.html" in hashes
@@ -1147,6 +1148,7 @@ def test_site_build_cleanup_error_does_not_replace_runner_error(
             site_dir=repo / "site-stage",
             site_url=None,
             epoch=0,
+            partial=False,
         )
 
     assert any("unlink boom" in note for note in raised.value.__notes__)
@@ -1335,6 +1337,7 @@ def test_temp_mkdocs_config_is_reproducible_for_equivalent_key_order(repo: Path)
             site_dir=site_dir,
             site_url="https://h234598.github.io/desinfect/",
             source_date_epoch=1700000000,
+            partial=False,
         )
         try:
             first = first_path.read_bytes()
@@ -1358,6 +1361,7 @@ def test_temp_mkdocs_config_is_reproducible_for_equivalent_key_order(repo: Path)
             site_dir=site_dir,
             site_url="https://h234598.github.io/desinfect/",
             source_date_epoch=1700000000,
+            partial=False,
         )
         try:
             second = second_path.read_bytes()

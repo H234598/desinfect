@@ -32,7 +32,7 @@ def _write_page(
     return target
 
 
-def test_repository_has_five_minimal_pages_without_taxonomy_role() -> None:
+def test_repository_has_reader_and_hidden_maintenance_pages_without_taxonomy_role() -> None:
     root = Path(__file__).resolve().parents[2] / "content"
     index = build_content_index(root)
     assert {page.relative_path.as_posix() for page in index.pages} == {
@@ -41,6 +41,21 @@ def test_repository_has_five_minimal_pages_without_taxonomy_role() -> None:
         "Flaechendesinfektion.md",
         "Kategorien.md",
         "WARTUNG.md",
+        "Anleitungen/index.md",
+        "Bulletins/index.md",
+        "Methodik/Wirksamkeit.md",
+        "Methodik/Bewertung.md",
+        "Methodik/Sicherheit.md",
+        "Tabelle.md",
+        "Wartung/Architektur.md",
+        "Wartung/Datenmodell.md",
+        "Wartung/Automatisierung.md",
+        "Wartung/Wachhunde.md",
+        "Wartung/Speicher.md",
+        "Wartung/Archivierung-und-Konvertierung.md",
+        "Wartung/Reconciliation.md",
+        "Wartung/Wiederherstellung.md",
+        "Wartung/Sicherheit-und-Betrieb.md",
     }
     assert index.page_for_path("Kategorien.md").role == "method"
     assert not any(page.role in {"taxonomy", "category"} for page in index.pages)

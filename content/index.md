@@ -9,8 +9,14 @@ aliases:
 
 Quellennahe Dokumentation zu Desinfektion und RKI-Publikationen.
 
-- [[Handdesinfektion]]
-- [[Flaechendesinfektion]]
-- [[Kategorien|Status der Kategorien]]
+[🛠️](WARTUNG.md "Wartung, Projekt und Automatisierung"){ .maintenance-tool aria-label="Wartung, Projekt und Automatisierung" }
 
-Interne Pflegehinweise: [[WARTUNG]].
+<div class="landing-cards" markdown="1">
+
+[Händedesinfektion](Handdesinfektion.md){ .landing-card }
+
+[Flächendesinfektion](Flaechendesinfektion.md){ .landing-card }
+
+[Kategorien](Kategorien.md){ .landing-card }
+
+</div>
