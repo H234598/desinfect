@@ -41,7 +41,7 @@ PATCH_FIELDS = (
     "enabled",
     "ref",
 )
-ZONE_RULE_KEYS = {*PATCH_FIELDS, "id", "version", "last_updated", "categories"}
+ZONE_RULE_KEYS = {*PATCH_FIELDS, "id", "version", "last_updated"}
 
 
 class RoutingAuditError(RuntimeError):
@@ -235,11 +235,6 @@ def _zone_rule(value: object) -> dict[str, object]:
         raise RoutingAuditError("unexpected zone redirect rule")
     if not isinstance(next(iter(target.values())), str) or not next(iter(target.values())):
         raise RoutingAuditError("unexpected zone redirect rule")
-    if "categories" in value and (
-        not isinstance(value["categories"], list)
-        or not all(isinstance(category, str) for category in value["categories"])
-    ):
-        raise RoutingAuditError("unexpected zone redirect rule")
     return value
 
 
@@ -272,6 +267,7 @@ def select_zone_redirect_rule(ruleset: object) -> dict[str, object]:
         if rule["enabled"] is True
         and rule["action_parameters"]["from_value"]["target_url"]  # type: ignore[index]
         == {"value": TARGET_FRAGMENT}
+        and rule["action_parameters"]["from_value"].get("status_code") == 301  # type: ignore[index]
     ]
     if len(matches) != 1:
         raise RoutingAuditError("expected exactly one active zone single redirect match")
@@ -559,17 +555,29 @@ def _verify_update(
         raise RoutingAuditError(failure)
 
 
+def _has_exact_active_candidate_finding(
+    report: AuditReport,
+    candidate: dict[str, object],
+) -> bool:
+    active = [finding for finding in report.findings if finding.active]
+    return (
+        len(active) == 1
+        and active[0].kind == "zone_single_redirect"
+        and active[0].object_id == candidate["id"]
+    )
+
+
 def apply_verified_exception(
     client: CloudflareClient,
     report: AuditReport,
     rule: dict[str, object],
 ) -> bool:
-    if any(finding.kind != "zone_single_redirect" for finding in report.findings):
-        raise RoutingAuditError("non-zone redirect audit match blocks apply")
     if report.zone_ruleset is None:
         raise RoutingAuditError("expected exactly one active zone single redirect match")
     audited = _zone_ruleset(report.zone_ruleset)
     audited_rule = select_zone_redirect_rule(audited)
+    if not _has_exact_active_candidate_finding(report, audited_rule):
+        raise RoutingAuditError("expected exactly one active candidate finding")
     if rule["id"] != audited_rule["id"] or _rule_semantics(rule) != _rule_semantics(audited_rule):
         raise RoutingAuditError("audited zone redirect preimage changed")
     payload = build_patch_payload(rule)
@@ -632,7 +640,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.apply:
             changed = apply_verified_exception(client, report, rule)
             print("apply_result=updated" if changed else "apply_result=unchanged_already_wrapped")
-        elif any(finding.kind != "zone_single_redirect" for finding in report.findings):
+        elif not _has_exact_active_candidate_finding(report, rule):
             print("audit_result=blocked_by_non_zone_redirect")
         else:
             print("audit_result=ready_for_explicit_apply")

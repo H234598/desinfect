@@ -37,6 +37,7 @@ def single_redirect_rule(
     expression: str = 'http.host contains "telacore.org"',
     target: str = "awsas.de/403-page.html",
     enabled: bool = True,
+    status_code: int = 301,
 ) -> dict[str, object]:
     return {
         "id": rule_id,
@@ -44,7 +45,7 @@ def single_redirect_rule(
         "action": "redirect",
         "action_parameters": {
             "from_value": {
-                "status_code": 301,
+                "status_code": status_code,
                 "target_url": {"value": target},
                 "preserve_query_string": False,
             }
@@ -141,11 +142,26 @@ def test_zone_redirect_selection_rejects_non_exact_target(
         routing.select_zone_redirect_rule(zone_ruleset([rule]))
 
 
-def test_zone_redirect_selection_rejects_unknown_semantic_key() -> None:
+@pytest.mark.parametrize(
+    ("key", "value"),
+    (("unknown_semantics", {"unsafe": True}), ("categories", ["redirect"])),
+    ids=("unknown", "categories"),
+)
+def test_zone_redirect_selection_rejects_unpatchable_semantic_key(
+    key: str,
+    value: object,
+) -> None:
     rule = single_redirect_rule()
-    rule["unknown_semantics"] = {"unsafe": True}
+    rule[key] = value
 
     with pytest.raises(routing.RoutingAuditError, match="unexpected zone redirect rule"):
+        routing.select_zone_redirect_rule(zone_ruleset([rule]))
+
+
+def test_zone_redirect_selection_rejects_non_301_redirect() -> None:
+    rule = single_redirect_rule(status_code=302)
+
+    with pytest.raises(routing.RoutingAuditError, match="exactly one active zone single redirect"):
         routing.select_zone_redirect_rule(zone_ruleset([rule]))
 
 
@@ -439,6 +455,9 @@ def test_apply_reloads_preimage_then_dry_runs_and_repeats_identical_patch() -> N
             routing.AuditFinding(
                 "zone_single_redirect", ZONE_RULE_ID, True, ("awsas.de", "telacore")
             ),
+            routing.AuditFinding(
+                "zone_single_redirect", "9" * 32, False, ("telacore",)
+            ),
         ),
     )
 
@@ -466,7 +485,16 @@ def test_apply_rejects_non_null_dry_run_result_before_real_patch() -> None:
     unexpected = deepcopy(original)
     unexpected["rules"][0]["expression"] = payload["expression"]  # type: ignore[index]
     opener = SequentialOpener([envelope(original), envelope(unexpected)])
-    report = routing.AuditReport(ACCOUNT_ID, ZONE_ID, original, ())
+    report = routing.AuditReport(
+        ACCOUNT_ID,
+        ZONE_ID,
+        original,
+        (
+            routing.AuditFinding(
+                "zone_single_redirect", ZONE_RULE_ID, True, ("awsas.de", "telacore")
+            ),
+        ),
+    )
 
     with pytest.raises(routing.RoutingAuditError, match="dry-run.*unexpected result"):
         routing.apply_verified_exception(
@@ -484,7 +512,16 @@ def test_apply_rejects_changed_preimage_before_any_patch() -> None:
     changed = deepcopy(original)
     changed["rules"][0]["expression"] = 'http.host eq "changed.telacore.org"'  # type: ignore[index]
     opener = SequentialOpener([envelope(changed)])
-    report = routing.AuditReport(ACCOUNT_ID, ZONE_ID, original, ())
+    report = routing.AuditReport(
+        ACCOUNT_ID,
+        ZONE_ID,
+        original,
+        (
+            routing.AuditFinding(
+                "zone_single_redirect", ZONE_RULE_ID, True, ("awsas.de", "telacore")
+            ),
+        ),
+    )
 
     with pytest.raises(routing.RoutingAuditError, match="preimage changed"):
         routing.apply_verified_exception(
@@ -497,17 +534,28 @@ def test_apply_rejects_changed_preimage_before_any_patch() -> None:
     assert opener.requests[0].get_method() == "GET"  # type: ignore[attr-defined]
 
 
-@pytest.mark.parametrize("kind", ("account_bulk_redirect_item", "legacy_page_rule"))
-def test_apply_rejects_every_relevant_bulk_or_page_rule_finding(kind: str) -> None:
+@pytest.mark.parametrize(
+    "findings",
+    (
+        (routing.AuditFinding("account_bulk_redirect_item", "8" * 32, True, ("telacore",)),),
+        (routing.AuditFinding("legacy_page_rule", "8" * 32, True, ("telacore",)),),
+        (
+            routing.AuditFinding(
+                "zone_single_redirect", ZONE_RULE_ID, True, ("awsas.de", "telacore")
+            ),
+            routing.AuditFinding("zone_single_redirect", "8" * 32, True, ("telacore",)),
+        ),
+        (routing.AuditFinding("zone_single_redirect", "8" * 32, True, ("telacore",)),),
+    ),
+    ids=("bulk", "page-rule", "second-active-zone", "wrong-candidate-id"),
+)
+def test_apply_requires_exactly_one_active_candidate_finding(
+    findings: tuple[routing.AuditFinding, ...],
+) -> None:
     original = zone_ruleset([single_redirect_rule()])
-    report = routing.AuditReport(
-        ACCOUNT_ID,
-        ZONE_ID,
-        original,
-        (routing.AuditFinding(kind, "8" * 32, True, ("telacore",)),),
-    )
+    report = routing.AuditReport(ACCOUNT_ID, ZONE_ID, original, findings)
 
-    with pytest.raises(routing.RoutingAuditError, match="non-zone redirect audit match"):
+    with pytest.raises(routing.RoutingAuditError, match="exactly one active candidate finding"):
         routing.apply_verified_exception(
             routing.CloudflareClient("secret", opener=lambda *_args, **_kwargs: pytest.fail()),
             report,
