@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Validate implementation status, ordering, and evidence requirements."""
+
 from __future__ import annotations
 
 import json
@@ -36,8 +37,10 @@ def validate_completion_evidence(item: dict[str, Any], known_requirements: set[s
         raise ValueError(f"{item['id']}: gültiger Merge-SHA fehlt")
     for field in ("ci_runs", "tests", "requirement_ids"):
         values = evidence.get(field)
-        if not isinstance(values, list) or not values or not all(
-            isinstance(value, str) and value.strip() for value in values
+        if (
+            not isinstance(values, list)
+            or not values
+            or not all(isinstance(value, str) and value.strip() for value in values)
         ):
             raise ValueError(f"{item['id']}: {field} muss eine nichtleere Stringliste sein")
     requirement_ids = evidence["requirement_ids"]
@@ -55,6 +58,20 @@ def validate_completion_evidence(item: dict[str, Any], known_requirements: set[s
             raise ValueError(f"{item['id']}: {field} fehlt")
 
 
+def validate_steering_progress(steering: str, items: list[dict[str, Any]]) -> None:
+    """Require ordered steering checkboxes to mirror implemented machine states."""
+
+    plan_items = re.findall(r"^- \[([ xX])\] \*\*(P[0-9]{2}\.[0-9]+)\*\*", steering, re.M)
+    status_ids = [item["id"] for item in items]
+    if [item_id for _mark, item_id in plan_items] != status_ids:
+        raise ValueError("Steuerungsplan und Statusregister sind nicht identisch/geordnet")
+    checked = {item_id for mark, item_id in plan_items if mark.casefold() == "x"}
+    implemented = {item["id"] for item in items if item["status"] == "umgesetzt"}
+    if checked != implemented:
+        drift = sorted(checked ^ implemented)
+        raise ValueError(f"Steuerungsplan-Checkboxen sind nicht synchron: {drift}")
+
+
 def validate() -> None:
     """Validate work-package order, status transitions, and completion evidence."""
     data = load("docs/implementation-status.json")
@@ -62,10 +79,7 @@ def validate() -> None:
     if len(items) != 60 or len({item["id"] for item in items}) != 60:
         raise ValueError("Es müssen 60 eindeutige Arbeitspakete vorliegen")
     steering = (ROOT / "docs/IMPLEMENTIERUNGSPLAN-STEUERUNG.md").read_text(encoding="utf-8")
-    plan_ids = re.findall(r"^- \[[ xX]\] \*\*(P[0-9]{2}\.[0-9]+)\*\*", steering, re.M)
-    status_ids = [item["id"] for item in items]
-    if plan_ids != status_ids:
-        raise ValueError("Steuerungsplan und Statusregister sind nicht identisch/geordnet")
+    validate_steering_progress(steering, items)
 
     counts = Counter(item["status"] for item in items)
     if any(status not in VALID for status in counts):
@@ -103,7 +117,9 @@ def validate() -> None:
     if active_pr is not None:
         number = active_pr.get("number")
         if not is_positive_int(number) or f"**PR: #{number}**" not in status_md:
-            raise ValueError("Aktiver PR ist zwischen Maschinenstatus und Statusseite nicht synchron")
+            raise ValueError(
+                "Aktiver PR ist zwischen Maschinenstatus und Statusseite nicht synchron"
+            )
 
 
 if __name__ == "__main__":

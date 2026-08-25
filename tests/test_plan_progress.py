@@ -1,4 +1,5 @@
 """Tests for work-package progress and evidence rules."""
+
 from __future__ import annotations
 
 import json
@@ -6,6 +7,7 @@ import re
 import unittest
 from pathlib import Path
 
+import scripts.validate_plan_progress as plan_progress_module
 from scripts.validate_plan_progress import (
     is_positive_int,
     validate,
@@ -22,6 +24,23 @@ class PlanProgressTests(unittest.TestCase):
     def test_plan_progress_is_traceable(self) -> None:
         """Run the complete progress validator."""
         validate()
+
+    def test_steering_checkboxes_match_machine_status(self) -> None:
+        """Require every steering checkbox to mirror its machine status."""
+
+        data = json.loads((ROOT / "docs/implementation-status.json").read_text(encoding="utf-8"))
+        steering = (ROOT / "docs/IMPLEMENTIERUNGSPLAN-STEUERUNG.md").read_text(encoding="utf-8")
+
+        plan_progress_module.validate_steering_progress(steering, data["work_packages"])
+
+    def test_steering_progress_rejects_checkbox_drift(self) -> None:
+        """Reject a checked state that disagrees with machine completion."""
+
+        with self.assertRaisesRegex(ValueError, "Checkboxen sind nicht synchron"):
+            plan_progress_module.validate_steering_progress(
+                "- [ ] **P10.3** Informationsarchitektur\n",
+                [{"id": "P10.3", "status": "umgesetzt"}],
+            )
 
     def test_positive_pr_numbers_exclude_booleans_and_nonpositive_values(self) -> None:
         """Match JSON Schema integer/minimum semantics in the Python validator."""
@@ -49,9 +68,7 @@ class PlanProgressTests(unittest.TestCase):
 
     def test_p00_review_or_completion_has_matching_evidence(self) -> None:
         """Accept only a review state or a fully evidenced completion state."""
-        data = json.loads(
-            (ROOT / "docs/implementation-status.json").read_text(encoding="utf-8")
-        )
+        data = json.loads((ROOT / "docs/implementation-status.json").read_text(encoding="utf-8"))
         p00 = [item for item in data["work_packages"] if item["id"].startswith("P00.")]
         self.assertEqual(len(p00), 3)
         for item in p00:
