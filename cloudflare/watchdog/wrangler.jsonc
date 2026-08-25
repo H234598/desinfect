@@ -4,6 +4,13 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-04",
   "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "routes": [
+    {
+      "pattern": "production.workers.desinfect.telacore.org",
+      "custom_domain": true
+    }
+  ],
   "vars": {
     "GITHUB_OWNER": "H234598",
     "GITHUB_REPO": "desinfect",
@@ -37,6 +44,13 @@
   "env": {
     "staging": {
       "name": "desinfect-watchdog-staging",
+      "workers_dev": false,
+      "routes": [
+        {
+          "pattern": "staging.workers.desinfect.telacore.org",
+          "custom_domain": true
+        }
+      ],
       "vars": {
         "GITHUB_OWNER": "H234598",
         "GITHUB_REPO": "desinfect",

@@ -4,15 +4,18 @@
 
 Pull Requests und `main`-Pushes führen ausschließlich Tests, Typechecks und `wrangler deploy --dry-run` aus. Veröffentlichung ist nur per `workflow_dispatch` auf `main` möglich. Beide Deploy-Jobs verwenden geschützte GitHub-Environments; Repository-Secrets reichen nicht.
 
+Production ist ausschließlich unter `https://production.workers.desinfect.telacore.org` erreichbar, Staging getrennt unter `https://staging.workers.desinfect.telacore.org`. `workers.dev` ist für beide Umgebungen deaktiviert; `wrangler.jsonc` ist die einzige Quelle dieses Routingvertrags.
+
 GitHub-Gesamtausfall bleibt ein Retry-/Alarmfall. Worker und Durable Object ersetzen weder Repositorydaten noch Dispatcher. Öffentliche Requests sind bis auf `GET /healthz` immer `404`; Schreibendpunkte existieren nicht.
 
 ## Einmalige Einrichtung
 
 1. Cloudflare-Worker-API-Token auf Account und Worker-Scripts begrenzen.
-2. GitHub-Environment `cloudflare-watchdog-staging` anlegen, Required Reviewer aktivieren und `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_WATCHDOG_HEALTH_URL` setzen.
-3. GitHub-Environment `cloudflare-watchdog-production` separat mit Required Reviewer und eigenen drei Secrets anlegen.
+2. GitHub-Environment `cloudflare-watchdog-staging` anlegen, Required Reviewer aktivieren und `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_WATCHDOG_HEALTH_URL=https://staging.workers.desinfect.telacore.org/healthz` setzen.
+3. GitHub-Environment `cloudflare-watchdog-production` separat mit Required Reviewer und eigenen drei Secrets anlegen; `CLOUDFLARE_WATCHDOG_HEALTH_URL` ist dort exakt `https://production.workers.desinfect.telacore.org/healthz`.
 4. GitHub-App-Bindings `GITHUB_APP_ID`, `GITHUB_INSTALLATION_ID` und `GITHUB_APP_PRIVATE_KEY` gemäß `runbooks/CLOUDFLARE-GITHUB-AUTH.md` als Cloudflare-Secrets pro Worker einrichten. Werte nie in Workflow, Shellargument, Log oder Datei schreiben.
-5. Durable-Object-Bindung `WATCHDOG_COORDINATOR` prüfen. Staging verwendet `desinfect-watchdog-staging` ohne Cron; Production verwendet `desinfect-watchdog` mit `0 2 * * *` UTC.
+5. Beide Custom Domains in der Cloudflare-Zone `desinfect.telacore.org` prüfen. Wrangler verwaltet sie mit `custom_domain=true`; keine zusätzliche Worker-Route oder `workers.dev`-Adresse freigeben.
+6. Durable-Object-Bindung `WATCHDOG_COORDINATOR` prüfen. Staging verwendet `desinfect-watchdog-staging` ohne Cron; Production verwendet `desinfect-watchdog` mit `0 2 * * *` UTC.
 
 ## Rollout
 
