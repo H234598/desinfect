@@ -64,3 +64,38 @@ Das vorhandene `.part`-/`os.replace`-Muster aus `H234598/desinfect@fbcc6e850fec1
 - Katalogformat, strikter Loader, Rechte-/Storage-Autorisierung und atomare Publikation verwenden Eigenimplementierungen auf Python-Standardbibliothek und bestehenden Repositoryprimitiven.
 
 Die gesperrten Entscheidungen bleiben unabhängig von diesen Arbeiten unverändert: **ADR-003=A** und **ADR-014=B**.
+
+## P10.1 – Contentmodell, Wikilinks und Callouts
+
+Das read-only Contentmodell, der Contentindex sowie Wikilink- und
+Calloutkonvertierung wurden gehärtet aus
+`H234598/Cheatsheets@7db8f713aca07e67b481f9fbcb00553f6a555495`
+abgeleitet. Maßgeblich sind folgende eingefrorenen Blobs:
+
+- `scripts/web/content_model.py`: `7d9bd4f89046d48e2802e8c72968feb3c0aa50ce`
+- `scripts/web/content_index.py`: `4413a4c824b949c7e88a4600cfb539c6a4445178`
+- `scripts/web/link_types.py`: `9e9becf1ef4b75a39e5ae967f985343fc3d2d4c0`
+- `scripts/web/link_resolution.py`: `0de8d1c50d6cfbe79d3e3f7a4fda080afd55aca3`
+- `scripts/web/link_converters.py`: `a56e1aaa6516a238d216606e42f16017a22ae1eb`
+- `scripts/web/callouts.py`: `4c5400eea2a1a1513f787e6017c73a74007ba553`
+
+Die Übernahme wurde nicht blind kopiert. Repositoryspezifisch hinzugekommen
+sind pfadbasierte IDs im Namespace `desinfect-page-v1`, die exakt freigegebene
+Rollentaxonomie, portable Pfad-/ID-/URL-/Titel-/Aliaskollisionen, LFS- und
+Symlinkgrenzen sowie der gehärtete SafeLoader-Vertrag mit Duplicate-Key-,
+Alias-, Rekursions-, Tiefen- und Knotenprüfung. Scanner und Konverter wurden um
+CommonMark-Fence-Regeln, mehrzeilige Code-Spans, HTML-Kommentare,
+eingerückten Code, fail-closed Linkauflösung, sichere Assetregeln, relative und
+URL-kodierte Ausgaben sowie HTML-/Markdown-Escaping ergänzt.
+
+Die ID-Eingabe ist die UTF-8-Codierung aus `desinfect-page-v1`, einem NUL-Byte
+und dem kanonischen POSIX-Pfad. Die Ausgabe besteht aus `p_` und den ersten 16
+Zeichen des kleingeschriebenen SHA-256-Hexdigest; es werden nicht 16
+SHA-256-Digestbytes verwendet.
+
+Die fünf minimalen Contentseiten und die Projekttypen `rights`, `historical`
+und `safety` sind Eigenentwicklungen für P10.1. Separate Tests decken
+Contentmodell, Index, Linkscanner/-auflösung/-konvertierung, Callouts,
+Quellreinheit und die dokumentierten Trust Boundaries ab. P10.1 übernimmt
+keinen MkDocs-Build, keine Navigation, keine Tabellen und keine Downloads aus
+späteren Planpunkten.
