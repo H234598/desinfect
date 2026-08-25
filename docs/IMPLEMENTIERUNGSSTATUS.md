@@ -7,7 +7,7 @@
 
 | Gesamt | Offen | In Arbeit | Im Review | Umgesetzt | Blockiert |
 |---:|---:|---:|---:|---:|---:|
-| 60 | 25 | 0 | 0 | 34 | 1 |
+| 60 | 24 | 0 | 0 | 35 | 1 |
 
 ## Abgeschlossene Phasen
 
@@ -27,6 +27,7 @@
 | P09.3 | #33 | `accec2b4e5cbb92970b4157641fce69c7bcb10c5` | Actions `32781301922`, Nach-Merge `32781564903`, CodeRabbit approved, qlty, 2 Reviewthreads |
 | P10.1 | #37 | `f1e8c1bc72ec80648855a39f9b5c304bc909ff7a` | Actions `32799650475`, `32799650531`; Nach-Merge `32800771394`, `32800771392`; CodeRabbit approved, qlty, 4 Reviewthreads |
 | P10.2 | #42 | `996e8973e5720ac6f5b93b13c2e15d6f5c47bec1` | Actions `32838827613`, Cloudflare-Validierung `32838827676`; Nach-Merge `32839553105`, `32839553069`; CodeRabbit approved, qlty |
+| P10.3 | #45, #46, #49–#51 | `79a5e91967af9af89167c3c085acd362ad455aaf` | Nach-Merge `32901411769`, `32901411756`; CodeRabbit current-head success, qlty status success, 0 offene Reviewthreads |
 
 ## Abgeschlossene Phase P06
 
@@ -109,9 +110,25 @@
 - Abgenommen am: `2026-08-25T10:54:11Z`
 - Abgenommen durch: `H234598`
 
+## Abnahme P10.3
+
+- PR #45 lieferte Navigation und Grundstruktur: Head `40c9008ccba160ecfcfeaf3b167c3b0128d532ac`, Merge `ad0d1b2a070c3fb3e24eab19c11983b45b2914fd`
+- PR #46 lieferte fail-closed Tabellendaten und vollständiges serverseitiges No-JS-Rendering: Head `962479fc73078ad4fd53a3bb4abb97f9b779b0b7`, Merge `0ec2e42b039d69c239b6def4dd82b8c5b1f03ba6`
+- PR #49 lieferte progressive Sortier- und Filterverbesserung ohne neue Datenquelle: Head `322f5d2d46e6a7f349cc70bfbede8d93ffd3e88d`, Merge `7340ccc93e5799b82655b3ca2291aab21e82c9bc`
+- PR #50 lieferte responsive UX, Accessibility-Verträge und Betriebsdokumentation: Head `5873fef19146f7e391021190c15ba69b8648e2b2`, Merge `8f32222ce99cdde880f46521ca1c73bf53165933`
+- PR #51 korrigierte die in Task 5 entdeckte Partial-Preview-Projektion fail-closed: Head `7074ba719ab56a0ec522e8ee64bbc2446a19946e`, Merge `79a5e91967af9af89167c3c085acd362ad455aaf`
+- PR-Checks #51: Baseline `32900391676`, Cloudflare-Validierung `32900391762`, CodeRabbit current-head success, qlty status success und 0 ungelöste aktuelle Reviewthreads
+- Nach-Merge-Checks: Baseline `32901411769` und Cloudflare-Validierung `32901411756` erfolgreich; Deploy-Jobs waren nicht Bestandteil dieser Abnahme
+- Lokale Merge-SHA-Verifikation: 1833 Pytest-, 9 Unittest-, 12 Node- und 37 Worker-Tests erfolgreich; npm audit ohne Vulnerabilities; Typecheck, Wrangler-Staging-Dry-Run, vollständiger Strict-Build und Teilpreviews für `index.md` und `Tabelle.md` erfolgreich
+- Zwei unabhängige Abschlussreviews: 0 Critical, 0 Important, 0 Minor; Ready to merge: yes
+- Qlty-Grenze: Status erfolgreich, aber keine Behauptung „0 Findings“. Cloud-Originalreport zu PR #50 war login-only; lokale Rekonstruktion ergab 24 Gesamt- und 4 neue test-only Style-/Refactor-Findings. PR #51 zeigte trotz erfolgreichem Status den projektweiten Linktext „44 blocking issues“.
+- Keine echte Browser-, Axe- oder 390px-Abnahme durchgeführt; diese bleibt ausdrücklich P11.4
+- Abgenommen am: `2026-08-25T21:36:54Z`
+- Abgenommen durch: `H234598`
+
 ## Nächster Schritt
 
-P10.3 ist nächster interner Schritt. P09.4 bleibt bis zur Staging-Freigabe, nachfolgenden Production-Freigabe und produktiven Runtimeabnahme `blockiert`.
+P10.4 ist nächster interner Schritt. P11.4 bleibt für echte Browser-, Axe- und 390px-Smokes `offen`. P09.4 bleibt bis zur Staging-Freigabe, nachfolgenden Production-Freigabe und produktiven Runtimeabnahme `blockiert`.
 
 ## Gesperrte Architekturentscheidungen
 
