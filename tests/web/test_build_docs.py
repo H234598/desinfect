@@ -280,8 +280,8 @@ def test_build_docs_publishes_transformed_copy_and_preserves_sources(repo: Path)
     result = build_docs(repo, force=False)
     rendered = (repo / "build/docs/index.md").read_text(encoding="utf-8")
 
-    assert "[Handdesinfektion](Handdesinfektion.md)" in rendered
-    assert "[[Handdesinfektion]]" not in rendered
+    assert "[Händedesinfektion](Handdesinfektion.md){ .landing-card }" in rendered
+    assert "[[" not in rendered
     assert result.published is True
     assert snapshot_sources(repo) == before
     assert (repo / "build/docs/.desinfect-generated").is_file()
@@ -1049,6 +1049,7 @@ def test_fd_site_stage_survives_ancestor_swap(
             site_dir=fd_stage,
             site_url=None,
             epoch=0,
+            partial=False,
         )
 
         assert "index.html" in hashes
@@ -1147,6 +1148,7 @@ def test_site_build_cleanup_error_does_not_replace_runner_error(
             site_dir=repo / "site-stage",
             site_url=None,
             epoch=0,
+            partial=False,
         )
 
     assert any("unlink boom" in note for note in raised.value.__notes__)
@@ -1230,6 +1232,35 @@ def test_real_mkdocs_child_can_use_held_fd_stages(repo: Path) -> None:
     assert result.published is False
     assert not (repo / "site").exists()
     assert not (repo / "build/docs").exists()
+
+
+def test_navigation_validation_uses_configured_content_root(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Static navigation validates targets from publication content_root."""
+
+    configured_content = repo / "published-content"
+    (repo / "content").rename(configured_content)
+    (repo / "content").mkdir()
+    config_path = repo / "config/publication.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "content_root: content", "content_root: published-content"
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    result = build_site(
+        repo,
+        check=True,
+        dry_run=True,
+        strict=True,
+        force=False,
+        site_url=None,
+    )
+
+    assert result.published is False
 
 
 def test_strict_site_is_local_german_and_has_404(
@@ -1330,11 +1361,13 @@ def test_temp_mkdocs_config_is_reproducible_for_equivalent_key_order(repo: Path)
         held_config_dir = io_utils.fd_directory_path(descriptor)
         first_path = build_site_module.write_temp_mkdocs_config(
             repo_root=repo,
+            content_root=repo / "content",
             config_dir=held_config_dir,
             docs_dir=docs_dir,
             site_dir=site_dir,
             site_url="https://h234598.github.io/desinfect/",
             source_date_epoch=1700000000,
+            partial=False,
         )
         try:
             first = first_path.read_bytes()
@@ -1353,11 +1386,13 @@ def test_temp_mkdocs_config_is_reproducible_for_equivalent_key_order(repo: Path)
         )
         second_path = build_site_module.write_temp_mkdocs_config(
             repo_root=repo,
+            content_root=repo / "content",
             config_dir=held_config_dir,
             docs_dir=docs_dir,
             site_dir=site_dir,
             site_url="https://h234598.github.io/desinfect/",
             source_date_epoch=1700000000,
+            partial=False,
         )
         try:
             second = second_path.read_bytes()

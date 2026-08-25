@@ -22,5 +22,24 @@ markdown_extensions:
   - admonition
   - pymdownx.details
   - pymdownx.superfences
+  - attr_list
+  - md_in_html
 extra_css:
   - assets/stylesheets/extra.css
+nav:
+  - Start: index.md
+  - Handdesinfektion: Handdesinfektion.md
+  - Flächendesinfektion: Flaechendesinfektion.md
+  - Kategorien: Kategorien.md
+  - Anleitungen:
+      - Übersicht: Anleitungen/index.md
+  - Sortierbare Tabelle: Tabelle.md
+  - Bulletins:
+      - Übersicht: Bulletins/index.md
+  - Methodik:
+      - Wirksamkeit: Methodik/Wirksamkeit.md
+      - Bewertung: Methodik/Bewertung.md
+      - Sicherheit: Methodik/Sicherheit.md
+not_in_nav: |
+  /WARTUNG.md
+  /Wartung/
