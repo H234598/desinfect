@@ -1,0 +1,40 @@
+name: Cloudflare Routing Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Apply verified worker-host exclusion to the one matching zone redirect
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  audit_routing:
+    name: Audit or correct verified redirect
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: cloudflare-watchdog-routing-audit
+      cancel-in-progress: false
+    environment:
+      name: cloudflare-watchdog-staging
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Audit routing without mutation
+        if: "!inputs.apply"
+        run: python3 scripts/cloudflare_routing_audit.py
+      - name: Apply one verified zone redirect correction
+        if: inputs.apply
+        run: python3 scripts/cloudflare_routing_audit.py --apply
