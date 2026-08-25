@@ -6,6 +6,7 @@ from contextlib import contextmanager
 import hashlib
 import os
 from pathlib import Path
+from pathlib import PurePosixPath
 
 import pytest
 
@@ -243,3 +244,99 @@ def test_open_root_rejects_noncanonical_fd_root_forms(tmp_path: Path) -> None:
     with pytest.raises(UnsafePathError):
         with io_utils.open_root_directory(symlink):
             pass
+
+
+def test_read_bounded_utf8_text_beneath_reads_one_regular_file(tmp_path: Path) -> None:
+    """Opening the wrong path or decoding loosely makes this fail."""
+
+    (tmp_path / "nested").mkdir()
+    (tmp_path / "nested/value.txt").write_text("Größe", encoding="utf-8")
+
+    assert (
+        io_utils.read_bounded_utf8_text_beneath(
+            tmp_path,
+            PurePosixPath("nested/value.txt"),
+            max_bytes=32,
+        )
+        == "Größe"
+    )
+
+
+@pytest.mark.parametrize("kind", ("oversize", "fifo", "symlink", "invalid-utf8"))
+def test_read_bounded_utf8_text_beneath_rejects_unsafe_inputs(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    """Size bypass, blocking special files, links, and loose UTF-8 make this fail."""
+
+    target = tmp_path / "value"
+    if kind == "oversize":
+        target.write_bytes(b"12345")
+    elif kind == "fifo":
+        os.mkfifo(target)
+    elif kind == "symlink":
+        outside = tmp_path / "outside"
+        outside.write_text("secret", encoding="utf-8")
+        target.symlink_to(outside)
+    else:
+        target.write_bytes(b"\xff")
+
+    with pytest.raises((OSError, ValueError, UnsafePathError)):
+        io_utils.read_bounded_utf8_text_beneath(
+            tmp_path,
+            PurePosixPath("value"),
+            max_bytes=4 if kind == "oversize" else 32,
+        )
+
+
+@pytest.mark.parametrize(
+    "document",
+    ('{"duplicate": 1, "duplicate": 2}', '{"value": NaN}', "[1, 2]"),
+)
+def test_parse_strict_json_object_rejects_noncanonical_documents(document: str) -> None:
+    """Duplicate keys, non-finite values, or non-object roots make this fail."""
+
+    with pytest.raises(ValueError):
+        io_utils.parse_strict_json_object(document)
+
+
+def test_read_bounded_json_object_reuses_strict_parser(tmp_path: Path) -> None:
+    """A permissive legacy file reader accepting duplicates makes this fail."""
+
+    path = tmp_path / "value.json"
+    path.write_text('{"duplicate": 1, "duplicate": 2}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="doppelten Schlüssel"):
+        io_utils.read_bounded_json_object(path, max_bytes=128)
+
+
+def test_read_bounded_utf8_text_beneath_resists_ancestor_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pathname reopen after parent validation would read the outside replacement."""
+
+    root = tmp_path / "root"
+    parent = root / "nested"
+    parent.mkdir(parents=True)
+    (parent / "value.txt").write_text("inside", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "value.txt").write_text("outside", encoding="utf-8")
+    original_open_parent = io_utils.open_directory_beneath
+
+    def swap_after_open(root_fd: int, parts: object, **kwargs: object) -> int:
+        descriptor = original_open_parent(root_fd, parts, **kwargs)
+        parent.rename(root / "nested-real")
+        parent.symlink_to(outside, target_is_directory=True)
+        return descriptor
+
+    monkeypatch.setattr(io_utils, "open_directory_beneath", swap_after_open)
+
+    result = io_utils.read_bounded_utf8_text_beneath(
+        root,
+        PurePosixPath("nested/value.txt"),
+        max_bytes=32,
+    )
+
+    assert result == "inside"

@@ -7,5 +7,7 @@ aliases:
 
 # Sortierbare Tabelle
 
-Noch keine validierte Tabellenprojektion veröffentlicht. Serverseitige Korpus- und Anleitungsdaten
-folgen erst mit ihrem jeweils geprüften Daten- und Freigabevertrag.
+Tabellendaten stehen vollständig serverseitig bereit. JavaScript darf Darstellung und Bedienung
+später verbessern, ist aber keine Datenquelle.
+
+<!-- DESINFECT_TABLE -->

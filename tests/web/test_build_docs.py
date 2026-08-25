@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import hashlib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import os
 import shutil
 from types import SimpleNamespace
@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 from scripts.rki_pipeline import io_utils
-from scripts.rki_pipeline.io_utils import mark_generated_root
+from scripts.rki_pipeline.io_utils import mark_generated_root, stable_json_dumps
 from scripts.rki_pipeline import staging as staging_module
 from scripts.rki_pipeline.staging import StagingError
 import scripts.web.build_site as build_site_module
@@ -47,6 +47,7 @@ def repo(tmp_path: Path) -> Path:
         source_path = source / name
         if source_path.exists():
             shutil.copy2(source_path, target / name)
+    shutil.copy2(source / "status.json", target / "status.json")
     return target
 
 
@@ -80,6 +81,93 @@ def _sha256_tree(root: Path, *, repo_root: Path) -> dict[str, str]:
         for path in sorted(root.rglob("*"), key=lambda item: item.as_posix())
         if path.is_file() and not path.is_symlink()
     }
+
+
+def _write_approved_table_state(repo: Path) -> None:
+    """Write one small internally consistent approved table fixture."""
+
+    status = yaml.safe_load((repo / "status.json").read_text(encoding="utf-8"))
+    status["corpus"].update(
+        inventory_complete_through_year=2020,
+        analysis_corpus_complete_through_year=2020,
+        taxonomy_gate_satisfied=True,
+        taxonomy_state="approved",
+    )
+    status["periods"].update(
+        last_completed_month="2020-12",
+        last_completed_year=2020,
+        last_reconciliation_at="2026-08-01T00:00:00Z",
+    )
+    (repo / "status.json").write_text(stable_json_dumps(status), encoding="utf-8")
+    readiness = {
+        "schema_version": "1.0.0",
+        "policy_version": "1.0.0",
+        "minimum_required_year": 2020,
+        "inventory_complete_through_year": 2020,
+        "analysis_corpus_complete_through_year": 2020,
+        "public_mirror_complete_through_year": None,
+        "monthly_archives_complete_through": "2020-12",
+        "yearly_archives_complete_through_year": 2020,
+        "unresolved_source_gaps": 0,
+        "approved_source_exceptions": 1,
+        "unresolved_conversion_failures": 0,
+        "last_reconciliation_conclusion": "success",
+        "taxonomy_gate_satisfied": True,
+        "based_on_manifest_sha256": "a" * 64,
+    }
+    taxonomy = {
+        "schema_version": "1.0.0",
+        "version": "1.2.3",
+        "status": "approved",
+        "based_on_corpus_through_year": 2020,
+        "based_on_manifest_sha256": "a" * 64,
+        "categories": [
+            {
+                "id": "hand-hygiene",
+                "label": "Handhygiene",
+                "dimension": "area",
+                "definition": "Synthetische Testkategorie.",
+                "aliases": [],
+                "evidence_count": 1,
+                "source_examples": ["synthetic-test"],
+                "review_status": "approved",
+            }
+        ],
+        "migrations": [],
+    }
+    instruction = {
+        "effectiveness_rank": 1,
+        "application_area": "Hände",
+        "title": "Serveranleitung",
+        "active_ingredient": "Wirkstoff",
+        "concentration": "70 %",
+        "contact_time": "30 s",
+        "spectrum": "synthetisch",
+        "derived_categories": ["hand-hygiene"],
+        "year": 2020,
+        "temporal_status": "current",
+        "confidence": "high",
+        "bulletin": "Bulletin 1",
+        "page": "1",
+    }
+    research = repo / "research"
+    research.mkdir(exist_ok=True)
+    (research / "corpus-readiness.json").write_text(stable_json_dumps(readiness), encoding="utf-8")
+    (research / "taxonomy.yml").write_text(
+        yaml.safe_dump(taxonomy, allow_unicode=True, sort_keys=True), encoding="utf-8"
+    )
+    generated = repo / "content/generated-data"
+    generated.mkdir(parents=True, exist_ok=True)
+    (generated / "anleitungen.json").write_text(
+        stable_json_dumps(
+            {
+                "schema_version": "1.0.0",
+                "taxonomy_version": "1.2.3",
+                "rows": [instruction],
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_external_asset_urls_are_case_and_whitespace_insensitive() -> None:
@@ -285,6 +373,182 @@ def test_build_docs_publishes_transformed_copy_and_preserves_sources(repo: Path)
     assert result.published is True
     assert snapshot_sources(repo) == before
     assert (repo / "build/docs/.desinfect-generated").is_file()
+
+
+def test_build_docs_renders_no_js_corpus_empty_state_and_public_projection(repo: Path) -> None:
+    """Leaving the table marker or omitting server data makes this fail."""
+
+    build_docs(repo, force=False)
+
+    rendered = (repo / "build/docs/Tabelle.md").read_text(encoding="utf-8")
+    projection = repo / "build/docs/assets/data/corpus-table.json"
+    assert "<!-- DESINFECT_TABLE -->" not in rendered
+    assert "Noch keine validierten Dokumentmanifeste" in rendered
+    assert "Rechtezustand" in rendered
+    assert "Quelle" in rendered
+    assert '<table data-enhance-table="corpus">' in rendered
+    assert projection.is_file()
+    assert yaml.safe_load(projection.read_text(encoding="utf-8")) == {
+        "schema_version": "1.0.0",
+        "rows": [],
+    }
+
+
+def test_build_docs_renders_corpus_rows_without_copying_raw_projection(repo: Path) -> None:
+    """Client-only data or leaked generated-data sources make this fail."""
+
+    raw = {
+        "schema_version": "1.0.0",
+        "rows": [
+            {
+                "document_type": "bulletin",
+                "title": "Server < row",
+                "year": 2020,
+                "month": 12,
+                "rki_handle": "176904/1234",
+                "doi": None,
+                "rights_state": "metadata_only",
+                "pdf_present": False,
+                "markdown_status": "validated",
+                "ocr_status": "not_required",
+                "monthly_archive_present": True,
+                "yearly_archive_present": True,
+                "checksum": "b" * 64,
+                "source": "https://edoc.rki.de/handle/176904/1234",
+            }
+        ],
+    }
+    source = repo / "content/generated-data/corpus-table.json"
+    source.parent.mkdir(parents=True)
+    source.write_text(stable_json_dumps(raw), encoding="utf-8")
+
+    build_docs(repo, force=False)
+
+    rendered = (repo / "build/docs/Tabelle.md").read_text(encoding="utf-8")
+    assert "Server &lt; row" in rendered
+    assert not (repo / "build/docs/generated-data/corpus-table.json").exists()
+    assert (repo / "build/docs/assets/data/corpus-table.json").is_file()
+
+
+def test_partial_build_without_table_does_not_load_or_project_table_inputs(repo: Path) -> None:
+    """Loading unrelated table state during a partial preview makes this fail."""
+
+    (repo / "status.json").write_text("not json", encoding="utf-8")
+    stage = repo / "stage"
+    stage.mkdir()
+
+    render_docs_tree(repo, stage, only=(PurePosixPath("index.md"),))
+
+    assert (stage / "index.md").is_file()
+    assert not (stage / "assets/data/corpus-table.json").exists()
+
+
+def test_approved_table_build_renders_both_tables_in_strict_html(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dropping approved server rows before MkDocs or the public asset makes this fail."""
+
+    _write_approved_table_state(repo)
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+
+    build_site(
+        repo,
+        check=True,
+        dry_run=False,
+        strict=True,
+        force=False,
+        site_url="https://h234598.github.io/desinfect/",
+    )
+
+    html = (repo / "site/Tabelle/index.html").read_text(encoding="utf-8")
+    assert "Korpustabelle" in html
+    assert "Anleitungstabelle" in html
+    assert "Serveranleitung" in html
+    assert '<table data-enhance-table="instructions">' in html
+    assert (repo / "build/docs/assets/data/anleitungen.json").is_file()
+    assert not (repo / "build/docs/generated-data/anleitungen.json").exists()
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "status.json",
+        "research/corpus-readiness.json",
+        "research/taxonomy.yml",
+    ),
+)
+def test_table_state_source_drift_aborts_and_preserves_old_docs(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    relative: str,
+) -> None:
+    """Leaving any gate source outside the before/after snapshot makes this fail."""
+
+    _write_approved_table_state(repo)
+    old = _old_docs(repo)
+    target = repo / relative
+    real_load = build_docs_module.load_table_inputs
+
+    def load_then_mutate(root: Path) -> object:
+        result = real_load(root)
+        target.write_bytes(target.read_bytes() + b"\n")
+        return result
+
+    monkeypatch.setattr(build_docs_module, "load_table_inputs", load_then_mutate)
+
+    with pytest.raises(BuildDocsError, match="source-hash drift"):
+        build_docs(repo, force=False)
+
+    assert (old / "keep.txt").read_text(encoding="utf-8") == "old complete tree"
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "status.json",
+        "research/corpus-readiness.json",
+        "research/taxonomy.yml",
+    ),
+)
+def test_snapshot_sources_rejects_symlinked_table_state(repo: Path, relative: str) -> None:
+    """Following an exact gate-input symlink makes this fail."""
+
+    target = repo / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        target.unlink()
+    target.symlink_to(repo / "content/index.md")
+
+    with pytest.raises(BuildDocsError, match="source file"):
+        snapshot_sources(repo)
+
+
+def test_invalid_table_keeps_old_docs_and_site(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replacing either published tree before table validation makes this fail."""
+
+    old_docs = _old_docs(repo)
+    old_site = _old_site(repo)
+    generated = repo / "content/generated-data"
+    generated.mkdir(parents=True)
+    (generated / "corpus-table.json").write_text(
+        stable_json_dumps({"schema_version": "1.0.0", "rows": [], "extra": True}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+
+    with pytest.raises(SiteBuildError, match="corpus root keys"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=False,
+            strict=True,
+            force=False,
+            site_url=None,
+        )
+
+    assert (old_docs / "keep.txt").read_text(encoding="utf-8") == "old complete tree"
+    assert (old_site / "keep.txt").read_text(encoding="utf-8") == "old complete tree"
 
 
 def test_build_docs_failure_keeps_old_complete_target(

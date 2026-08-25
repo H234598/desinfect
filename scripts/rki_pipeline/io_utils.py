@@ -338,9 +338,7 @@ def assert_generated_root_fd(directory_fd: int) -> None:
             f"Generiertes Ziel ist nicht durch {GENERATED_ROOT_SENTINEL} markiert"
         ) from exc
     if not stat.S_ISREG(metadata.st_mode):
-        raise UnsafePathError(
-            f"Sentinel {GENERATED_ROOT_SENTINEL} ist keine reguläre Datei"
-        )
+        raise UnsafePathError(f"Sentinel {GENERATED_ROOT_SENTINEL} ist keine reguläre Datei")
 
 
 def mark_generated_root(path: Path, *, allowed_root: Path | None = None) -> None:
@@ -482,9 +480,7 @@ def ensure_within(
                 except FileNotFoundError:
                     metadata = None
                 if metadata is not None and stat.S_ISLNK(metadata.st_mode):
-                    raise UnsafePathError(
-                        f"Symlink-Komponente ist unzulässig: {relative.name}"
-                    )
+                    raise UnsafePathError(f"Symlink-Komponente ist unzulässig: {relative.name}")
             finally:
                 os.close(parent_fd)
     return Path(os.path.abspath(root)) / Path(relative.as_posix())
@@ -543,52 +539,64 @@ def _finite_json_float(value: str) -> float:
     return parsed
 
 
-def read_bounded_json_object(path: Path, *, max_bytes: int) -> dict[str, Any]:
-    """Read one no-follow, bounded UTF-8 JSON object."""
+def read_bounded_utf8_text_beneath(
+    root: Path,
+    relative: PurePosixPath,
+    *,
+    max_bytes: int,
+) -> str:
+    """Read one regular UTF-8 file through held no-follow descriptors."""
 
     if type(max_bytes) is not int or max_bytes < 1:
-        raise ValueError("JSON-Größenlimit muss positiv sein")
+        raise ValueError("Dateigrößenlimit muss positiv sein")
+    if not isinstance(relative, PurePosixPath):
+        raise UnsafePathError("Dateipfad muss ein relativer POSIX-Pfad sein")
+    raw_relative = relative.as_posix()
+    if normalize_posix_path(raw_relative) != raw_relative:
+        raise UnsafePathError(f"Nichtkanonischer relativer Dateipfad: {raw_relative}")
     no_follow = getattr(os, "O_NOFOLLOW", None)
     if type(no_follow) is not int or no_follow == 0:
-        raise OSError("Plattform unterstützt O_NOFOLLOW nicht")
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | no_follow
-        | getattr(os, "O_NONBLOCK", 0)
-    )
-    try:
-        descriptor = os.open(path, flags)
-    except OSError as exc:
-        if exc.errno == errno.ELOOP:
-            raise ValueError("Eingabepfad ist keine lesbare reguläre Datei") from exc
-        raise OSError("Eingabepfad ist keine lesbare reguläre Datei") from exc
-    try:
+        raise OSError(errno.ENOTSUP, "Plattform unterstützt O_NOFOLLOW nicht")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | no_follow | getattr(os, "O_NONBLOCK", 0)
+    with open_root_directory(root) as root_fd:
+        parent_fd = open_directory_beneath(root_fd, relative.parts[:-1])
         try:
-            metadata = os.fstat(descriptor)
-            if not stat.S_ISREG(metadata.st_mode):
-                raise ValueError("Eingabepfad ist keine reguläre Datei")
-            if metadata.st_size > max_bytes:
-                raise ValueError("Eingabedatei überschreitet Größenlimit")
-            chunks: list[bytes] = []
-            remaining = max_bytes + 1
-            while remaining:
-                chunk = os.read(descriptor, min(64 * 1024, remaining))
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                remaining -= len(chunk)
-            raw = b"".join(chunks)
-            if len(raw) > max_bytes:
-                raise ValueError("Eingabedatei überschreitet Größenlimit")
-        except OSError as exc:
-            raise OSError("Eingabedatei ist nicht lesbar") from exc
-    finally:
-        os.close(descriptor)
+            try:
+                descriptor = os.open(relative.name, flags, dir_fd=parent_fd)
+            except OSError as exc:
+                if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    raise ValueError("Eingabepfad ist keine lesbare reguläre Datei") from exc
+                raise
+            try:
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise ValueError("Eingabepfad ist keine reguläre Datei")
+                if metadata.st_size > max_bytes:
+                    raise ValueError("Eingabedatei überschreitet Größenlimit")
+                chunks: list[bytes] = []
+                remaining = max_bytes + 1
+                while remaining:
+                    chunk = os.read(descriptor, min(64 * 1024, remaining))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                raw = b"".join(chunks)
+                if len(raw) > max_bytes:
+                    raise ValueError("Eingabedatei überschreitet Größenlimit")
+            finally:
+                os.close(descriptor)
+        finally:
+            os.close(parent_fd)
     try:
-        text = raw.decode("utf-8")
+        return raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ValueError("Eingabedatei ist kein gültiges UTF-8") from exc
+
+
+def parse_strict_json_object(text: str) -> dict[str, Any]:
+    """Parse one finite JSON object while rejecting duplicate keys."""
+
     try:
         value = json.loads(
             text,
@@ -601,6 +609,24 @@ def read_bounded_json_object(path: Path, *, max_bytes: int) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("JSON-Wurzel muss ein Objekt sein")
     return value
+
+
+def read_bounded_json_object(path: Path, *, max_bytes: int) -> dict[str, Any]:
+    """Read one no-follow, bounded UTF-8 JSON object."""
+
+    try:
+        text = read_bounded_utf8_text_beneath(
+            path.parent,
+            PurePosixPath(path.name),
+            max_bytes=max_bytes,
+        )
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        if exc.errno == errno.ENOTSUP:
+            raise
+        raise OSError("Eingabepfad ist keine lesbare reguläre Datei") from exc
+    return parse_strict_json_object(text)
 
 
 def source_date_epoch() -> int:
@@ -619,6 +645,8 @@ def source_date_epoch() -> int:
 def generated_at_iso() -> str:
     """Return the reproducible build timestamp in canonical UTC form."""
 
-    return datetime.fromtimestamp(source_date_epoch(), tz=timezone.utc).isoformat().replace(
-        "+00:00", "Z"
+    return (
+        datetime.fromtimestamp(source_date_epoch(), tz=timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
     )
