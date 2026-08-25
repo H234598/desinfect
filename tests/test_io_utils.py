@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import os
 from pathlib import Path
@@ -155,3 +156,90 @@ def test_atomic_write_resists_symlink_ancestor_swap(
 
     assert (root / "nested-real" / "value.txt").read_bytes() == b"anchored"
     assert not (outside / "value.txt").exists()
+
+
+def test_atomic_write_accepts_exact_fd_root_after_ancestor_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An FD-backed root stays bound when its pathname ancestor becomes a symlink."""
+
+    root = tmp_path / "root"
+    stage = root / "stage"
+    stage.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    original_root = root
+    root_real = tmp_path / "root-real"
+    original_open_root = io_utils.open_root_directory
+    swapped = False
+
+    @contextmanager
+    def swap_ancestor(path: Path, *, create: bool = False):
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            original_root.rename(root_real)
+            original_root.symlink_to(outside, target_is_directory=True)
+        with original_open_root(path, create=create) as descriptor:
+            yield descriptor
+
+    with io_utils.open_root_directory(stage) as descriptor:
+        fd_root = io_utils.fd_directory_path(descriptor)
+        target = fd_root / "value.txt"
+        monkeypatch.setattr(io_utils, "open_root_directory", swap_ancestor)
+        atomic_write_bytes(target, b"anchored", allowed_root=fd_root)
+
+    assert (root_real / "stage/value.txt").read_bytes() == b"anchored"
+    assert not (outside / "value.txt").exists()
+
+
+@pytest.mark.parametrize("base", ("/proc/self/fd", "/dev/fd"))
+def test_open_root_accepts_exact_directory_fd_alias(tmp_path: Path, base: str) -> None:
+    """Both supported FD aliases accept the exact held directory descriptor."""
+
+    if not Path(base).is_dir():
+        pytest.skip(f"FD alias unavailable: {base}")
+    with io_utils.open_root_directory(tmp_path) as descriptor:
+        with io_utils.open_root_directory(Path(base) / str(descriptor)) as duplicate:
+            assert os.fstat(duplicate).st_ino == os.fstat(descriptor).st_ino
+
+
+def test_open_root_rejects_noncanonical_fd_root_forms(tmp_path: Path) -> None:
+    """Lexical normalization must never turn a non-FD path into an FD root."""
+
+    with io_utils.open_root_directory(tmp_path) as descriptor:
+        fd = str(descriptor)
+        invalid = (
+            f"/proc/self/fd/0{fd}",
+            f"/proc/self/fd/{fd}/extra",
+            f"/tmp/../proc/self/fd/{fd}",
+            f"/proc/self/fd/{fd}/../{fd}",
+            f"/proc/self/fd/{'9' * 5000}",
+            f"/proc/self/fd/{2**63}",
+        )
+        for raw in invalid:
+            with pytest.raises(UnsafePathError):
+                with io_utils.open_root_directory(Path(raw)):
+                    pass
+
+    closed = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    os.close(closed)
+    with pytest.raises(UnsafePathError):
+        with io_utils.open_root_directory(Path("/proc/self/fd") / str(closed)):
+            pass
+
+    file_path = tmp_path / "not-a-directory"
+    file_path.write_text("file", encoding="utf-8")
+    file_fd = os.open(file_path, os.O_RDONLY)
+    try:
+        with pytest.raises(UnsafePathError):
+            with io_utils.open_root_directory(Path("/proc/self/fd") / str(file_fd)):
+                pass
+    finally:
+        os.close(file_fd)
+
+    symlink = tmp_path / "final-symlink"
+    symlink.symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(UnsafePathError):
+        with io_utils.open_root_directory(symlink):
+            pass

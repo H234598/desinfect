@@ -198,6 +198,60 @@ def test_staged_directory_validates_explicit_no_change_generation(tmp_path: Path
     assert not list(tmp_path.glob("*.staging-*"))
 
 
+def test_preview_directory_never_publishes_and_cleans_caller_failure(
+    tmp_path: Path,
+) -> None:
+    """Preview staging keeps target unchanged and owns cleanup on caller failure."""
+
+    target = tmp_path / "site"
+    _generated(target, "old")
+    preview_path: Path | None = None
+
+    with pytest.raises(RuntimeError, match="preview failed"):
+        with staging_module.preview_directory(target, allowed_root=tmp_path) as preview:
+            preview_path = preview
+            (preview / "value.txt").write_text("preview", encoding="utf-8")
+            raise RuntimeError("preview failed")
+
+    assert (target / "value.txt").read_text(encoding="utf-8") == "old"
+    assert preview_path is not None
+    assert not preview_path.exists()
+    assert not list(tmp_path.glob(".site.staging-*"))
+
+
+def test_preview_directory_never_publishes_on_success(tmp_path: Path) -> None:
+    """A successful preview also discards its generated tree and target changes."""
+
+    target = tmp_path / "site"
+    _generated(target, "old")
+
+    with staging_module.preview_directory(target, allowed_root=tmp_path) as preview:
+        (preview / "value.txt").write_text("preview", encoding="utf-8")
+
+    assert (target / "value.txt").read_text(encoding="utf-8") == "old"
+    assert not list(tmp_path.glob(".site.staging-*"))
+
+
+def test_preview_directory_setup_failure_preserves_cause_and_cleans_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pre-sentinel setup failure cannot leak its unmarked preview stage."""
+
+    target = tmp_path / "site"
+
+    def fail_mark(descriptor: int) -> None:
+        del descriptor
+        raise OSError("preview setup failed")
+
+    monkeypatch.setattr(staging_module, "mark_generated_root_fd", fail_mark)
+
+    with pytest.raises(OSError, match="preview setup failed"):
+        with staging_module.preview_directory(target, allowed_root=tmp_path):
+            pass
+
+    assert not list(tmp_path.glob(".site.staging-*"))
+
+
 def test_staged_directory_rejects_mutation_after_no_change_mark(tmp_path: Path) -> None:
     """A post-signature target mutation cannot return an unvalidated no-op."""
 
