@@ -78,6 +78,8 @@ class DocsBuildResult:
     source_hashes: Mapping[str, str]
     docs_hashes: Mapping[str, str]
     published: bool
+    excluded_docs: tuple[PurePosixPath, ...] = ()
+    content_index: ContentIndex | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -364,20 +366,61 @@ def validate_generated_docs(stage: Path) -> Mapping[str, str]:
     return dict(sorted(hashes.items()))
 
 
+def _require_index_matches_snapshot(index: ContentIndex, source_hashes: Mapping[str, str]) -> None:
+    indexed_sources = {
+        (PurePosixPath("content") / page.relative_path).as_posix(): page.source_sha256
+        for page in index.pages
+    }
+    snapshotted_sources = {
+        path: digest
+        for path, digest in source_hashes.items()
+        if path.startswith("content/") and path.endswith(".md")
+    }
+    if indexed_sources != snapshotted_sources:
+        raise BuildDocsError("source-hash drift: content index does not match source snapshot")
+
+
+def bind_publication_sources(repo_root: Path) -> tuple[Mapping[str, str], ContentIndex]:
+    """Bind one immutable content index to one stable publication-source snapshot."""
+
+    root = _repo_root(repo_root)
+    before = snapshot_sources(root)
+    index = build_content_index(load_publication_config(root).content_root)
+    _require_index_matches_snapshot(index, before)
+    require_unchanged(snapshot_sources(root), before)
+    return before, index
+
+
 def render_docs_tree(
     repo_root: Path,
     stage: Path,
     *,
     only: tuple[PurePosixPath, ...] = (),
+    source_hashes: Mapping[str, str] | None = None,
+    content_index: ContentIndex | None = None,
 ) -> DocsBuildResult:
     """Render validated source content into an unpublished generated stage."""
 
     root = _repo_root(repo_root)
     config = load_publication_config(root)
     try:
-        index = build_content_index(config.content_root)
-        before = snapshot_sources(root)
+        if (source_hashes is None) != (content_index is None):
+            raise BuildDocsError("source snapshot and content index must be bound together")
+        if source_hashes is None:
+            before, index = bind_publication_sources(root)
+        else:
+            before = dict(source_hashes)
+            assert content_index is not None
+            index = content_index
+            _require_index_matches_snapshot(index, before)
+            require_unchanged(snapshot_sources(root), before)
         selected = select_pages(index, only)
+        selected_paths = {page.relative_path for page in selected}
+        excluded_pages = (
+            tuple(page for page in index.pages if page.relative_path not in selected_paths)
+            if only
+            else ()
+        )
         table_inputs = (
             load_table_inputs(root)
             if any(page.relative_path == _TABLE_PAGE for page in selected)
@@ -397,6 +440,12 @@ def render_docs_tree(
                 assert table_inputs is not None
                 rendered = render_table_page(rendered, table_inputs)
             write_generated_markdown(stage / page.relative_path, rendered, stage=stage)
+        for page in excluded_pages:
+            write_generated_markdown(
+                stage / page.generated_path,
+                page.source,
+                stage=stage,
+            )
         _write_generated_text(
             stage,
             stage / config.generated_sentinel,
@@ -410,24 +459,45 @@ def render_docs_tree(
         copy_only_regular_local_assets(root / "web/assets", stage / "assets", stage=stage)
         if table_inputs is not None:
             write_table_data_assets(stage, table_inputs)
-        docs_hashes = validate_generated_docs(stage)
+        rendered_hashes = validate_generated_docs(stage)
+        omitted_paths = {page.generated_path.as_posix() for page in excluded_pages}
+        docs_hashes = {
+            path: digest for path, digest in rendered_hashes.items() if path not in omitted_paths
+        }
         current = snapshot_sources(root)
         require_unchanged(current, before)
     except BuildDocsError:
         raise
     except (OSError, UnsafePathError, ValueError, yaml.YAMLError) as exc:
         raise BuildDocsError(str(exc)) from exc
-    return DocsBuildResult(source_hashes=before, docs_hashes=docs_hashes, published=False)
+    return DocsBuildResult(
+        source_hashes=before,
+        docs_hashes=docs_hashes,
+        published=False,
+        excluded_docs=tuple(page.generated_path for page in excluded_pages),
+        content_index=index,
+    )
 
 
-def build_docs(repo_root: Path, *, force: bool) -> DocsBuildResult:
+def build_docs(
+    repo_root: Path,
+    *,
+    force: bool,
+    source_hashes: Mapping[str, str] | None = None,
+    content_index: ContentIndex | None = None,
+) -> DocsBuildResult:
     """Atomically publish a complete generated docs tree."""
 
     root = _repo_root(repo_root)
     config = load_publication_config(root)
     try:
         with staged_directory(config.docs_dir, allowed_root=root, force=force) as stage:
-            result = render_docs_tree(root, stage)
+            result = render_docs_tree(
+                root,
+                stage,
+                source_hashes=source_hashes,
+                content_index=content_index,
+            )
     except BuildDocsError:
         raise
     except (OSError, StagingError, UnsafePathError, ValueError) as exc:
@@ -440,6 +510,8 @@ def docs_preview_session(
     repo_root: Path,
     *,
     only: tuple[PurePosixPath, ...] = (),
+    source_hashes: Mapping[str, str] | None = None,
+    content_index: ContentIndex | None = None,
 ) -> Iterator[DocsPreview]:
     """Yield a validated disposable docs tree without publishing it."""
 
@@ -450,7 +522,13 @@ def docs_preview_session(
     try:
         try:
             preview_path = stack.enter_context(preview_directory(preview_target, allowed_root=root))
-            result = render_docs_tree(root, preview_path, only=only)
+            result = render_docs_tree(
+                root,
+                preview_path,
+                only=only,
+                source_hashes=source_hashes,
+                content_index=content_index,
+            )
         except BuildDocsError:
             raise
         except (OSError, StagingError, UnsafePathError, ValueError) as exc:

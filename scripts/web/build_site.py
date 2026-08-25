@@ -39,6 +39,7 @@ from scripts.web.build_docs import (
     BuildDocsError,
     DocsBuildResult,
     _regular_files,
+    bind_publication_sources,
     build_docs,
     docs_preview_session,
     load_publication_config,
@@ -49,7 +50,7 @@ from scripts.web.build_navigation import (
     runtime_navigation_config,
     validate_navigation,
 )
-from scripts.web.content_index import build_content_index
+from scripts.web.content_index import ContentIndex
 
 
 class SiteBuildError(RuntimeError):
@@ -464,7 +465,9 @@ def _contains_external_url(value: object) -> bool:
     return False
 
 
-def _validate_static_mkdocs_config(parsed: dict[object, object], *, content_root: Path) -> None:
+def _validate_static_mkdocs_config(
+    parsed: dict[object, object], *, content_index: ContentIndex
+) -> None:
     theme = parsed.get("theme")
     if isinstance(theme, Mapping):
         asset_fields = (
@@ -525,7 +528,7 @@ def _validate_static_mkdocs_config(parsed: dict[object, object], *, content_root
     if parsed.get("extra_javascript") != ["assets/javascripts/table.js"]:
         raise SiteBuildError("mkdocs extra_javascript must contain only the local table script")
     try:
-        validate_navigation(parsed, build_content_index(content_root))
+        validate_navigation(parsed, content_index)
     except NavigationError as exc:
         raise SiteBuildError(str(exc)) from exc
 
@@ -572,13 +575,14 @@ def _validate_site_tree(stage: Path, *, partial: bool) -> Mapping[str, str]:
 def write_temp_mkdocs_config(
     *,
     repo_root: Path,
-    content_root: Path,
+    content_index: ContentIndex,
     config_dir: Path,
     docs_dir: Path,
     site_dir: Path,
     site_url: str | None,
     source_date_epoch: int,
     partial: bool,
+    excluded_docs: tuple[PurePosixPath, ...] = (),
 ) -> Path:
     """Write one MkDocs config through a held FD-backed config directory."""
 
@@ -590,8 +594,14 @@ def write_temp_mkdocs_config(
         parsed = yaml.safe_load(source.read_text(encoding="utf-8"))
         if not isinstance(parsed, dict):
             raise SiteBuildError("mkdocs configuration must be a mapping")
-        _validate_static_mkdocs_config(parsed, content_root=content_root)
+        _validate_static_mkdocs_config(parsed, content_index=content_index)
         parsed = runtime_navigation_config(parsed, partial=partial)
+        if excluded_docs:
+            parsed["exclude_docs"] = "\n".join(
+                _mkdocs_exclude_pattern(path) for path in excluded_docs
+            )
+        if partial:
+            parsed["validation"] = {"links": {"anchors": "warn"}}
         if not docs_dir.is_absolute() or not site_dir.is_absolute():
             raise SiteBuildError("mkdocs docs_dir and site_dir must be absolute directories")
         absolute_docs = (
@@ -631,6 +641,13 @@ def write_temp_mkdocs_config(
         raise
     except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError) as exc:
         raise SiteBuildError(f"cannot create temporary MkDocs config: {source}") from exc
+
+
+def _mkdocs_exclude_pattern(path: PurePosixPath) -> str:
+    """Return one root-anchored literal MkDocs/gitignore exclusion pattern."""
+
+    escaped = re.sub(r"([\\*?\[\]#!])", r"\\\1", path.as_posix())
+    return "/" + escaped
 
 
 def _fd_descriptor(path: Path) -> int | None:
@@ -701,62 +718,69 @@ def _run_site_build(
     site_url: str | None,
     epoch: int,
     partial: bool,
+    content_index: ContentIndex,
+    excluded_docs: tuple[PurePosixPath, ...] = (),
 ) -> Mapping[str, str]:
     try:
         publication = load_publication_config(repo_root)
         config_target = publication.build_root / ".mkdocs-config-preview" / "config"
         with preview_directory(config_target, allowed_root=repo_root) as config_stage:
-            config_path: Path | None = None
-            try:
-                config_path = write_temp_mkdocs_config(
-                    repo_root=repo_root,
-                    content_root=publication.content_root,
-                    config_dir=config_stage,
-                    docs_dir=docs_dir,
-                    site_dir=site_dir,
-                    site_url=site_url,
-                    source_date_epoch=epoch,
-                    partial=partial,
-                )
-                descriptors = tuple(
-                    sorted(
-                        {
-                            descriptor
-                            for descriptor in (
-                                _fd_descriptor(config_stage),
-                                _fd_descriptor(docs_dir),
-                                _fd_descriptor(site_dir),
+            phases = ((), excluded_docs) if partial and excluded_docs else (excluded_docs,)
+            for phase_exclusions in phases:
+                config_path: Path | None = None
+                try:
+                    config_path = write_temp_mkdocs_config(
+                        repo_root=repo_root,
+                        content_index=content_index,
+                        config_dir=config_stage,
+                        docs_dir=docs_dir,
+                        site_dir=site_dir,
+                        site_url=site_url,
+                        source_date_epoch=epoch,
+                        partial=partial,
+                        excluded_docs=phase_exclusions,
+                    )
+                    descriptors = tuple(
+                        sorted(
+                            {
+                                descriptor
+                                for descriptor in (
+                                    _fd_descriptor(config_stage),
+                                    _fd_descriptor(docs_dir),
+                                    _fd_descriptor(site_dir),
+                                )
+                                if descriptor is not None
+                            }
+                        )
+                    )
+                    if (
+                        run_mkdocs_build(
+                            repo_root,
+                            config_path,
+                            strict=True,
+                            epoch=epoch,
+                            pass_fds=descriptors,
+                        )
+                        != 0
+                    ):
+                        raise SiteBuildError("MkDocs strict build failed")
+                except BaseException as primary:
+                    if config_path is not None:
+                        try:
+                            config_path.unlink(missing_ok=True)
+                        except BaseException as cleanup_error:
+                            primary.add_note(
+                                f"Temporary MkDocs config cleanup failed: {cleanup_error}"
                             )
-                            if descriptor is not None
-                        }
-                    )
-                )
-                if (
-                    run_mkdocs_build(
-                        repo_root,
-                        config_path,
-                        strict=True,
-                        epoch=epoch,
-                        pass_fds=descriptors,
-                    )
-                    != 0
-                ):
-                    raise SiteBuildError("MkDocs strict build failed")
-                result = _validate_site_tree(site_dir, partial=partial)
-            except BaseException as primary:
+                    raise
                 if config_path is not None:
                     try:
                         config_path.unlink(missing_ok=True)
                     except BaseException as cleanup_error:
-                        primary.add_note(f"Temporary MkDocs config cleanup failed: {cleanup_error}")
-                raise
-            if config_path is not None:
-                try:
-                    config_path.unlink(missing_ok=True)
-                except BaseException as cleanup_error:
-                    raise SiteBuildError(
-                        "Temporary MkDocs config cleanup failed"
-                    ) from cleanup_error
+                        raise SiteBuildError(
+                            "Temporary MkDocs config cleanup failed"
+                        ) from cleanup_error
+            result = _validate_site_tree(site_dir, partial=partial)
             return result
     except SiteBuildError:
         raise
@@ -824,15 +848,20 @@ def build_site(
     root = _repo_root(repo_root)
     epoch = source_date_epoch()
     try:
-        before = snapshot_sources(root)
         config = load_publication_config(root)
+        before, content_index = bind_publication_sources(root)
     except (BuildDocsError, OSError, UnsafePathError, ValueError) as exc:
         raise SiteBuildError(str(exc)) from exc
     del check
 
     if dry_run:
         try:
-            with docs_preview_session(root, only=selected) as docs:
+            with docs_preview_session(
+                root,
+                only=selected,
+                source_hashes=before,
+                content_index=content_index,
+            ) as docs:
                 with site_preview_session(root) as site_stage:
                     site_hashes = _run_site_build(
                         repo_root=root,
@@ -841,6 +870,8 @@ def build_site(
                         site_url=validated_url,
                         epoch=epoch,
                         partial=bool(selected),
+                        content_index=content_index,
+                        excluded_docs=docs.result.excluded_docs,
                     )
                     if snapshot_sources(root) != before:
                         raise SiteBuildError("source-hash drift during site build")
@@ -851,7 +882,12 @@ def build_site(
         return SiteBuildResult(docs=docs.result, site_hashes=site_hashes, published=False)
 
     try:
-        docs = build_docs(root, force=force)
+        docs = build_docs(
+            root,
+            force=force,
+            source_hashes=before,
+            content_index=content_index,
+        )
         with _held_generated_directory(config.docs_dir, allowed_root=root) as held_docs:
             with staged_directory(config.site_dir, allowed_root=root, force=force) as site_stage:
                 site_hashes = _run_site_build(
@@ -861,6 +897,7 @@ def build_site(
                     site_url=validated_url,
                     epoch=epoch,
                     partial=False,
+                    content_index=content_index,
                 )
                 if snapshot_sources(root) != before:
                     raise SiteBuildError("source-hash drift during site build")

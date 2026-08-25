@@ -73,6 +73,19 @@ def _mkdocs_source(repo: Path) -> Path:
     return path
 
 
+def _write_content_page(repo: Path, relative: str, body: str = "# Testseite\n") -> None:
+    """Write one valid synthetic content page for a site-build boundary test."""
+
+    target = repo / "content" / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    frontmatter = yaml.safe_dump(
+        {"aliases": [], "role": "method", "title": f"Test {relative}"},
+        allow_unicode=True,
+        sort_keys=True,
+    )
+    target.write_text(f"---\n{frontmatter}---\n{body}", encoding="utf-8")
+
+
 def _sha256_tree(root: Path, *, repo_root: Path) -> dict[str, str]:
     """Return regular-file hashes with sorted repository-relative POSIX keys."""
 
@@ -1314,6 +1327,7 @@ def test_fd_site_stage_survives_ancestor_swap(
             site_url=None,
             epoch=0,
             partial=False,
+            content_index=build_docs_module.build_content_index(repo / "content"),
         )
 
         assert "index.html" in hashes
@@ -1413,6 +1427,7 @@ def test_site_build_cleanup_error_does_not_replace_runner_error(
             site_url=None,
             epoch=0,
             partial=False,
+            content_index=build_docs_module.build_content_index(repo / "content"),
         )
 
     assert any("unlink boom" in note for note in raised.value.__notes__)
@@ -1496,6 +1511,428 @@ def test_real_mkdocs_child_can_use_held_fd_stages(repo: Path) -> None:
     assert result.published is False
     assert not (repo / "site").exists()
     assert not (repo / "build/docs").exists()
+
+
+def test_real_partial_mkdocs_preview_allows_links_to_omitted_pages(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Strict partial previews tolerate links whose local targets were intentionally omitted."""
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    before = snapshot_sources(repo)
+
+    result = build_site(
+        repo,
+        check=True,
+        dry_run=True,
+        strict=True,
+        force=False,
+        site_url=None,
+        only=(PurePosixPath("index.md"),),
+    )
+
+    assert "index.html" in result.site_hashes
+    assert "Handdesinfektion/index.html" not in result.site_hashes
+    assert "Flaechendesinfektion/index.html" not in result.site_hashes
+    assert "index.md" in result.docs.docs_hashes
+    assert "Handdesinfektion.md" not in result.docs.docs_hashes
+    assert "Flaechendesinfektion.md" not in result.docs.docs_hashes
+    assert snapshot_sources(repo) == before
+    assert not (repo / "site").exists()
+    assert not (repo / "build/docs").exists()
+
+
+def test_real_partial_mkdocs_preview_rejects_unknown_local_link(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A genuinely missing local target must still fail a strict partial preview."""
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    source = repo / "content/index.md"
+    source.write_text(
+        source.read_text(encoding="utf-8") + "\n[Fehlend](Nicht-vorhanden.md)\n",
+        encoding="utf-8",
+    )
+    before = snapshot_sources(repo)
+
+    assert (
+        main(
+            [
+                "--repo-root",
+                str(repo),
+                "--check",
+                "--dry-run",
+                "--strict",
+                "--only",
+                "index.md",
+            ]
+        )
+        == 2
+    )
+
+    assert snapshot_sources(repo) == before
+    assert not (repo / "site").exists()
+    assert not (repo / "build/docs").exists()
+
+
+def test_real_partial_mkdocs_preview_rejects_remote_browser_resource(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Partial preview must retain the generated-site remote-resource boundary."""
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    source = repo / "content/index.md"
+    source.write_text(
+        source.read_text(encoding="utf-8") + '\n<script src="//asset.example/app.js"></script>\n',
+        encoding="utf-8",
+    )
+    before = snapshot_sources(repo)
+
+    assert (
+        main(
+            [
+                "--repo-root",
+                str(repo),
+                "--check",
+                "--dry-run",
+                "--strict",
+                "--only",
+                "index.md",
+            ]
+        )
+        == 2
+    )
+
+    assert snapshot_sources(repo) == before
+    assert not (repo / "site").exists()
+    assert not (repo / "build/docs").exists()
+
+
+@pytest.mark.parametrize(
+    ("pattern_path", "matching_target"),
+    (
+        ("known*.md", "known-secret.md"),
+        ("known?.md", "knownX.md"),
+        ("known[ab].md", "knowna.md"),
+    ),
+)
+def test_real_partial_preview_does_not_broaden_excluded_page_patterns(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pattern_path: str,
+    matching_target: str,
+) -> None:
+    """An omitted literal filename must not exclude a matching selected page."""
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    _write_content_page(repo, pattern_path)
+    _write_content_page(repo, matching_target)
+    before = snapshot_sources(repo)
+
+    result = build_site(
+        repo,
+        check=True,
+        dry_run=True,
+        strict=True,
+        force=False,
+        site_url=None,
+        only=(PurePosixPath(matching_target),),
+    )
+
+    assert f"{PurePosixPath(matching_target).stem}/index.html" in result.site_hashes
+    assert f"{PurePosixPath(pattern_path).stem}/index.html" not in result.site_hashes
+    assert snapshot_sources(repo) == before
+    assert not (repo / "site").exists()
+    assert not (repo / "build/docs").exists()
+
+
+@pytest.mark.parametrize(
+    "literal_path",
+    ("!literal.md", "#literal.md", "star*.md", "query?.md", "bracket[ab].md"),
+)
+def test_real_partial_preview_excludes_literal_control_prefixes(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, literal_path: str
+) -> None:
+    """Gitignore control prefixes in omitted filenames stay literal and out of output."""
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    _write_content_page(repo, literal_path)
+
+    result = build_site(
+        repo,
+        check=True,
+        dry_run=True,
+        strict=True,
+        force=False,
+        site_url=None,
+        only=(PurePosixPath("index.md"),),
+    )
+
+    assert all(literal_path.removesuffix(".md") not in path for path in result.site_hashes)
+
+
+def test_real_partial_preview_rejects_transient_second_index_target(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient page cannot authorize a link outside the validated source snapshot."""
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    source = repo / "content/index.md"
+    source.write_text(
+        source.read_text(encoding="utf-8") + "\n[Race](Transient.md)\n",
+        encoding="utf-8",
+    )
+    before = snapshot_sources(repo)
+    real_index = build_docs_module.build_content_index
+    transient = repo / "content/Transient.md"
+    live_calls = 0
+
+    def racing_index(root: Path) -> object:
+        nonlocal live_calls
+        live_calls += 1
+        _write_content_page(repo, "Transient.md")
+        try:
+            return real_index(root)
+        finally:
+            transient.unlink()
+
+    monkeypatch.setattr(build_site_module, "build_content_index", racing_index, raising=False)
+
+    with pytest.raises(SiteBuildError, match="MkDocs strict build failed"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=True,
+            strict=True,
+            force=False,
+            site_url=None,
+            only=(PurePosixPath("index.md"),),
+        )
+
+    assert snapshot_sources(repo) == before
+    assert live_calls == 0
+    assert not transient.exists()
+    assert not (repo / "site").exists()
+    assert not (repo / "build/docs").exists()
+
+
+def test_real_partial_preview_rejects_index_outside_source_snapshot(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The immutable index must describe exactly the validated source snapshot."""
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    source = repo / "content/index.md"
+    source.write_text(
+        source.read_text(encoding="utf-8") + "\n[Race](Transient.md)\n",
+        encoding="utf-8",
+    )
+    before = snapshot_sources(repo)
+    real_index = build_docs_module.build_content_index
+    transient = repo / "content/Transient.md"
+
+    def racing_index(root: Path) -> object:
+        _write_content_page(repo, "Transient.md")
+        try:
+            return real_index(root)
+        finally:
+            transient.unlink()
+
+    monkeypatch.setattr(build_docs_module, "build_content_index", racing_index)
+
+    with pytest.raises(SiteBuildError, match="source snapshot"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=True,
+            strict=True,
+            force=False,
+            site_url=None,
+            only=(PurePosixPath("index.md"),),
+        )
+
+    assert snapshot_sources(repo) == before
+    assert not transient.exists()
+    assert not (repo / "site").exists()
+    assert not (repo / "build/docs").exists()
+
+
+def test_site_build_rejects_outer_to_docs_snapshot_race(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Docs rendering cannot switch to a transient state after transaction binding."""
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    source = repo / "content/index.md"
+    original = source.read_text(encoding="utf-8")
+    before = snapshot_sources(repo)
+    real_session = build_site_module.docs_preview_session
+
+    @contextmanager
+    def racing_session(*args: object, **kwargs: object) -> object:
+        source.write_text(original + "\n## Transient\n", encoding="utf-8")
+        try:
+            with real_session(*args, **kwargs) as preview:
+                source.write_text(original, encoding="utf-8")
+                yield preview
+        finally:
+            source.write_text(original, encoding="utf-8")
+
+    monkeypatch.setattr(build_site_module, "docs_preview_session", racing_session)
+
+    with pytest.raises(SiteBuildError, match="source-hash drift"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=True,
+            strict=True,
+            force=False,
+            site_url=None,
+            only=(PurePosixPath("index.md"),),
+        )
+
+    assert snapshot_sources(repo) == before
+    assert not (repo / "site").exists()
+    assert not (repo / "build/docs").exists()
+
+
+def test_real_partial_preview_preserves_known_omitted_fragment_anchors(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A full-build-valid fragment remains valid when its target page is omitted."""
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    _write_content_page(repo, "Anchor.md", "# Sichtbar\n## Explizit {#fixed}\n")
+    source = repo / "content/index.md"
+    source.write_text(
+        source.read_text(encoding="utf-8") + "\n[Abschnitt](Anchor.md#fixed)\n",
+        encoding="utf-8",
+    )
+
+    result = build_site(
+        repo,
+        check=True,
+        dry_run=True,
+        strict=True,
+        force=False,
+        site_url=None,
+        only=(PurePosixPath("index.md"),),
+    )
+
+    assert "index.html" in result.site_hashes
+
+
+@pytest.mark.parametrize(
+    ("body", "fragment"),
+    (
+        ("## safe_api\n", "safe_api"),
+        ("## a.b\n", "ab"),
+        ("## 中文\n", "_1"),
+        ("## 中文\n## 中文\n", "_2"),
+        ("## Ελληνικά\n", "_1"),
+    ),
+)
+def test_real_partial_preview_uses_canonical_mkdocs_fragment_semantics(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    body: str,
+    fragment: str,
+) -> None:
+    """Every full-build-valid canonical anchor stays valid in a partial preview."""
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    _write_content_page(repo, "Anchor.md", body)
+    source = repo / "content/index.md"
+    source.write_text(
+        source.read_text(encoding="utf-8") + f"\n[Abschnitt](Anchor.md#{fragment})\n",
+        encoding="utf-8",
+    )
+
+    full = build_site(
+        repo,
+        check=True,
+        dry_run=True,
+        strict=True,
+        force=False,
+        site_url=None,
+    )
+    partial = build_site(
+        repo,
+        check=True,
+        dry_run=True,
+        strict=True,
+        force=False,
+        site_url=None,
+        only=(PurePosixPath("index.md"),),
+    )
+
+    assert "index.html" in full.site_hashes
+    assert "index.html" in partial.site_hashes
+    assert "Anchor.md" not in partial.docs.docs_hashes
+    assert "Anchor/index.html" not in partial.site_hashes
+
+
+def test_real_partial_preview_rejects_unknown_omitted_fragment_anchor(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An omitted page does not make an unknown fragment valid."""
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    _write_content_page(repo, "Anchor.md", "# Sichtbar\n## Explizit {#fixed}\n")
+    source = repo / "content/index.md"
+    source.write_text(
+        source.read_text(encoding="utf-8") + "\n[Abschnitt](Anchor.md#missing)\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SiteBuildError, match="MkDocs strict build failed"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=True,
+            strict=True,
+            force=False,
+            site_url=None,
+            only=(PurePosixPath("index.md"),),
+        )
+
+
+def test_partial_preview_reuses_one_bound_index_for_both_mkdocs_phases(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Docs rendering and both MkDocs phases use one immutable content index."""
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    built: list[object] = []
+    validated: list[object] = []
+    real_build_index = build_docs_module.build_content_index
+    real_validate_navigation = build_site_module.validate_navigation
+
+    def record_build(root: Path) -> object:
+        index = real_build_index(root)
+        built.append(index)
+        return index
+
+    def record_validation(config: object, index: object) -> None:
+        validated.append(index)
+        real_validate_navigation(config, index)
+
+    monkeypatch.setattr(build_docs_module, "build_content_index", record_build)
+    monkeypatch.setattr(build_site_module, "validate_navigation", record_validation)
+
+    build_site(
+        repo,
+        check=True,
+        dry_run=True,
+        strict=True,
+        force=False,
+        site_url=None,
+        only=(PurePosixPath("index.md"),),
+    )
+
+    assert len(built) == 1
+    assert len(validated) == 2
+    assert all(index is built[0] for index in validated)
 
 
 def test_navigation_validation_uses_configured_content_root(
@@ -1625,7 +2062,7 @@ def test_temp_mkdocs_config_is_reproducible_for_equivalent_key_order(repo: Path)
         held_config_dir = io_utils.fd_directory_path(descriptor)
         first_path = build_site_module.write_temp_mkdocs_config(
             repo_root=repo,
-            content_root=repo / "content",
+            content_index=build_docs_module.build_content_index(repo / "content"),
             config_dir=held_config_dir,
             docs_dir=docs_dir,
             site_dir=site_dir,
@@ -1650,7 +2087,7 @@ def test_temp_mkdocs_config_is_reproducible_for_equivalent_key_order(repo: Path)
         )
         second_path = build_site_module.write_temp_mkdocs_config(
             repo_root=repo,
-            content_root=repo / "content",
+            content_index=build_docs_module.build_content_index(repo / "content"),
             config_dir=held_config_dir,
             docs_dir=docs_dir,
             site_dir=site_dir,
