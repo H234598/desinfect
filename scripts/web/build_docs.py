@@ -7,6 +7,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 import stat
+import sys
 
 import yaml
 
@@ -373,5 +374,20 @@ def docs_preview_session(
         except (OSError, StagingError, UnsafePathError, ValueError) as exc:
             raise BuildDocsError(str(exc)) from exc
         yield DocsPreview(docs_dir=preview_path, result=result)
-    finally:
-        stack.close()
+    except BaseException:
+        active = sys.exc_info()
+        try:
+            stack.__exit__(*active)
+        except BaseException as teardown_error:
+            if active[1] is not None:
+                active[1].add_note(f"Zusätzlicher Preview-Teardownfehler: {teardown_error}")
+            else:
+                raise
+        raise
+    else:
+        try:
+            stack.close()
+        except BuildDocsError:
+            raise
+        except (OSError, StagingError, UnsafePathError, ValueError) as exc:
+            raise BuildDocsError(str(exc)) from exc

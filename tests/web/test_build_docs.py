@@ -237,6 +237,30 @@ def test_build_docs_preview_preserves_caller_exception_and_cleans_up(repo: Path)
     assert not preview_path.exists()
 
 
+def test_build_docs_preview_preserves_caller_exception_after_target_mutation(
+    repo: Path,
+) -> None:
+    """Caller failure must win over no-change validation after target mutation."""
+
+    target = repo / "build/.docs-preview"
+    mark_generated_root(target, allowed_root=repo)
+    target_file = target / "keep.txt"
+    target_file.write_text("before", encoding="utf-8")
+    preview_path: Path | None = None
+
+    with pytest.raises(RuntimeError, match="caller boom") as raised:
+        with docs_preview_session(repo) as preview:
+            preview_path = preview.docs_dir
+            target_file.write_text("caller mutation", encoding="utf-8")
+            raise RuntimeError("caller boom")
+
+    assert type(raised.value) is RuntimeError
+    assert target_file.read_text(encoding="utf-8") == "caller mutation"
+    assert preview_path is not None
+    assert not preview_path.exists()
+    assert not list(target.parent.glob(f".{target.name}.staging-*"))
+
+
 def test_build_docs_preview_wraps_setup_failure_without_leaking_stage(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -253,7 +277,33 @@ def test_build_docs_preview_wraps_setup_failure_without_leaking_stage(
             pass
 
     assert isinstance(raised.value.__cause__, OSError)
-    assert not list((repo / "build").glob(".docs-preview.staging-*"))
+    target = repo / "build/.docs-preview"
+    assert not list(target.parent.glob(f".{target.name}.staging-*"))
+
+
+def test_build_docs_preview_wraps_normal_cleanup_failure(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A normal preview teardown failure remains a classified build error."""
+
+    @contextmanager
+    def fail_cleanup(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        yield repo / "build"
+        raise OSError("preview cleanup failed")
+
+    monkeypatch.setattr(build_docs_module, "preview_directory", fail_cleanup)
+    monkeypatch.setattr(
+        build_docs_module,
+        "render_docs_tree",
+        lambda *args, **kwargs: build_docs_module.DocsBuildResult({}, {}, False),
+    )
+
+    with pytest.raises(BuildDocsError, match="preview cleanup failed") as raised:
+        with docs_preview_session(repo):
+            pass
+
+    assert isinstance(raised.value.__cause__, OSError)
 
 
 def test_build_docs_preview_never_creates_build_root_through_injected_symlink(
