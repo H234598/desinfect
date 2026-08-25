@@ -480,6 +480,75 @@ def test_load_publication_config_rejects_overlapping_output_paths(
         config.write_text(original, encoding="utf-8")
 
 
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    (
+        (
+            {"build_root": "web/build", "docs_dir": "web/build/docs"},
+            "build_root overlaps reserved source root web",
+        ),
+        (
+            {"build_root": "config/build", "docs_dir": "config/build/docs"},
+            "build_root overlaps reserved source root config",
+        ),
+        ({"site_dir": "web/site"}, "site_dir overlaps reserved source root web"),
+        ({"site_dir": "config/site"}, "site_dir overlaps reserved source root config"),
+        ({"content_root": "web/content"}, "content_root overlaps reserved source root web"),
+        (
+            {"content_root": "config/content"},
+            "content_root overlaps reserved source root config",
+        ),
+    ),
+)
+def test_load_publication_config_rejects_reserved_source_root_overlap(
+    repo: Path, overrides: dict[str, str], message: str
+) -> None:
+    """Configured roots cannot consume fixed config or web source trees."""
+
+    config = repo / "config/publication.yaml"
+    original = config.read_text(encoding="utf-8")
+    defaults = {
+        "content_root": "content",
+        "build_root": "build",
+        "docs_dir": "build/docs",
+        "site_dir": "site",
+    }
+    values = {**defaults, **overrides}
+    config.write_text(
+        original.replace("content_root: content", f"content_root: {values['content_root']}")
+        .replace("build_root: build", f"build_root: {values['build_root']}")
+        .replace("docs_dir: build/docs", f"docs_dir: {values['docs_dir']}")
+        .replace("site_dir: site", f"site_dir: {values['site_dir']}"),
+        encoding="utf-8",
+    )
+
+    try:
+        with pytest.raises(BuildDocsError, match=message):
+            load_publication_config(repo)
+    finally:
+        config.write_text(original, encoding="utf-8")
+
+
+def test_load_publication_config_allows_near_prefix_roots(repo: Path) -> None:
+    """A sibling such as web-build is not an overlap with fixed web source."""
+
+    config = repo / "config/publication.yaml"
+    original = config.read_text(encoding="utf-8")
+    config.write_text(
+        original.replace("build_root: build", "build_root: web-build").replace(
+            "docs_dir: build/docs", "docs_dir: web-build/docs"
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        loaded = load_publication_config(repo)
+    finally:
+        config.write_text(original, encoding="utf-8")
+
+    assert loaded.build_root == repo / "web-build"
+
+
 def test_build_docs_rejects_duplicate_publication_config_keys(repo: Path) -> None:
     """Safe YAML loading alone accepts duplicate keys and hides configuration mistakes."""
 

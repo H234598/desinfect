@@ -39,6 +39,7 @@ _CONFIG_KEYS = frozenset(
     }
 )
 _PATH_KEYS = ("content_root", "build_root", "docs_dir", "site_dir")
+_RESERVED_SOURCE_ROOTS = (PurePosixPath("config"), PurePosixPath("web"))
 _GENERATED_SENTINEL = ".desinfect-generated"
 
 
@@ -161,6 +162,12 @@ def load_publication_config(repo_root: Path) -> PublicationConfig:
         raise BuildDocsError("publication config site_dir overlaps build_root")
     if _paths_overlap(paths["site_dir"], paths["content_root"]):
         raise BuildDocsError("publication config site_dir overlaps content_root")
+    for name in ("content_root", "build_root", "site_dir"):
+        for source_root in _RESERVED_SOURCE_ROOTS:
+            if _paths_overlap(paths[name], source_root):
+                raise BuildDocsError(
+                    f"publication config {name} overlaps reserved source root {source_root}"
+                )
     sentinel = parsed["generated_sentinel"]
     if sentinel != _GENERATED_SENTINEL:
         raise BuildDocsError(f"generated_sentinel must be {_GENERATED_SENTINEL}")

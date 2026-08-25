@@ -191,3 +191,55 @@ def test_atomic_write_accepts_exact_fd_root_after_ancestor_swap(
 
     assert (root_real / "stage/value.txt").read_bytes() == b"anchored"
     assert not (outside / "value.txt").exists()
+
+
+@pytest.mark.parametrize("base", ("/proc/self/fd", "/dev/fd"))
+def test_open_root_accepts_exact_directory_fd_alias(tmp_path: Path, base: str) -> None:
+    """Both supported FD aliases accept the exact held directory descriptor."""
+
+    if not Path(base).is_dir():
+        pytest.skip(f"FD alias unavailable: {base}")
+    with io_utils.open_root_directory(tmp_path) as descriptor:
+        with io_utils.open_root_directory(Path(base) / str(descriptor)) as duplicate:
+            assert os.fstat(duplicate).st_ino == os.fstat(descriptor).st_ino
+
+
+def test_open_root_rejects_noncanonical_fd_root_forms(tmp_path: Path) -> None:
+    """Lexical normalization must never turn a non-FD path into an FD root."""
+
+    with io_utils.open_root_directory(tmp_path) as descriptor:
+        fd = str(descriptor)
+        invalid = (
+            f"/proc/self/fd/0{fd}",
+            f"/proc/self/fd/{fd}/extra",
+            f"/tmp/../proc/self/fd/{fd}",
+            f"/proc/self/fd/{fd}/../{fd}",
+            f"/proc/self/fd/{'9' * 5000}",
+            f"/proc/self/fd/{2**63}",
+        )
+        for raw in invalid:
+            with pytest.raises(UnsafePathError):
+                with io_utils.open_root_directory(Path(raw)):
+                    pass
+
+    closed = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    os.close(closed)
+    with pytest.raises(UnsafePathError):
+        with io_utils.open_root_directory(Path("/proc/self/fd") / str(closed)):
+            pass
+
+    file_path = tmp_path / "not-a-directory"
+    file_path.write_text("file", encoding="utf-8")
+    file_fd = os.open(file_path, os.O_RDONLY)
+    try:
+        with pytest.raises(UnsafePathError):
+            with io_utils.open_root_directory(Path("/proc/self/fd") / str(file_fd)):
+                pass
+    finally:
+        os.close(file_fd)
+
+    symlink = tmp_path / "final-symlink"
+    symlink.symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(UnsafePathError):
+        with io_utils.open_root_directory(symlink):
+            pass

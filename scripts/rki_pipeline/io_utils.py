@@ -126,21 +126,23 @@ def _open_directory(name: str | Path, *, dir_fd: int | None = None) -> int:
 def _duplicate_fd_root(root: Path) -> int | None:
     """Duplicate an exact process FD path after checking it names a directory."""
 
-    absolute = Path(os.path.abspath(root))
+    raw = os.fspath(root)
+    if isinstance(raw, bytes):
+        raw = os.fsdecode(raw)
+    absolute = Path(os.path.abspath(raw))
     for base in (Path("/proc/self/fd"), Path("/dev/fd")):
         try:
             relative = absolute.relative_to(base)
         except ValueError:
             continue
-        if (
-            len(relative.parts) != 1
-            or not relative.parts[0].isdigit()
-            or str(int(relative.parts[0])) != relative.parts[0]
-        ):
+        if raw != str(absolute) or len(relative.parts) != 1 or not relative.parts[0].isdigit():
             raise UnsafePathError(f"Kein exakter FD-Wurzelpfad: {root}")
         try:
-            descriptor = os.dup(int(relative.parts[0]))
-        except OSError as exc:
+            descriptor_number = int(relative.parts[0])
+            if str(descriptor_number) != relative.parts[0]:
+                raise UnsafePathError(f"Kein exakter FD-Wurzelpfad: {root}")
+            descriptor = os.dup(descriptor_number)
+        except (ValueError, OverflowError, OSError) as exc:
             raise UnsafePathError(f"FD-Wurzelpfad ist nicht verfügbar: {root}") from exc
         try:
             metadata = os.fstat(descriptor)
