@@ -61,6 +61,7 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
     wrangler_path = root / "cloudflare" / "watchdog" / "wrangler.jsonc"
     worker_path = root / "cloudflare" / "watchdog" / "src" / "index.ts"
     runbook_path = root / "runbooks" / "CLOUDFLARE-WATCHDOG.md"
+    health_script_path = root / "scripts" / "verify_cloudflare_health.py"
     issues: list[ConfigIssue] = []
 
     workflow_value, error = _load(workflow_path, yaml.safe_load)
@@ -126,8 +127,17 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
         health = _step(job, "Verify deployed health and version") or {}
         health_run = str(health.get("run", ""))
         health_env = health.get("env", {})
-        if not isinstance(health_env, dict) or "CLOUDFLARE_WATCHDOG_HEALTH_URL" not in str(health_env.get("WATCHDOG_HEALTH_URL", "")) or not all(token in health_run for token in ("--proto '=https'", "payload.version !== expected")):
-            issues.append(_issue(workflow_path, "CFD009", f"{label}: exakte HTTPS-Health-/Versionsprüfung fehlt"))
+        if (
+            not isinstance(health_env, dict)
+            or health_env.get("EXPECTED_VERSION") != "${{ github.sha }}"
+            or "CLOUDFLARE_WATCHDOG_HEALTH_URL"
+            not in str(health_env.get("WATCHDOG_HEALTH_URL", ""))
+            or health_run
+            != 'python3 scripts/verify_cloudflare_health.py --url "$WATCHDOG_HEALTH_URL" --expected-version "$EXPECTED_VERSION"'
+        ):
+            issues.append(_issue(workflow_path, "CFD009", f"{label}: gemeinsame HTTPS-Health-/Versionsprüfung fehlt"))
+    if not health_script_path.is_file():
+        issues.append(_issue(health_script_path, "CFD009", "Readiness-Prüfskript fehlt"))
 
     package_value, error = _load(package_path, json.loads)
     if error:
