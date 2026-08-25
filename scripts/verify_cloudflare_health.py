@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Verify an exact Cloudflare Worker health response with bounded retries."""
+"""Verify exact Worker health with bounded Linux GitHub Actions process isolation."""
 from __future__ import annotations
 
 import argparse
 import http.client
 import json
+import multiprocessing
 import socket
 import ssl
 import sys
@@ -17,6 +18,7 @@ from urllib.parse import urlsplit
 MAX_ATTEMPTS = 5
 RETRY_DELAY_SECONDS = 3
 REQUEST_TIMEOUT_SECONDS = 5
+ATTEMPT_DEADLINE_SECONDS = 10
 
 
 class Response(Protocol):
@@ -62,7 +64,11 @@ def _connection(host: str, port: int | None = None, timeout: float | None = None
 
 
 def _target(url: str) -> tuple[str, int | None]:
-    parsed = urlsplit(url)
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        raise HealthCheckError(Failure("url").render()) from None
     if (
         parsed.scheme != "https"
         or not parsed.hostname
@@ -73,7 +79,7 @@ def _target(url: str) -> tuple[str, int | None]:
         or parsed.password
     ):
         raise ValueError("health URL must use HTTPS and exact /healthz endpoint")
-    return parsed.hostname, parsed.port
+    return parsed.hostname, port
 
 
 def _location_hostname(response: Response) -> str | None:
@@ -119,6 +125,59 @@ def _check_once(
             connection.close()
 
 
+def _child_check(
+    result: object,
+    host: str,
+    port: int | None,
+    expected_version: str,
+    connection_factory: ConnectionFactory,
+) -> None:
+    try:
+        failure = _check_once(host, port, expected_version, connection_factory)
+    except BaseException:
+        failure = Failure("http")
+    try:
+        result.send(failure)  # type: ignore[attr-defined]
+    finally:
+        result.close()  # type: ignore[attr-defined]
+
+
+def _check_with_deadline(
+    host: str,
+    port: int | None,
+    expected_version: str,
+    connection_factory: ConnectionFactory,
+) -> Failure | None:
+    """Run one attempt in a Linux child so DNS and body reads cannot outlive its deadline."""
+
+    if sys.platform != "linux":
+        raise RuntimeError("Cloudflare health readiness requires Linux fork process isolation")
+    context = multiprocessing.get_context("fork")
+    receive, send = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_child_check,
+        args=(send, host, port, expected_version, connection_factory),
+        daemon=True,
+    )
+    started = time.monotonic()
+    process.start()
+    send.close()
+    try:
+        process.join(max(0, ATTEMPT_DEADLINE_SECONDS - (time.monotonic() - started)))
+        if process.is_alive():
+            process.terminate()
+            process.join(0)
+            if process.is_alive():
+                process.kill()
+                process.join(0)
+            return Failure("deadline")
+        if receive.poll(0):
+            return receive.recv()
+        return Failure("http")
+    finally:
+        receive.close()
+
+
 def verify_health(
     url: str,
     expected_version: str,
@@ -131,7 +190,7 @@ def verify_health(
     host, port = _target(url)
     failure: Failure | None = None
     for attempt in range(MAX_ATTEMPTS):
-        failure = _check_once(host, port, expected_version, connection_factory)
+        failure = _check_with_deadline(host, port, expected_version, connection_factory)
         if failure is None:
             return
         if attempt + 1 < MAX_ATTEMPTS:

@@ -3,10 +3,12 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import multiprocessing
 import re
 import shutil
 import socket
 import ssl
+import time
 
 import pytest
 import yaml
@@ -151,10 +153,9 @@ class FakeResponse:
 class FakeConnection:
     def __init__(self, outcome: FakeResponse | BaseException) -> None:
         self.outcome = outcome
-        self.requests: list[tuple[str, str]] = []
 
     def request(self, method: str, path: str, **_: object) -> None:
-        self.requests.append((method, path))
+        assert (method, path) == ("GET", "/healthz")
         if isinstance(self.outcome, BaseException):
             raise self.outcome
 
@@ -169,15 +170,16 @@ class FakeConnection:
 class FakeConnections:
     def __init__(self, outcomes: list[FakeResponse | BaseException]) -> None:
         self.outcomes = outcomes
-        self.connections: list[FakeConnection] = []
+        self.calls = multiprocessing.Value("i", 0)
 
     def __call__(self, host: str, port: int | None = None, timeout: float | None = None) -> FakeConnection:
         assert host == "watchdog.example"
         assert port is None
         assert timeout == health.REQUEST_TIMEOUT_SECONDS
-        connection = FakeConnection(self.outcomes[len(self.connections)])
-        self.connections.append(connection)
-        return connection
+        with self.calls.get_lock():
+            outcome = self.outcomes[self.calls.value]
+            self.calls.value += 1
+        return FakeConnection(outcome)
 
 
 def healthy_response(version: str = "abc123") -> FakeResponse:
@@ -216,11 +218,7 @@ def test_health_check_retries_transient_failures_until_exact_success(
         connection_factory=connections,
         sleep=lambda _: None,
     )
-    assert len(connections.connections) == 2
-    assert [connection.requests for connection in connections.connections] == [
-        [("GET", "/healthz")],
-        [("GET", "/healthz")],
-    ]
+    assert connections.calls.value == 2
 
 
 def test_health_check_does_not_follow_redirect_and_reports_safe_details() -> None:
@@ -236,8 +234,7 @@ def test_health_check_does_not_follow_redirect_and_reports_safe_details() -> Non
             connection_factory=connections,
             sleep=lambda _: None,
         )
-    assert len(connections.connections) == health.MAX_ATTEMPTS
-    assert all(connection.requests == [("GET", "/healthz")] for connection in connections.connections)
+    assert connections.calls.value == health.MAX_ATTEMPTS
     assert str(caught.value) == (
         "health check failed: category=http http_status=301 location_hostname=awsas.de"
     )
@@ -267,7 +264,7 @@ def test_health_check_exact_response_returns_without_retry() -> None:
         connection_factory=connections,
         sleep=lambda _: None,
     )
-    assert len(connections.connections) == 1
+    assert connections.calls.value == 1
 
 
 def test_health_check_cli_logs_only_safe_failure_details(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -281,6 +278,47 @@ def test_health_check_cli_logs_only_safe_failure_details(monkeypatch: pytest.Mon
     monkeypatch.setattr(health, "verify_health", fail)
     assert health.main(["--url", "https://watchdog.example/healthz", "--expected-version", "abc123"]) == 1
     assert capsys.readouterr().err == f"{error}\n"
+
+
+def test_health_check_deadline_covers_blocking_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(health, "MAX_ATTEMPTS", 1)
+    monkeypatch.setattr(health, "ATTEMPT_DEADLINE_SECONDS", 0.15, raising=False)
+
+    def blocking_dns(*_: object, **__: object) -> object:
+        time.sleep(0.75)
+        raise socket.gaierror("unresolved")
+
+    monkeypatch.setattr(socket, "getaddrinfo", blocking_dns)
+    started = time.monotonic()
+    with pytest.raises(health.HealthCheckError, match="category=deadline"):
+        health.verify_health("https://watchdog.example/healthz", "abc123")
+    assert time.monotonic() - started < 0.5
+
+
+def test_health_check_deadline_covers_trickling_response_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    class SlowResponse(FakeResponse):
+        def read(self) -> bytes:
+            time.sleep(0.75)
+            return healthy_response().read()
+
+    monkeypatch.setattr(health, "MAX_ATTEMPTS", 1)
+    monkeypatch.setattr(health, "ATTEMPT_DEADLINE_SECONDS", 0.15, raising=False)
+    started = time.monotonic()
+    with pytest.raises(health.HealthCheckError, match="category=deadline"):
+        health.verify_health(
+            "https://watchdog.example/healthz",
+            "abc123",
+            connection_factory=FakeConnections([SlowResponse(200)]),
+        )
+    assert time.monotonic() - started < 0.5
+
+
+def test_health_check_cli_redacts_malformed_port(capsys: pytest.CaptureFixture[str]) -> None:
+    secret = "secret-token"
+    assert health.main(
+        ["--url", f"https://watchdog.example:{secret}/healthz", "--expected-version", "abc123"]
+    ) == 1
+    assert capsys.readouterr().err == "health check failed: category=url\n"
 
 
 def test_validator_rejects_tagged_action(tmp_path: Path) -> None:
