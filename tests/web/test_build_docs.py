@@ -9,6 +9,7 @@ import shutil
 import pytest
 
 from scripts.rki_pipeline.io_utils import mark_generated_root
+from scripts.rki_pipeline import staging as staging_module
 from scripts.rki_pipeline.staging import StagingError
 import scripts.web.build_docs as build_docs_module
 from scripts.web.build_docs import (
@@ -234,6 +235,25 @@ def test_build_docs_preview_preserves_caller_exception_and_cleans_up(repo: Path)
     assert type(raised.value) is ValueError
     assert preview_path is not None
     assert not preview_path.exists()
+
+
+def test_build_docs_preview_wraps_setup_failure_without_leaking_stage(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Preview setup failures stay classified while staging owns cleanup."""
+
+    def fail_mark(descriptor: int) -> None:
+        del descriptor
+        raise OSError("preview setup failed")
+
+    monkeypatch.setattr(staging_module, "mark_generated_root_fd", fail_mark)
+
+    with pytest.raises(BuildDocsError, match="preview setup failed") as raised:
+        with docs_preview_session(repo):
+            pass
+
+    assert isinstance(raised.value.__cause__, OSError)
+    assert not list((repo / "build").glob(".docs-preview.staging-*"))
 
 
 def test_build_docs_preview_never_creates_build_root_through_injected_symlink(

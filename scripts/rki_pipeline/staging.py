@@ -527,3 +527,13 @@ def staged_directory(
                     raise StagingError(
                         f"Stagingverzeichnis konnte nicht bereinigt werden: {cleanup_error}"
                     ) from cleanup_error
+
+
+@contextmanager
+def preview_directory(target: Path, *, allowed_root: Path) -> Iterator[Path]:
+    """Yield an FD-anchored generated directory without publishing it."""
+
+    state = StagingState()
+    with staged_directory(target, allowed_root=allowed_root, state=state) as stage:
+        state.no_change = True
+        yield stage
