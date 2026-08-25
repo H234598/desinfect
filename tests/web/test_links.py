@@ -8,7 +8,7 @@ import pytest
 
 from scripts.web.content_index import build_content_index
 from scripts.web.link_converters import convert_for_web
-from scripts.web.link_resolution import resolve_occurrence
+from scripts.web.link_resolution import _candidate_relatives, resolve_occurrence
 from scripts.web.link_types import LinkError, scan_wikilinks
 
 
@@ -153,6 +153,7 @@ def test_resolution_supports_id_title_alias_paths_indexes_and_headings(tmp_path:
         ("../GUIDES/target.md", "case-mismatch"),
         ("../../outside.md", "root-escape"),
         ("/absolute.md", "root-escape"),
+        (".", "missing-document"),
         ("https://example.invalid", "external"),
         ("missing", "missing-document"),
     ),
@@ -168,6 +169,13 @@ def test_resolution_fails_closed_for_case_escape_external_and_missing(
     assert resolution.status == status
 
 
+def test_current_directory_target_produces_no_relative_candidates(tmp_path: Path) -> None:
+    source = _write_page(tmp_path, "source.md", title="Source")
+    page = build_content_index(tmp_path).page_for_path(source)
+
+    assert _candidate_relatives(page, ".") == ((), False)
+
+
 def test_resolution_reports_ambiguous_lookup_and_heading(tmp_path: Path) -> None:
     source = _write_page(tmp_path, "source.md", title="Source")
     _write_page(tmp_path, "a/topic.md", title="First", body="## Same\n## Same\n")
@@ -178,6 +186,24 @@ def test_resolution_reports_ambiguous_lookup_and_heading(tmp_path: Path) -> None
         resolve_occurrence(index, _occurrence(source, "[[a/topic#Same]]")).status
         == "ambiguous-heading"
     )
+
+
+def test_explicit_heading_requires_its_exact_anchor(tmp_path: Path) -> None:
+    source = _write_page(tmp_path, "source.md", title="Source")
+    _write_page(
+        tmp_path,
+        "target.md",
+        title="Target",
+        body="## Overview {#overview}\n",
+    )
+    index = build_content_index(tmp_path)
+
+    text_match = resolve_occurrence(index, _occurrence(source, "[[target#Overview]]"))
+    anchor_match = resolve_occurrence(index, _occurrence(source, "[[target#overview]]"))
+
+    assert text_match.status == "missing-heading"
+    assert anchor_match.ok
+    assert anchor_match.anchor == "overview"
 
 
 def test_assets_and_markdown_transclusion_are_handled_explicitly(tmp_path: Path) -> None:

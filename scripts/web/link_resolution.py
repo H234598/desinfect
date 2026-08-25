@@ -28,6 +28,8 @@ def _candidate_relatives(source: ContentPage, target: str) -> tuple[tuple[str, .
     combined = posixpath.normpath(posixpath.join(source.relative_path.parent.as_posix(), target))
     if combined == ".." or combined.startswith("../"):
         return (), True
+    if combined == ".":
+        return (), False
     raw = PurePosixPath(combined)
     candidates: list[PurePosixPath]
     if raw.suffix:
@@ -87,9 +89,8 @@ def _resolve_heading(page: ContentPage, requested: str) -> Resolution:
     matches = {
         (heading.anchor, heading.text): heading
         for heading in page.headings
-        if normalize_key(heading.text) == key
-        or heading.anchor == requested
-        or heading.anchor == slug
+        if heading.anchor == requested
+        or (not heading.explicit and (normalize_key(heading.text) == key or heading.anchor == slug))
     }
     path = page.source_path
     if len(matches) == 1:
