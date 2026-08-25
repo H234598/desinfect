@@ -96,10 +96,11 @@ class _ExternalAssetParser(HTMLParser):
             "modulepreload",
             "preload",
             "stylesheet",
-        }.intersection((attributes.get("rel") or "").split()):
+        }.intersection((attributes.get("rel") or "").lower().split()):
             return
         value = attributes.get(attribute)
-        if value is not None and value.startswith(("http:", "https:", "//")):
+        normalized = value.lstrip().lower() if value is not None else ""
+        if normalized.startswith(("http:", "https:", "//")):
             self.urls.append(value)
 
 
@@ -108,6 +109,23 @@ def _external_asset_urls(html: str) -> list[str]:
     parser.feed(html)
     parser.close()
     return parser.urls
+
+
+def test_external_asset_urls_are_case_and_whitespace_insensitive() -> None:
+    """Remote resource schemes and link relations follow HTML casing rules."""
+
+    html = """
+    <script src="HTTPS://script.example/app.js"></script>
+    <script src=" https://space.example/app.js"></script>
+    <link rel="STYLESHEET" href="https://style.example/site.css">
+    <a href="https://content.example/page">Content link</a>
+    """
+
+    assert _external_asset_urls(html) == [
+        "HTTPS://script.example/app.js",
+        " https://space.example/app.js",
+        "https://style.example/site.css",
+    ]
 
 
 def test_build_docs_publishes_transformed_copy_and_preserves_sources(repo: Path) -> None:
