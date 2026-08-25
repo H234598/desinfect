@@ -463,7 +463,7 @@ def _contains_external_url(value: object) -> bool:
     return False
 
 
-def _validate_static_mkdocs_config(parsed: dict[object, object], *, repo_root: Path) -> None:
+def _validate_static_mkdocs_config(parsed: dict[object, object], *, content_root: Path) -> None:
     theme = parsed.get("theme")
     if isinstance(theme, Mapping):
         asset_fields = (
@@ -522,7 +522,7 @@ def _validate_static_mkdocs_config(parsed: dict[object, object], *, repo_root: P
     if parsed.get("extra_css") != ["assets/stylesheets/extra.css"]:
         raise SiteBuildError("mkdocs extra_css must contain only the local stylesheet")
     try:
-        validate_navigation(parsed, build_content_index(repo_root / "content"))
+        validate_navigation(parsed, build_content_index(content_root))
     except NavigationError as exc:
         raise SiteBuildError(str(exc)) from exc
 
@@ -569,6 +569,7 @@ def _validate_site_tree(stage: Path, *, partial: bool) -> Mapping[str, str]:
 def write_temp_mkdocs_config(
     *,
     repo_root: Path,
+    content_root: Path,
     config_dir: Path,
     docs_dir: Path,
     site_dir: Path,
@@ -586,7 +587,7 @@ def write_temp_mkdocs_config(
         parsed = yaml.safe_load(source.read_text(encoding="utf-8"))
         if not isinstance(parsed, dict):
             raise SiteBuildError("mkdocs configuration must be a mapping")
-        _validate_static_mkdocs_config(parsed, repo_root=repo_root)
+        _validate_static_mkdocs_config(parsed, content_root=content_root)
         parsed = runtime_navigation_config(parsed, partial=partial)
         if not docs_dir.is_absolute() or not site_dir.is_absolute():
             raise SiteBuildError("mkdocs docs_dir and site_dir must be absolute directories")
@@ -706,6 +707,7 @@ def _run_site_build(
             try:
                 config_path = write_temp_mkdocs_config(
                     repo_root=repo_root,
+                    content_root=publication.content_root,
                     config_dir=config_stage,
                     docs_dir=docs_dir,
                     site_dir=site_dir,

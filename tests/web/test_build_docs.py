@@ -1234,6 +1234,35 @@ def test_real_mkdocs_child_can_use_held_fd_stages(repo: Path) -> None:
     assert not (repo / "build/docs").exists()
 
 
+def test_navigation_validation_uses_configured_content_root(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Static navigation validates targets from publication content_root."""
+
+    configured_content = repo / "published-content"
+    (repo / "content").rename(configured_content)
+    (repo / "content").mkdir()
+    config_path = repo / "config/publication.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "content_root: content", "content_root: published-content"
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    result = build_site(
+        repo,
+        check=True,
+        dry_run=True,
+        strict=True,
+        force=False,
+        site_url=None,
+    )
+
+    assert result.published is False
+
+
 def test_strict_site_is_local_german_and_has_404(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1332,6 +1361,7 @@ def test_temp_mkdocs_config_is_reproducible_for_equivalent_key_order(repo: Path)
         held_config_dir = io_utils.fd_directory_path(descriptor)
         first_path = build_site_module.write_temp_mkdocs_config(
             repo_root=repo,
+            content_root=repo / "content",
             config_dir=held_config_dir,
             docs_dir=docs_dir,
             site_dir=site_dir,
@@ -1356,6 +1386,7 @@ def test_temp_mkdocs_config_is_reproducible_for_equivalent_key_order(repo: Path)
         )
         second_path = build_site_module.write_temp_mkdocs_config(
             repo_root=repo,
+            content_root=repo / "content",
             config_dir=held_config_dir,
             docs_dir=docs_dir,
             site_dir=site_dir,
