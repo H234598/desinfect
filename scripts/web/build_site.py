@@ -88,10 +88,7 @@ _CSS_IMPORT = re.compile(
     r"@import\s+(?P<target>\"[^\"]*\"?|'[^']*'?|[^;\s]+)",
     re.IGNORECASE,
 )
-_CSS_IMAGE_FUNCTION = re.compile(
-    r"(?<![\w-])(?:-webkit-image-set|image-set|image)\s*\(",
-    re.IGNORECASE,
-)
+_CSS_IMAGE_FUNCTIONS = frozenset({"-webkit-image-set", "image", "image-set"})
 _CSS_COMMENT = re.compile(r"/\*.*?(?:\*/|$)", re.DOTALL)
 _CSS_ESCAPE = re.compile(
     r"\\(?:"
@@ -304,30 +301,48 @@ def _normalized_css(css: str) -> str:
 
 
 def _css_image_function_strings(css: str) -> Iterator[tuple[int, str]]:
-    for match in _CSS_IMAGE_FUNCTION.finditer(css):
-        depth = 1
-        position = match.end()
-        quote: str | None = None
-        quote_depth = 0
-        quote_start = 0
-        while position < len(css) and depth:
-            character = css[position]
-            if quote is not None:
-                if character == quote:
-                    if quote_depth == 1:
-                        yield quote_start, css[quote_start:position]
-                    quote = None
-            elif character in {'"', "'"}:
-                quote = character
-                quote_depth = depth
-                quote_start = position + 1
-            elif character == "(":
-                depth += 1
-            elif character == ")":
-                depth -= 1
-            position += 1
-        if quote is not None and quote_depth == 1:
-            yield quote_start, css[quote_start:position]
+    function_stack: list[bool] = []
+    token_start: int | None = None
+    pending_name: str | None = None
+    quote: str | None = None
+    quote_start = 0
+    capture_quote = False
+
+    for position, character in enumerate(css):
+        if quote is not None:
+            if character == quote:
+                if capture_quote:
+                    yield quote_start, css[quote_start:position]
+                quote = None
+            continue
+
+        if character in {'"', "'"}:
+            quote = character
+            quote_start = position + 1
+            capture_quote = bool(function_stack and function_stack[-1])
+            token_start = None
+            pending_name = None
+        elif character.isalnum() or character in {"-", "_"}:
+            if token_start is None:
+                token_start = position
+                pending_name = None
+        elif character in _ASCII_WHITESPACE:
+            if token_start is not None:
+                pending_name = css[token_start:position].casefold()
+                token_start = None
+        elif character == "(":
+            name = css[token_start:position].casefold() if token_start is not None else pending_name
+            function_stack.append(name in _CSS_IMAGE_FUNCTIONS)
+            token_start = None
+            pending_name = None
+        else:
+            if character == ")" and function_stack:
+                function_stack.pop()
+            token_start = None
+            pending_name = None
+
+    if quote is not None and capture_quote:
+        yield quote_start, css[quote_start:]
 
 
 def external_css_asset_urls(css: str) -> list[str]:

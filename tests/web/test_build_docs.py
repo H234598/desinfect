@@ -161,6 +161,38 @@ def test_external_css_asset_urls_allow_escaped_local_and_commented_data_targets(
 
 
 @pytest.mark.parametrize(
+    "css",
+    (
+        "x::before { content: \"image-set('https://asset.example/literal.png' 1x)\"; }",
+        "[data-image=\"image('https://asset.example/literal.png')\"] { color: red; }",
+        "x { --literal: \"-webkit-image-set('//asset.example/literal.png' 1x)\"; }",
+    ),
+)
+def test_external_css_asset_urls_ignore_image_functions_in_strings(css: str) -> None:
+    """Image-function text inside a CSS string does not load a resource."""
+
+    assert build_site_module.external_css_asset_urls(css) == []
+
+
+def test_css_image_function_scan_has_linear_character_reads() -> None:
+    """Nested image functions cannot trigger a rescan from every opening token."""
+
+    reads = [0]
+
+    class CountingCss(str):
+        def __getitem__(self, key: int | slice) -> str:
+            reads[0] += 1
+            return super().__getitem__(key)
+
+    target = "https://asset.example/nested.png"
+    nesting = 200
+    css = CountingCss("image(" * nesting + repr(target) + ")" * nesting)
+
+    assert [value for _, value in build_site_module._css_image_function_strings(css)] == [target]
+    assert reads[0] <= len(css) * 2
+
+
+@pytest.mark.parametrize(
     "html",
     (
         '<script src="\x01 h\tttps://asset.example/app.js"></script>',
