@@ -206,6 +206,23 @@ def test_explicit_heading_requires_its_exact_anchor(tmp_path: Path) -> None:
     assert anchor_match.anchor == "overview"
 
 
+def test_exact_heading_anchor_takes_priority_over_implicit_fallback(tmp_path: Path) -> None:
+    source = _write_page(tmp_path, "source.md", title="Source")
+    _write_page(
+        tmp_path,
+        "target.md",
+        title="Target",
+        body="## Explicit {#overview}\n## Overview\n",
+    )
+    index = build_content_index(tmp_path)
+
+    resolution = resolve_occurrence(index, _occurrence(source, "[[target#overview]]"))
+
+    assert resolution.ok
+    assert resolution.heading == "Explicit"
+    assert resolution.anchor == "overview"
+
+
 def test_assets_and_markdown_transclusion_are_handled_explicitly(tmp_path: Path) -> None:
     source = _write_page(tmp_path, "source.md", title="Source")
     target = _write_page(tmp_path, "target.md", title="Target")

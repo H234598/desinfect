@@ -90,8 +90,14 @@ def _resolve_heading(page: ContentPage, requested: str) -> Resolution:
         (heading.anchor, heading.text): heading
         for heading in page.headings
         if heading.anchor == requested
-        or (not heading.explicit and (normalize_key(heading.text) == key or heading.anchor == slug))
     }
+    if not matches:
+        matches = {
+            (heading.anchor, heading.text): heading
+            for heading in page.headings
+            if not heading.explicit
+            and (normalize_key(heading.text) == key or heading.anchor == slug)
+        }
     path = page.source_path
     if len(matches) == 1:
         heading = next(iter(matches.values()))
