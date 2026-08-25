@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+import os
 from pathlib import Path, PurePosixPath
 import stat
 import tempfile
@@ -16,9 +17,13 @@ from scripts.rki_pipeline.io_utils import (
     atomic_write_bytes,
     atomic_write_text,
     ensure_within,
-    mark_generated_root,
+    fd_directory_path,
+    mark_generated_root_fd,
     normalize_posix_path,
+    open_directory_beneath,
+    open_root_directory,
     relative_path_beneath,
+    remove_tree_at,
     sha256_file,
 )
 from scripts.rki_pipeline.staging import StagingError, staged_directory
@@ -365,17 +370,31 @@ def docs_preview_session(
     root = _repo_root(repo_root)
     config = load_publication_config(root)
     try:
-        config.build_root.mkdir(parents=True, exist_ok=True)
-        temporary = tempfile.TemporaryDirectory(prefix=".docs-preview-", dir=config.build_root)
+        build_relative = relative_path_beneath(config.build_root, root)
     except (OSError, UnsafePathError, ValueError) as exc:
         raise BuildDocsError(str(exc)) from exc
-    with temporary as directory:
-        preview = Path(directory)
+    with open_root_directory(root, create=True) as root_fd:
+        build_fd: int | None = None
+        preview_fd: int | None = None
+        preview_name: str | None = None
         try:
-            mark_generated_root(preview, allowed_root=root)
-            result = render_docs_tree(root, preview, only=only)
-        except BuildDocsError:
-            raise
-        except (OSError, UnsafePathError, ValueError) as exc:
-            raise BuildDocsError(str(exc)) from exc
-        yield DocsPreview(docs_dir=preview.resolve(), result=result)
+            try:
+                build_fd = open_directory_beneath(root_fd, build_relative.parts, create=True)
+                build_path = fd_directory_path(build_fd)
+                preview_path = Path(tempfile.mkdtemp(prefix=".docs-preview-", dir=build_path))
+                preview_name = preview_path.name
+                preview_fd = open_directory_beneath(build_fd, (preview_name,))
+                mark_generated_root_fd(preview_fd)
+                result = render_docs_tree(root, fd_directory_path(preview_fd), only=only)
+            except BuildDocsError:
+                raise
+            except (OSError, UnsafePathError, ValueError) as exc:
+                raise BuildDocsError(str(exc)) from exc
+            yield DocsPreview(docs_dir=preview_path.resolve(), result=result)
+        finally:
+            if preview_fd is not None:
+                os.close(preview_fd)
+            if preview_name is not None and build_fd is not None:
+                remove_tree_at(build_fd, preview_name)
+            if build_fd is not None:
+                os.close(build_fd)

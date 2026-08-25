@@ -236,6 +236,41 @@ def test_build_docs_preview_preserves_caller_exception_and_cleans_up(repo: Path)
     assert not preview_path.exists()
 
 
+def test_build_docs_preview_never_creates_build_root_through_injected_symlink(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Path-based preview-root creation after config loading can escape the repository."""
+
+    config_path = repo / "config/publication.yaml"
+    original = config_path.read_text(encoding="utf-8")
+    config_path.write_text(
+        original.replace("build_root: build", "build_root: generated/build"),
+        encoding="utf-8",
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real_load = build_docs_module.load_publication_config
+
+    def load_then_inject(root: Path) -> object:
+        result = real_load(root)
+        (repo / "generated").symlink_to(outside, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(build_docs_module, "load_publication_config", load_then_inject)
+
+    try:
+        with pytest.raises(BuildDocsError):
+            with docs_preview_session(repo):
+                pass
+    finally:
+        generated = repo / "generated"
+        if generated.is_symlink():
+            generated.unlink()
+        config_path.write_text(original, encoding="utf-8")
+
+    assert not (outside / "build").exists()
+
+
 def test_build_docs_rejects_duplicate_publication_config_keys(repo: Path) -> None:
     """Safe YAML loading alone accepts duplicate keys and hides configuration mistakes."""
 
