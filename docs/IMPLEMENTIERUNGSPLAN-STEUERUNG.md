@@ -1,6 +1,6 @@
 ---
 title: Implementierungsplan V3 – Steuerung
-status: P09.4 blockiert; P10.1 als nächster interner Schritt
+status: P10.1 umgesetzt; P09.4 blockiert; P10.2 als nächster interner Schritt
 source_plan_sha256: aa50863cde1313a7039691b4ca596c1ab498d0fab0008da324de5cb69f12ffc4
 repository: H234598/desinfect
 branch: main
@@ -47,12 +47,16 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 - **P09.3:** PR #33, Merge `accec2b4e5cbb92970b4157641fce69c7bcb10c5`
 - **P09.3-Gate:** geprüfter Head `c37f864`; GitHub Actions `32781301922` sowie Nach-Merge-Lauf `32781564903` erfolgreich; CodeRabbit approved und qlty erfolgreich; beide Reviewthreads aufgelöst; 1327 Pytest-, 9 Unittest-, 2 Node- und 36 Workers-Vitest-Tests sowie TypeScript-Typprüfung, Wrangler-Typdriftprüfung, Deployment-Dry-Run und npm audit erfolgreich.
 - **P09.4-Implementierungsstand:** PR #35, Merge `f9ce544e8b094db3d919ae920c989214e25bac86`, geprüfter Head `d72b0a12c950c3beb2552af9909c66b975cb2cfa`; Cloudflare-Gate `32786594070`, Baseline-Gate `32786594072`, CodeRabbit approved und qlty erfolgreich; Nach-Merge-Läufe Cloudflare `32786895489` und Baseline `32786895469` erfolgreich.
-- **P09.4-Blocker:** Das Repository besitzt nur das Environment `github-pages`. `cloudflare-watchdog-staging`, `cloudflare-watchdog-production` und deren Secrets fehlen; sicherer Staging-/Production-Rollout und produktive Runtimeabnahme sind deshalb nicht möglich. P09.4 ist nicht umgesetzt.
-- **Fortschritt:** 32 von 60 Arbeitspaketen umgesetzt; 27 offen; 0 in Arbeit; 0 im Review; 1 blockiert.
+- **P09.4-Custom-Domain-Fix:** PR #38, Merge `4d1acd9c252db838c1a78223c138cf4d1d2363f2`, geprüfter Head `2056e60`; GitHub Actions `32799960155` und `32799960202`, CodeRabbit approved und qlty erfolgreich; `staging.workers.desinfect.telacore.org` und `production.workers.desinfect.telacore.org` konfiguriert, `workers.dev` deaktiviert.
+- **P09.4-Environment-Stand:** `cloudflare-watchdog-staging` und `cloudflare-watchdog-production` besitzen Required Reviewer `H234598` sowie die benannten Secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` und `CLOUDFLARE_WATCHDOG_HEALTH_URL`.
+- **P09.4-Blocker:** Workflow `32800551483` hat die Worker-Validierung erfolgreich abgeschlossen und wartet vor dem Staging-Deploy auf menschliche Environment-Freigabe. Danach fehlen Production-Freigabe, Production-Rollout und produktive Runtimeabnahme. P09.4 ist nicht umgesetzt.
+- **P10.1:** PR #37, Merge `f1e8c1bc72ec80648855a39f9b5c304bc909ff7a`
+- **P10.1-Gate:** geprüfter Head `8b0ddf0`; GitHub Actions `32799650475` und `32799650531` sowie Nach-Merge-Läufe `32800771394` und `32800771392` erfolgreich; CodeRabbit approved und qlty erfolgreich; alle vier Reviewthreads aufgelöst; finale PR-CI mit 1465 Pytest- und 9 Unittest-Tests, P10.1-Suite auf Merge-Stand mit 123 Tests sowie Closeout-Gesamtsuite mit 1469 Pytest-Tests erfolgreich.
+- **Fortschritt:** 33 von 60 Arbeitspaketen umgesetzt; 26 offen; 0 in Arbeit; 0 im Review; 1 blockiert.
 
-## Nächster interner Schritt P10.1
+## Nächster interner Schritt P10.2
 
-P09.4 bleibt trotz gemergtem Deployment-Code `blockiert`, bis beide geschützten Cloudflare-Environments samt Secrets eingerichtet und Staging-/Production-Rollout sowie produktive Runtimeabnahme belegt sind. P10.1 kann als unabhängiger interner Schritt parallel weitergeführt werden.
+P10.1 ist umgesetzt. P10.2 bleibt `offen`, bis atomarer Webbuild und MkDocs Strict implementiert, gemergt und remote abgenommen sind. P09.4 bleibt bis zur menschlichen Staging-Freigabe, nachfolgenden Production-Freigabe und produktiven Runtimeabnahme `blockiert`.
 
 ## Arbeitspakete
 
@@ -88,8 +92,8 @@ P09.4 bleibt trotz gemergtem Deployment-Code `blockiert`, bis beide geschützten
 - [x] **P09.1** Cloudflare-Worker-/DO-Projektfundament _(umgesetzt, PR #29, Merge `276e206381d9143547fddfc62cf51d6915cf046f`)_
 - [x] **P09.2** GitHub-App-JWT und feste API-Operationen _(umgesetzt, PR #31, Merge `d02447cf5bd701dbdb961d22aa2d64609a69a369`)_
 - [x] **P09.3** DO-Sperre, Idempotenz, Alarm und Nachkontrolle _(umgesetzt, PR #33, Merge `accec2b4e5cbb92970b4157641fce69c7bcb10c5`)_
-- [ ] **P09.4** Cloudflare-Deploy und Betriebsgrenzen _(blockiert; PR #35, Merge `f9ce544e8b094db3d919ae920c989214e25bac86`; Runtimeabnahme fehlt)_
-- [ ] **P10.1** Contentmodell, Wikilinks und Callouts
+- [ ] **P09.4** Cloudflare-Deploy und Betriebsgrenzen _(blockiert; PRs #35 und #38 gemergt; Staging-Freigabe, Production-Rollout und Runtimeabnahme fehlen)_
+- [x] **P10.1** Contentmodell, Wikilinks und Callouts _(umgesetzt, PR #37, Merge `f1e8c1bc72ec80648855a39f9b5c304bc909ff7a`)_
 - [ ] **P10.2** Atomarer Webbuild und MkDocs Strict
 - [ ] **P10.3** Informationsarchitektur, Wartungsicon und Tabellen
 - [ ] **P10.4** Backendneutrale Downloads, Status- und Rechtshinweise
