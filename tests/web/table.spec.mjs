@@ -302,8 +302,8 @@ test("enhancement uses physical indices around non-sortable headers", () => {
       { label: "Titel", column: "title", type: "text" },
     ],
     rows: [
-      ["✓", "Hände", "Zeta"],
-      ["", "Flächen", "Alpha"],
+      ["A", "Hände", "Zeta"],
+      ["Z", "Flächen", "Alpha"],
     ],
   });
   const document = new FakeDocument([fixture.table]);
@@ -312,8 +312,8 @@ test("enhancement uses physical indices around non-sortable headers", () => {
 
   descendants(fixture.headerNodes[1], "button")[0].dispatch("click");
   assert.deepEqual(rowTexts(fixture.tbody.rows), [
-    ["", "Flächen", "Alpha"],
-    ["✓", "Hände", "Zeta"],
+    ["Z", "Flächen", "Alpha"],
+    ["A", "Hände", "Zeta"],
   ]);
   assert.deepEqual(
     descendants(fixture.region, "option").map((option) => option.value),
