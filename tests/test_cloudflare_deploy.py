@@ -3,12 +3,19 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import multiprocessing
+import os
 import re
 import shutil
+import signal
+import socket
+import ssl
+import time
 
 import pytest
 import yaml
 
+from scripts import verify_cloudflare_health as health
 from scripts.validate_cloudflare_config import validate_repository
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +42,7 @@ def contract_copy(tmp_path: Path) -> Path:
         "cloudflare/watchdog/wrangler.jsonc",
         "cloudflare/watchdog/src/index.ts",
         "runbooks/CLOUDFLARE-WATCHDOG.md",
+        "scripts/verify_cloudflare_health.py",
     )
     for relative in paths:
         source = ROOT / relative
@@ -120,8 +128,270 @@ def test_deploy_uses_locked_cli_and_checks_exact_health_version() -> None:
         health = named_step(jobs[name], "Verify deployed health and version")
         assert health["env"]["EXPECTED_VERSION"] == "${{ github.sha }}"
         assert health["env"]["WATCHDOG_HEALTH_URL"] == "${{ secrets.CLOUDFLARE_WATCHDOG_HEALTH_URL }}"
-        assert "--proto '=https'" in health["run"]
-        assert "payload.version !== expected" in health["run"]
+        assert health["run"] == (
+            'python3 scripts/verify_cloudflare_health.py --url "$WATCHDOG_HEALTH_URL" '
+            '--expected-version "$EXPECTED_VERSION"'
+        )
+
+
+class FakeResponse:
+    def __init__(
+        self,
+        status: int,
+        body: bytes = b"",
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.status = status
+        self.body = body
+        self.headers = headers or {}
+
+    def read(self) -> bytes:
+        return self.body
+
+    def getheader(self, name: str) -> str | None:
+        return self.headers.get(name)
+
+
+class FakeConnection:
+    def __init__(self, outcome: FakeResponse | BaseException) -> None:
+        self.outcome = outcome
+
+    def request(self, method: str, path: str, **_: object) -> None:
+        assert (method, path) == ("GET", "/healthz")
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+
+    def getresponse(self) -> FakeResponse:
+        assert isinstance(self.outcome, FakeResponse)
+        return self.outcome
+
+    def close(self) -> None:
+        pass
+
+
+class FakeConnections:
+    def __init__(self, outcomes: list[FakeResponse | BaseException]) -> None:
+        self.outcomes = outcomes
+        self.calls = multiprocessing.Value("i", 0)
+
+    def __call__(self, host: str, port: int | None = None, timeout: float | None = None) -> FakeConnection:
+        assert host == "watchdog.example"
+        assert port is None
+        assert timeout == health.REQUEST_TIMEOUT_SECONDS
+        with self.calls.get_lock():
+            outcome = self.outcomes[self.calls.value]
+            self.calls.value += 1
+        return FakeConnection(outcome)
+
+
+def healthy_response(version: str = "abc123") -> FakeResponse:
+    return FakeResponse(
+        200,
+        json.dumps(
+            {"service": "desinfect-watchdog", "status": "ok", "version": version}
+        ).encode(),
+    )
+
+
+def test_health_check_rejects_non_https_or_non_healthz_url() -> None:
+    for url in ("http://watchdog.example/healthz", "https://watchdog.example/other"):
+        with pytest.raises(ValueError, match="HTTPS.*healthz"):
+            health.verify_health(url, "abc123")
+
+
+@pytest.mark.parametrize(
+    "first_outcome",
+    (
+        socket.gaierror("unresolved"),
+        ssl.SSLError("certificate not ready"),
+        FakeResponse(503),
+        FakeResponse(200, b"not json"),
+        healthy_response("old-version"),
+    ),
+    ids=("dns", "tls", "http", "json", "version"),
+)
+def test_health_check_retries_transient_failures_until_exact_success(
+    first_outcome: FakeResponse | BaseException,
+) -> None:
+    connections = FakeConnections([first_outcome, healthy_response()])
+    health.verify_health(
+        "https://watchdog.example/healthz",
+        "abc123",
+        connection_factory=connections,
+        sleep=lambda _: None,
+    )
+    assert connections.calls.value == 2
+
+
+def test_health_check_does_not_follow_redirect_and_reports_safe_details() -> None:
+    redirect = FakeResponse(
+        301,
+        headers={"Location": "https://awsas.de/403-page.html?token=secret-token"},
+    )
+    connections = FakeConnections([redirect] * health.MAX_ATTEMPTS)
+    with pytest.raises(health.HealthCheckError) as caught:
+        health.verify_health(
+            "https://watchdog.example/healthz",
+            "abc123",
+            connection_factory=connections,
+            sleep=lambda _: None,
+        )
+    assert connections.calls.value == health.MAX_ATTEMPTS
+    assert str(caught.value) == (
+        "health check failed: category=http http_status=301 location_hostname=awsas.de"
+    )
+    assert "secret-token" not in str(caught.value)
+    assert "403-page" not in str(caught.value)
+
+
+def test_health_check_omits_malformed_redirect_location() -> None:
+    redirect = FakeResponse(302, headers={"Location": "https://[bad?token=secret-token"})
+    connections = FakeConnections([redirect] * health.MAX_ATTEMPTS)
+    with pytest.raises(health.HealthCheckError) as caught:
+        health.verify_health(
+            "https://watchdog.example/healthz",
+            "abc123",
+            connection_factory=connections,
+            sleep=lambda _: None,
+        )
+    assert str(caught.value) == "health check failed: category=http http_status=302"
+    assert "secret-token" not in str(caught.value)
+
+
+def test_health_check_exact_response_returns_without_retry() -> None:
+    connections = FakeConnections([healthy_response(), healthy_response()])
+    health.verify_health(
+        "https://watchdog.example/healthz",
+        "abc123",
+        connection_factory=connections,
+        sleep=lambda _: None,
+    )
+    assert connections.calls.value == 1
+
+
+def test_health_check_retries_after_process_start_oserror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_start = multiprocessing.context.ForkProcess.start
+    starts = 0
+    sleeps: list[float] = []
+
+    def flaky_start(process: multiprocessing.context.ForkProcess) -> None:
+        nonlocal starts
+        starts += 1
+        if starts == 1:
+            raise OSError("secret resource detail")
+        original_start(process)
+
+    monkeypatch.setattr(multiprocessing.context.ForkProcess, "start", flaky_start)
+    connections = FakeConnections([healthy_response()])
+
+    health.verify_health(
+        "https://watchdog.example/healthz",
+        "abc123",
+        connection_factory=connections,
+        sleep=sleeps.append,
+    )
+
+    assert starts == 2
+    assert connections.calls.value == 1
+    assert sleeps == [health.RETRY_DELAY_SECONDS]
+
+
+def test_health_check_cli_safely_reports_process_start_oserror(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def fail_start(_: multiprocessing.context.ForkProcess) -> None:
+        raise OSError("secret resource detail")
+
+    monkeypatch.setattr(health, "MAX_ATTEMPTS", 1)
+    monkeypatch.setattr(multiprocessing.context.ForkProcess, "start", fail_start)
+
+    assert (
+        health.main(["--url", "https://watchdog.example/healthz", "--expected-version", "abc123"])
+        == 1
+    )
+    assert capsys.readouterr().err == "health check failed: category=http\n"
+
+
+def test_health_check_cli_logs_only_safe_failure_details(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    error = health.HealthCheckError(
+        "health check failed: category=http http_status=301 location_hostname=awsas.de"
+    )
+
+    def fail(*_: object, **__: object) -> None:
+        raise error
+
+    monkeypatch.setattr(health, "verify_health", fail)
+    assert health.main(["--url", "https://watchdog.example/healthz", "--expected-version", "abc123"]) == 1
+    assert capsys.readouterr().err == f"{error}\n"
+
+
+def test_health_check_deadline_covers_blocking_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(health, "MAX_ATTEMPTS", 1)
+    monkeypatch.setattr(health, "ATTEMPT_DEADLINE_SECONDS", 0.15, raising=False)
+
+    def blocking_dns(*_: object, **__: object) -> object:
+        time.sleep(0.75)
+        raise socket.gaierror("unresolved")
+
+    monkeypatch.setattr(socket, "getaddrinfo", blocking_dns)
+    started = time.monotonic()
+    with pytest.raises(health.HealthCheckError, match="category=deadline"):
+        health.verify_health("https://watchdog.example/healthz", "abc123")
+    assert time.monotonic() - started < 0.5
+
+
+def test_health_check_deadline_covers_trickling_response_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    class SlowResponse(FakeResponse):
+        def read(self) -> bytes:
+            time.sleep(0.75)
+            return healthy_response().read()
+
+    monkeypatch.setattr(health, "MAX_ATTEMPTS", 1)
+    monkeypatch.setattr(health, "ATTEMPT_DEADLINE_SECONDS", 0.15, raising=False)
+    started = time.monotonic()
+    with pytest.raises(health.HealthCheckError, match="category=deadline"):
+        health.verify_health(
+            "https://watchdog.example/healthz",
+            "abc123",
+            connection_factory=FakeConnections([SlowResponse(200)]),
+        )
+    assert time.monotonic() - started < 0.5
+
+
+def test_health_check_reaps_term_ignoring_child_before_return(monkeypatch: pytest.MonkeyPatch) -> None:
+    child_pid = multiprocessing.Value("i", 0)
+
+    class TermIgnoringResponse(FakeResponse):
+        def read(self) -> bytes:
+            child_pid.value = os.getpid()
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            time.sleep(0.75)
+            return healthy_response().read()
+
+    monkeypatch.setattr(health, "MAX_ATTEMPTS", 1)
+    monkeypatch.setattr(health, "ATTEMPT_DEADLINE_SECONDS", 0.5)
+    monkeypatch.setattr(health, "CLEANUP_GRACE_SECONDS", 0.1, raising=False)
+    started = time.monotonic()
+    with pytest.raises(health.HealthCheckError, match="category=deadline"):
+        health.verify_health(
+            "https://watchdog.example/healthz",
+            "abc123",
+            connection_factory=FakeConnections([TermIgnoringResponse(200)]),
+        )
+    assert child_pid.value
+    assert time.monotonic() - started < 0.65
+    assert not Path(f"/proc/{child_pid.value}").exists()
+    assert all(process.pid != child_pid.value for process in multiprocessing.active_children())
+
+
+def test_health_check_cli_redacts_malformed_port(capsys: pytest.CaptureFixture[str]) -> None:
+    secret = "secret-token"
+    assert health.main(
+        ["--url", f"https://watchdog.example:{secret}/healthz", "--expected-version", "abc123"]
+    ) == 1
+    assert capsys.readouterr().err == "health check failed: category=url\n"
 
 
 def test_validator_rejects_tagged_action(tmp_path: Path) -> None:
@@ -257,8 +527,22 @@ def test_validator_rejects_missing_health_version_check(tmp_path: Path) -> None:
     path = root / ".github" / "workflows" / "cloudflare-deploy.yml"
     path.write_text(
         path.read_text(encoding="utf-8").replace(
-            "payload.version !== expected",
-            "false",
+            '--expected-version "$EXPECTED_VERSION"',
+            '--expected-version "$OTHER_VERSION"',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    assert any(issue.code == "CFD009" for issue in validate_repository(root))
+
+
+def test_validator_rejects_non_shared_health_readiness_command(tmp_path: Path) -> None:
+    root = contract_copy(tmp_path)
+    path = root / ".github" / "workflows" / "cloudflare-deploy.yml"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            'python3 scripts/verify_cloudflare_health.py --url "$WATCHDOG_HEALTH_URL" --expected-version "$EXPECTED_VERSION"',
+            "curl https://watchdog.example/healthz",
             1,
         ),
         encoding="utf-8",

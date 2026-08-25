@@ -78,16 +78,7 @@ jobs:
         env:
           EXPECTED_VERSION: ${{ github.sha }}
           WATCHDOG_HEALTH_URL: ${{ secrets.CLOUDFLARE_WATCHDOG_HEALTH_URL }}
-        run: |
-          set -Eeuo pipefail
-          response="$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 "$WATCHDOG_HEALTH_URL")"
-          HEALTH_RESPONSE="$response" node <<'NODE'
-          const payload = JSON.parse(process.env.HEALTH_RESPONSE ?? "null");
-          const expected = process.env.EXPECTED_VERSION;
-          if (payload?.service !== "desinfect-watchdog" || payload?.status !== "ok" || payload.version !== expected) {
-            throw new Error("deployed watchdog health/version mismatch");
-          }
-          NODE
+        run: python3 scripts/verify_cloudflare_health.py --url "$WATCHDOG_HEALTH_URL" --expected-version "$EXPECTED_VERSION"
 
   deploy_production:
     name: Deploy and verify production
@@ -123,13 +114,4 @@ jobs:
         env:
           EXPECTED_VERSION: ${{ github.sha }}
           WATCHDOG_HEALTH_URL: ${{ secrets.CLOUDFLARE_WATCHDOG_HEALTH_URL }}
-        run: |
-          set -Eeuo pipefail
-          response="$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 "$WATCHDOG_HEALTH_URL")"
-          HEALTH_RESPONSE="$response" node <<'NODE'
-          const payload = JSON.parse(process.env.HEALTH_RESPONSE ?? "null");
-          const expected = process.env.EXPECTED_VERSION;
-          if (payload?.service !== "desinfect-watchdog" || payload?.status !== "ok" || payload.version !== expected) {
-            throw new Error("deployed watchdog health/version mismatch");
-          }
-          NODE
+        run: python3 scripts/verify_cloudflare_health.py --url "$WATCHDOG_HEALTH_URL" --expected-version "$EXPECTED_VERSION"
