@@ -9,7 +9,8 @@
     "npm": ">=11 <12"
   },
   "scripts": {
-    "test": "node --test tests/node/*.test.mjs",
-    "test:foundation": "node --test tests/node/foundation.test.mjs"
+    "test": "node --test tests/node/*.test.mjs tests/web/*.spec.mjs",
+    "test:foundation": "node --test tests/node/foundation.test.mjs",
+    "test:web": "node --test tests/web/*.spec.mjs"
   }
 }
