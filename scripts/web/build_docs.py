@@ -102,6 +102,8 @@ def _reject_duplicate_yaml_keys(node: yaml.nodes.Node | None) -> None:
         seen: set[tuple[str, str]] = set()
         for key, value in node.value:
             if isinstance(key, yaml.nodes.ScalarNode):
+                if key.tag == "tag:yaml.org,2002:merge":
+                    raise BuildDocsError("YAML merge keys are forbidden in publication config")
                 identifier = (key.tag, key.value)
                 if identifier in seen:
                     raise BuildDocsError("duplicate YAML key in publication config")

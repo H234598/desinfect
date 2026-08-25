@@ -171,26 +171,35 @@ def test_build_docs_rejects_source_hash_drift_without_replacing_old_docs(
     assert (old / "keep.txt").read_text(encoding="utf-8") == "old complete tree"
 
 
-def test_build_docs_never_follows_existing_stage_output_symlinks(
-    repo: Path, tmp_path: Path
-) -> None:
-    """Following a staged page or asset link would overwrite an external victim."""
+def test_build_docs_never_follows_existing_stage_page_symlink(repo: Path, tmp_path: Path) -> None:
+    """Following a staged page link would overwrite an external victim."""
 
-    source_asset = repo / "content/asset.txt"
-    source_asset.write_bytes(b"source asset")
     stage = tmp_path / "stage"
     stage.mkdir()
     page_victim = tmp_path / "page-victim.md"
-    asset_victim = tmp_path / "asset-victim.txt"
     page_victim.write_bytes(b"page victim")
-    asset_victim.write_bytes(b"asset victim")
     (stage / "index.md").symlink_to(page_victim)
-    (stage / "asset.txt").symlink_to(asset_victim)
 
     with pytest.raises(BuildDocsError):
         render_docs_tree(repo, stage)
 
     assert page_victim.read_bytes() == b"page victim"
+
+
+def test_build_docs_never_follows_existing_stage_asset_symlink(repo: Path, tmp_path: Path) -> None:
+    """Following a staged asset link would overwrite an external victim."""
+
+    (repo / "content/asset.txt").write_bytes(b"source asset")
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    asset_victim = tmp_path / "asset-victim.txt"
+    asset_victim.write_bytes(b"asset victim")
+    (stage / "asset.txt").symlink_to(asset_victim)
+
+    with pytest.raises(BuildDocsError):
+        render_docs_tree(repo, stage)
+
+    assert (stage / "index.md").is_file()
     assert asset_victim.read_bytes() == b"asset victim"
 
 
@@ -236,6 +245,27 @@ def test_build_docs_rejects_duplicate_publication_config_keys(repo: Path) -> Non
 
     try:
         with pytest.raises(BuildDocsError, match="duplicate"):
+            load_publication_config(repo)
+    finally:
+        config.write_text(original, encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "merge",
+    (
+        "<<: {site_dir: hidden/site}\n",
+        "defaults: &defaults {site_dir: hidden/site}\n<<: *defaults\n",
+    ),
+)
+def test_build_docs_rejects_publication_config_merge_keys(repo: Path, merge: str) -> None:
+    """Merge syntax can hide values before exact-schema validation sees them."""
+
+    config = repo / "config/publication.yaml"
+    original = config.read_text(encoding="utf-8")
+    config.write_text(original + merge, encoding="utf-8")
+
+    try:
+        with pytest.raises(BuildDocsError, match="merge"):
             load_publication_config(repo)
     finally:
         config.write_text(original, encoding="utf-8")
