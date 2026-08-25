@@ -174,7 +174,15 @@ def _write_executable(path: Path, source: str) -> None:
     path.chmod(0o755)
 
 
-def _vpn_test_environment(tmp_path: Path, *, openvpn_failures: str = "", health_failures: str = "") -> dict[str, str]:
+def _vpn_test_environment(
+    tmp_path: Path,
+    *,
+    openvpn_failures: str = "",
+    health_failures: str = "",
+    routed_families: str = "4,6",
+    de_config: str | None = None,
+    ignore_term: bool = False,
+) -> dict[str, str]:
     """Create process doubles below the script's OpenVPN and health boundaries."""
 
     fake_bin = tmp_path / "bin"
@@ -182,13 +190,39 @@ def _vpn_test_environment(tmp_path: Path, *, openvpn_failures: str = "", health_
     state = tmp_path / "vpn-state"
     attempts = tmp_path / "openvpn-attempts"
     health_attempts = tmp_path / "health-attempts"
+    route_attempts = tmp_path / "route-attempts"
+    overlap = tmp_path / "vpn-overlap"
+    timeout_args = tmp_path / "timeout-args"
+    daemon_pids = tmp_path / "openvpn-daemon-pids"
     _write_executable(
         fake_bin / "sudo",
-        "#!/bin/sh\nexec \"$@\"\n",
+        "#!/bin/sh\nif test \"${1:-}\" = -n; then shift; fi\nexec \"$@\"\n",
     )
     _write_executable(
         fake_bin / "sleep",
         "#!/bin/sh\nexit 0\n",
+    )
+    _write_executable(
+        fake_bin / "timeout",
+        """#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "$VPN_TIMEOUT_ARGS"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --signal=*|--kill-after=*|--foreground) shift ;;
+    *) break ;;
+  esac
+done
+shift
+exec "$@"
+""",
+    )
+    _write_executable(
+        fake_bin / "openvpn-daemon",
+        """#!/bin/sh
+if test "${VPN_IGNORE_TERM:-}" = 1; then trap '' TERM; fi
+while :; do /bin/sleep 60; done
+""",
     )
     _write_executable(
         fake_bin / "openvpn",
@@ -205,11 +239,15 @@ while [ "$#" -gt 0 ]; do
 done
 name=$(basename "$config")
 printf '%s\\n' "$name" >> "$VPN_ATTEMPTS"
+if test -e "$VPN_STATE"; then
+  printf '%s\\n' "$name" >> "$VPN_OVERLAP"
+fi
 case ",${VPN_OPENVPN_FAILURES}," in
   *",${name},"*) exit 1 ;;
 esac
-/bin/sleep 60 &
+"$(dirname "$0")/openvpn-daemon" --config "$config" --writepid "$pidfile" &
 printf '%s\\n' "$!" > "$pidfile"
+printf '%s\\n' "$!" >> "$VPN_DAEMON_PIDS"
 printf '%s\\n' "$name" > "$VPN_STATE"
 """,
     )
@@ -217,10 +255,25 @@ printf '%s\\n' "$name" > "$VPN_STATE"
         fake_bin / "ip",
         """#!/bin/sh
 set -eu
+family=''
+if test "$1" = '-4' || test "$1" = '-6'; then
+  family=${1#-}
+  shift
+fi
 case "$1:$2" in
   link:show) test -f "$VPN_STATE" ;;
-  route:get) test -f "$VPN_STATE" && printf '%s\\n' '1.1.1.1 dev tun-health' ;;
-  link:delete) rm -f "$VPN_STATE" ;;
+  route:get)
+    printf '%s:%s\\n' "$family" "$3" >> "$VPN_ROUTE_ATTEMPTS"
+    test -f "$VPN_STATE"
+    case ",${VPN_ROUTED_FAMILIES}," in
+      *",${family},"*) printf '%s\\n' "$3 dev tun-health" ;;
+      *) printf '%s\\n' "$3 dev eth0" ;;
+    esac
+    ;;
+  link:delete)
+    test "${VPN_DELETE_TUN_FAIL:-}" != 1
+    rm -f "$VPN_STATE"
+    ;;
   *) exit 1 ;;
 esac
 """,
@@ -229,6 +282,16 @@ esac
         fake_bin / "fake-python",
         """#!/bin/sh
 set -eu
+case "$*" in
+  *--resolve-addresses*)
+    printf '%s\\n' "$VPN_RESOLVED_ADDRESSES"
+    exit 0
+    ;;
+esac
+if test "${VPN_HEALTH_HANG:-}" = 1; then
+  /bin/sleep 60
+fi
+printf '%s\n' "$*" >> "$VPN_HEALTH_ARGS"
 name=$(cat "$VPN_STATE")
 printf '%s\\n' "$name" >> "$VPN_HEALTH_ATTEMPTS"
 case ",${VPN_HEALTH_FAILURES}," in
@@ -244,11 +307,20 @@ esac
         "VPN_STATE": str(state),
         "VPN_ATTEMPTS": str(attempts),
         "VPN_HEALTH_ATTEMPTS": str(health_attempts),
+        "VPN_HEALTH_ARGS": str(tmp_path / "health-args"),
+        "VPN_ROUTE_ATTEMPTS": str(route_attempts),
+        "VPN_OVERLAP": str(overlap),
+        "VPN_TIMEOUT_ARGS": str(timeout_args),
+        "VPN_DAEMON_PIDS": str(daemon_pids),
         "VPN_OPENVPN_FAILURES": openvpn_failures,
         "VPN_HEALTH_FAILURES": health_failures,
-        "VPN_CONFIG_DE": "de-config-secret",
-        "VPN_CONFIG_NL": "nl-config-secret",
-        "VPN_CONFIG_CH": "ch-config-secret",
+        "VPN_IGNORE_TERM": "1" if ignore_term else "",
+        "VPN_ROUTED_FAMILIES": routed_families,
+        "VPN_RESOLVED_ADDRESSES": "4 198.51.100.17\n6 2001:db8::17",
+        "VPN_CONFIG_DE": de_config
+        or "client\nremote endpoint.invalid 1194\nproto udp\nauth-user-pass\n<ca>\ncertificate-data\n</ca>\n",
+        "VPN_CONFIG_NL": "client\nremote endpoint.invalid 1194\nproto udp\nauth-user-pass\n<ca>\ncertificate-data\n</ca>\n",
+        "VPN_CONFIG_CH": "client\nremote endpoint.invalid 1194\nproto udp\nauth-user-pass\n<ca>\ncertificate-data\n</ca>\n",
         "VPN_AUTH": "vpn-user-secret\\nvpn-password-secret",
     }
 
@@ -288,6 +360,9 @@ def test_vpn_health_falls_back_de_nl_ch_and_redacts_temporary_secrets(tmp_path: 
     ]
     assert not (tmp_path / "vpn-state").exists()
     assert not list(tmp_path.glob("cloudflare-health-vpn.*"))
+    assert not (tmp_path / "vpn-overlap").exists()
+    for pid in (tmp_path / "openvpn-daemon-pids").read_text(encoding="utf-8").splitlines():
+        assert not Path(f"/proc/{pid}").exists()
     output = result.stdout + result.stderr
     assert "config-secret" not in output
     assert "vpn-user-secret" not in output
@@ -324,6 +399,133 @@ def test_vpn_health_fails_closed_after_all_country_health_failures(tmp_path: Pat
         "vpn-ch.premiumize.me.ovpn",
     ]
     assert not (tmp_path / "vpn-state").exists()
+
+
+def test_vpn_health_kills_term_ignoring_daemon_before_next_country(tmp_path: Path) -> None:
+    """Catches a fallback that starts another country before an uncooperative daemon dies."""
+
+    result = _run_vpn_health(
+        tmp_path,
+        health_failures="vpn-de.premiumize.me.ovpn",
+        ignore_term=True,
+    )
+
+    assert result.returncode == 0
+    assert not (tmp_path / "vpn-overlap").exists()
+    for pid in (tmp_path / "openvpn-daemon-pids").read_text(encoding="utf-8").splitlines():
+        assert not Path(f"/proc/{pid}").exists()
+
+
+def test_vpn_health_routes_resolved_ipv4_and_ipv6_target_addresses_through_tun(tmp_path: Path) -> None:
+    """Catches readiness that verifies a surrogate address instead of the health target."""
+
+    result = _run_vpn_health(tmp_path)
+
+    assert result.returncode == 0
+    assert (tmp_path / "route-attempts").read_text(encoding="utf-8").splitlines() == [
+        "4:198.51.100.17",
+        "6:2001:db8::17",
+    ]
+    timeout_arguments = (tmp_path / "timeout-args").read_text(encoding="utf-8").split()
+    assert timeout_arguments[:5] == [
+        "--foreground",
+        "--signal=TERM",
+        "--kill-after=5s",
+        "45s",
+        "openvpn",
+    ]
+    assert "--auth-nocache" in timeout_arguments
+    assert "--auth-retry" in timeout_arguments
+    assert "nointeract" in timeout_arguments
+    health_arguments = (tmp_path / "health-args").read_text(encoding="utf-8").split()
+    assert "--resolved-address" in health_arguments
+    assert "198.51.100.17" in health_arguments
+    assert "--bind-device" in health_arguments
+    assert "tun-health" in health_arguments
+
+
+@pytest.mark.parametrize(
+    ("routed_families", "expected_address"),
+    (("4", "198.51.100.17"), ("6", "2001:db8::17")),
+    ids=("ipv4-only", "ipv6-only"),
+)
+def test_vpn_health_uses_only_tunnel_routed_target_address(
+    tmp_path: Path, routed_families: str, expected_address: str
+) -> None:
+    """Catches a verifier that falls back to a directly routed address family."""
+
+    result = _run_vpn_health(tmp_path, routed_families=routed_families)
+
+    assert result.returncode == 0
+    health_arguments = (tmp_path / "health-args").read_text(encoding="utf-8").split()
+    assert health_arguments[health_arguments.index("--resolved-address") + 1] == expected_address
+    assert health_arguments[health_arguments.index("--bind-device") + 1] == "tun-health"
+
+
+def test_vpn_health_rejects_when_no_resolved_target_address_routes_through_tunnel(
+    tmp_path: Path,
+) -> None:
+    """Catches a direct health fallback when neither target address family uses the tunnel."""
+
+    result = _run_vpn_health(tmp_path, routed_families="")
+
+    assert result.returncode == 1
+    assert not (tmp_path / "health-attempts").exists()
+
+
+@pytest.mark.parametrize(
+    "de_config",
+    (
+        "client\nremote endpoint.invalid 1194\nup /bin/false\n",
+        "client\nremote endpoint.invalid 1194\naskpass /tmp/prompt\n",
+        "client\nremote endpoint.invalid 1194\n<key>\n-----BEGIN ENCRYPTED PRIVATE KEY-----\n</key>\n",
+    ),
+    ids=("script", "prompt", "encrypted-key"),
+)
+def test_vpn_health_rejects_privileged_or_prompting_config_before_openvpn(
+    tmp_path: Path, de_config: str
+) -> None:
+    """Catches privileged OpenVPN execution of secret-provided scripts or prompts."""
+
+    result = _run_vpn_health(
+        tmp_path,
+        de_config=de_config,
+    )
+
+    assert result.returncode == 0
+    assert (tmp_path / "openvpn-attempts").read_text(encoding="utf-8").splitlines() == [
+        "vpn-nl.premiumize.me.ovpn"
+    ]
+    assert "/bin/false" not in result.stdout + result.stderr
+    assert "PRIVATE KEY" not in result.stdout + result.stderr
+
+
+def test_vpn_health_signal_exit_reaps_openvpn_daemon(tmp_path: Path) -> None:
+    """Catches TERM exit that leaves a VPN daemon or tunnel behind."""
+
+    environment = _vpn_test_environment(tmp_path)
+    environment["VPN_HEALTH_HANG"] = "1"
+    process = subprocess.Popen(
+        [
+            "sh",
+            str(VPN_HEALTH_SCRIPT),
+            "--url",
+            "https://watchdog.example/healthz",
+            "--expected-version",
+            "abc123",
+        ],
+        env=environment,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + 5
+    while not (tmp_path / "vpn-state").exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert (tmp_path / "vpn-state").exists()
+    os.killpg(process.pid, signal.SIGTERM)
+    assert process.wait(timeout=5) == 143
+    assert not (tmp_path / "vpn-state").exists()
+    for pid in (tmp_path / "openvpn-daemon-pids").read_text(encoding="utf-8").splitlines():
+        assert not Path(f"/proc/{pid}").exists()
 
 
 class FakeResponse:
@@ -389,6 +591,104 @@ def test_health_check_rejects_non_https_or_non_healthz_url() -> None:
     for url in ("http://watchdog.example/healthz", "https://watchdog.example/other"):
         with pytest.raises(ValueError, match="HTTPS.*healthz"):
             health.verify_health(url, "abc123")
+
+
+def test_health_resolves_distinct_ipv4_and_ipv6_target_addresses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Catches target-route checks that omit an address family or use a surrogate."""
+
+    def addresses(host: str, port: int, *, type: int) -> list[tuple[object, ...]]:
+        assert (host, port, type) == ("watchdog.example", 443, socket.SOCK_STREAM)
+        return [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:db8::17", 443, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.51.100.17", 443)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.51.100.17", 443)),
+        ]
+
+    monkeypatch.setattr(socket, "getaddrinfo", addresses)
+
+    assert health.resolve_target_addresses("https://watchdog.example/healthz") == (
+        (4, "198.51.100.17"),
+        (6, "2001:db8::17"),
+    )
+
+
+def test_health_check_connects_to_verified_address_without_changing_tls_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catches a verifier that resolves the hostname again after VPN route validation."""
+
+    captured = multiprocessing.Value("i", 0)
+
+    def connection(
+        host: str,
+        port: int | None = None,
+        timeout: float | None = None,
+        *,
+        resolved_address: str | None = None,
+        bind_device: str | None = None,
+    ) -> FakeConnection:
+        captured.value = int(
+            (host, port, timeout, resolved_address, bind_device)
+            == ("watchdog.example", None, health.REQUEST_TIMEOUT_SECONDS, "198.51.100.17", None)
+        )
+        return FakeConnection(healthy_response())
+
+    monkeypatch.setattr(health, "_connection", connection)
+
+    health.verify_health(
+        "https://watchdog.example/healthz",
+        "abc123",
+        resolved_address="198.51.100.17",
+        sleep=lambda _: None,
+    )
+
+    assert captured.value == 1
+
+
+def test_resolved_health_socket_binds_to_tunnel_before_connecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catches a verified target connection that can still leave through another interface."""
+
+    calls: list[tuple[object, ...]] = []
+
+    class FakeSocket:
+        def settimeout(self, timeout: float | None) -> None:
+            calls.append(("timeout", timeout))
+
+        def setsockopt(self, level: int, option: int, value: bytes) -> None:
+            calls.append(("setsockopt", level, option, value))
+
+        def connect(self, address: tuple[object, ...]) -> None:
+            calls.append(("connect", address))
+
+        def close(self) -> None:
+            calls.append(("close",))
+
+    class FakeContext:
+        def wrap_socket(self, sock: FakeSocket, *, server_hostname: str) -> FakeSocket:
+            calls.append(("tls", server_hostname))
+            return sock
+
+    fake_socket = FakeSocket()
+    monkeypatch.setattr(socket, "socket", lambda *_: fake_socket)
+    connection = health._ResolvedHTTPSConnection(
+        "watchdog.example",
+        resolved_address="198.51.100.17",
+        bind_device="tun-health",
+        port=443,
+        timeout=health.REQUEST_TIMEOUT_SECONDS,
+    )
+    connection._context = FakeContext()  # type: ignore[assignment]
+
+    connection.connect()
+
+    assert calls == [
+        ("timeout", health.REQUEST_TIMEOUT_SECONDS),
+        ("setsockopt", socket.SOL_SOCKET, socket.SO_BINDTODEVICE, b"tun-health\0"),
+        ("connect", ("198.51.100.17", 443)),
+        ("tls", "watchdog.example"),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -739,6 +1039,56 @@ def test_validator_rejects_non_shared_health_readiness_command(tmp_path: Path) -
         ),
         encoding="utf-8",
     )
+    assert any(issue.code == "CFD009" for issue in validate_repository(root))
+
+
+def test_validator_rejects_vpn_health_before_openvpn_install(tmp_path: Path) -> None:
+    """Catches a workflow that opens the tunnel before its dependencies are installed."""
+
+    root = contract_copy(tmp_path)
+    path = root / ".github" / "workflows" / "cloudflare-deploy.yml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    for name in ("deploy_staging", "deploy_production"):
+        steps = data["jobs"][name]["steps"]
+        install_index = next(
+            index
+            for index, step in enumerate(steps)
+            if step["name"] == "Install OpenVPN for VPN health verification"
+        )
+        health_index = next(
+            index
+            for index, step in enumerate(steps)
+            if step["name"] == "Verify deployed health and version through VPN"
+        )
+        steps[install_index], steps[health_index] = steps[health_index], steps[install_index]
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    assert any(issue.code == "CFD009" for issue in validate_repository(root))
+
+
+def test_validator_rejects_missing_vpn_hardening_invariant(tmp_path: Path) -> None:
+    """Catches removal of the noninteractive OpenVPN hard timeout from the wrapper."""
+
+    root = contract_copy(tmp_path)
+    path = root / "scripts" / "verify_cloudflare_health_via_vpn.sh"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("--auth-retry nointeract", "--auth-retry interact"),
+        encoding="utf-8",
+    )
+
+    assert any(issue.code == "CFD009" for issue in validate_repository(root))
+
+
+def test_validator_rejects_missing_tunnel_socket_binding(tmp_path: Path) -> None:
+    """Catches a wrapper flag that no longer forces the health socket through the VPN."""
+
+    root = contract_copy(tmp_path)
+    path = root / "scripts" / "verify_cloudflare_health.py"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("socket.SO_BINDTODEVICE", "socket.SO_RCVBUF"),
+        encoding="utf-8",
+    )
+
     assert any(issue.code == "CFD009" for issue in validate_repository(root))
 
 

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import http.client
+import ipaddress
 import json
 import multiprocessing
 import os
+import re
 import socket
 import ssl
 import sys
@@ -21,6 +23,7 @@ RETRY_DELAY_SECONDS = 3
 REQUEST_TIMEOUT_SECONDS = 5
 ATTEMPT_DEADLINE_SECONDS = 10
 CLEANUP_GRACE_SECONDS = 0.25
+DEVICE_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
 
 
 class Response(Protocol):
@@ -61,7 +64,68 @@ class Failure:
 ConnectionFactory = Callable[..., Connection]
 
 
-def _connection(host: str, port: int | None = None, timeout: float | None = None) -> Connection:
+class _ResolvedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection retaining hostname SNI while connecting to one verified IP."""
+
+    def __init__(
+        self,
+        host: str,
+        *,
+        resolved_address: str,
+        bind_device: str | None,
+        port: int | None,
+        timeout: float | None,
+    ) -> None:
+        super().__init__(host, port=port, timeout=timeout)
+        self._resolved_address = resolved_address
+        self._bind_device = bind_device
+
+    def connect(self) -> None:
+        resolved_ip = ipaddress.ip_address(self._resolved_address)
+        family = socket.AF_INET if resolved_ip.version == 4 else socket.AF_INET6
+        address = (self._resolved_address, self.port)
+        if family == socket.AF_INET6:
+            address = (self._resolved_address, self.port, 0, 0)
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(self.timeout)
+            if self._bind_device is not None:
+                sock.setsockopt(
+                    socket.SOL_SOCKET,
+                    socket.SO_BINDTODEVICE,
+                    self._bind_device.encode("ascii") + b"\0",
+                )
+            if self.source_address:
+                sock.bind(self.source_address)
+            sock.connect(address)
+        except BaseException:
+            sock.close()
+            raise
+        self.sock = sock
+        if self._tunnel_host:
+            self._tunnel()
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=self.host)
+
+
+def _connection(
+    host: str,
+    port: int | None = None,
+    timeout: float | None = None,
+    *,
+    resolved_address: str | None = None,
+    bind_device: str | None = None,
+) -> Connection:
+    if bind_device is not None and not DEVICE_NAME.fullmatch(bind_device):
+        raise ValueError("bind device must be a Linux interface name")
+    if resolved_address is not None:
+        ipaddress.ip_address(resolved_address)
+        return _ResolvedHTTPSConnection(
+            host,
+            resolved_address=resolved_address,
+            bind_device=bind_device,
+            port=port,
+            timeout=timeout,
+        )
     return http.client.HTTPSConnection(host, port=port, timeout=timeout)
 
 
@@ -82,6 +146,21 @@ def _target(url: str) -> tuple[str, int | None]:
     ):
         raise ValueError("health URL must use HTTPS and exact /healthz endpoint")
     return parsed.hostname, port
+
+
+def resolve_target_addresses(url: str) -> tuple[tuple[int, str], ...]:
+    """Return each IPv4/IPv6 address currently resolved for exact HTTPS health."""
+
+    host, port = _target(url)
+    addresses: set[tuple[int, str]] = set()
+    for family, _, _, _, sockaddr in socket.getaddrinfo(host, port or 443, type=socket.SOCK_STREAM):
+        if family not in (socket.AF_INET, socket.AF_INET6):
+            continue
+        address = str(ipaddress.ip_address(sockaddr[0]))
+        addresses.add((4 if family == socket.AF_INET else 6, address))
+    if not addresses:
+        raise HealthCheckError(Failure("dns").render())
+    return tuple(sorted(addresses))
 
 
 def _location_hostname(response: Response) -> str | None:
@@ -218,12 +297,27 @@ def verify_health(
     url: str,
     expected_version: str,
     *,
-    connection_factory: ConnectionFactory = _connection,
+    connection_factory: ConnectionFactory | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    resolved_address: str | None = None,
+    bind_device: str | None = None,
 ) -> None:
     """Return only after exact health success; otherwise raise safe final failure."""
 
     host, port = _target(url)
+    if connection_factory is None:
+        def connection_factory(
+            requested_host: str,
+            port: int | None = None,
+            timeout: float | None = None,
+        ) -> Connection:
+            return _connection(
+                requested_host,
+                port=port,
+                timeout=timeout,
+                resolved_address=resolved_address,
+                bind_device=bind_device,
+            )
     failure: Failure | None = None
     for attempt in range(MAX_ATTEMPTS):
         failure = _check_with_deadline(host, port, expected_version, connection_factory)
@@ -237,10 +331,30 @@ def verify_health(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", required=True)
-    parser.add_argument("--expected-version", required=True)
+    parser.add_argument("--expected-version")
+    parser.add_argument("--resolve-addresses", action="store_true")
+    parser.add_argument("--resolved-address")
+    parser.add_argument("--bind-device")
     args = parser.parse_args(argv)
+    if args.resolve_addresses:
+        if args.expected_version is not None or args.resolved_address is not None or args.bind_device is not None:
+            parser.error("--resolve-addresses cannot be combined with health verification options")
+        try:
+            for family, address in resolve_target_addresses(args.url):
+                print(f"{family} {address}")
+        except (HealthCheckError, ValueError, socket.gaierror) as exc:
+            print(Failure("dns").render() if isinstance(exc, socket.gaierror) else exc, file=sys.stderr)
+            return 1
+        return 0
+    if args.expected_version is None:
+        parser.error("--expected-version is required for health verification")
     try:
-        verify_health(args.url, args.expected_version)
+        verify_health(
+            args.url,
+            args.expected_version,
+            resolved_address=args.resolved_address,
+            bind_device=args.bind_device,
+        )
     except (HealthCheckError, ValueError) as exc:
         print(exc, file=sys.stderr)
         return 1

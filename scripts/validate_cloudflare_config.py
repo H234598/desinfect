@@ -45,6 +45,20 @@ def _step(job: dict[str, object], name: str) -> dict[str, object] | None:
     )
 
 
+def _step_index(job: dict[str, object], name: str) -> int | None:
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        return None
+    return next(
+        (
+            index
+            for index, step in enumerate(steps)
+            if isinstance(step, dict) and step.get("name") == name
+        ),
+        None,
+    )
+
+
 def _load(path: Path, loader) -> tuple[object | None, ConfigIssue | None]:
     try:
         return loader(path.read_text(encoding="utf-8")), None
@@ -125,6 +139,17 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
     if production_run != 'npm --prefix cloudflare/watchdog run deploy -- --env="" --var "DEPLOYMENT_VERSION:${GITHUB_SHA}"':
         issues.append(_issue(workflow_path, "CFD008", "Production muss kanonische Wrangler-Umgebung verwenden"))
     for label, job in (("staging", staging), ("production", production)):
+        deploy_name = "Deploy staging without cron" if label == "staging" else "Deploy production with cron"
+        deploy_index = _step_index(job, deploy_name)
+        install_index = _step_index(job, "Install OpenVPN for VPN health verification")
+        health_index = _step_index(job, "Verify deployed health and version through VPN")
+        if (
+            deploy_index is None
+            or install_index is None
+            or health_index is None
+            or not deploy_index < install_index < health_index
+        ):
+            issues.append(_issue(workflow_path, "CFD009", f"{label}: Deploy-, OpenVPN- und Health-Reihenfolge fehlt"))
         install = _step(job, "Install OpenVPN for VPN health verification") or {}
         if str(install.get("run", "")).strip() != (
             "if ! command -v openvpn >/dev/null 2>&1; then\n"
@@ -153,6 +178,34 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
             issues.append(_issue(workflow_path, "CFD009", f"{label}: VPN-Health-/Versionsprüfung fehlt"))
     if not health_script_path.is_file() or not vpn_health_script_path.is_file():
         issues.append(_issue(vpn_health_script_path, "CFD009", "VPN-Readiness-Prüfskript fehlt"))
+    else:
+        health_script = health_script_path.read_text(encoding="utf-8")
+        vpn_health_script = vpn_health_script_path.read_text(encoding="utf-8")
+        hardening_tokens = (
+            "is_openvpn_pid",
+            'sudo -n kill -TERM "$vpn_pid"',
+            'sudo -n kill -KILL "$vpn_pid"',
+            "sudo -n timeout --foreground --signal=TERM --kill-after=5s 45s openvpn",
+            "--auth-nocache",
+            "--auth-retry nointeract",
+            "sanitize_openvpn_config",
+            'if ($0 == "<ca>")',
+            "--resolve-addresses",
+            "ip -4 route get",
+            "ip -6 route get",
+            '--resolved-address "$resolved_address"',
+            '--bind-device "$tun_device"',
+            "VPN cleanup failed; refusing next country",
+        )
+        socket_hardening_tokens = (
+            "socket.SO_BINDTODEVICE",
+            "sock.setsockopt",
+            "bind_device",
+        )
+        if not all(token in vpn_health_script for token in hardening_tokens) or not all(
+            token in health_script for token in socket_hardening_tokens
+        ):
+            issues.append(_issue(vpn_health_script_path, "CFD009", "VPN-Hardening-Vertrag fehlt"))
 
     package_value, error = _load(package_path, json.loads)
     if error:
