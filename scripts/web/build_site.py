@@ -88,6 +88,10 @@ _CSS_IMPORT = re.compile(
     r"@import\s+(?P<target>\"[^\"]*\"?|'[^']*'?|[^;\s]+)",
     re.IGNORECASE,
 )
+_CSS_IMAGE_FUNCTION = re.compile(
+    r"(?<![\w-])(?:-webkit-image-set|image-set|image)\s*\(",
+    re.IGNORECASE,
+)
 _CSS_COMMENT = re.compile(r"/\*.*?(?:\*/|$)", re.DOTALL)
 _CSS_ESCAPE = re.compile(
     r"\\(?:"
@@ -102,10 +106,22 @@ _ASCII_WHITESPACE = "\t\n\f\r "
 _BROWSER_URL_REMOVALS = str.maketrans("", "", "\t\n\r")
 _MAX_SRCDOC_DEPTH = 4
 _MAX_SRCDOC_LENGTH = 64 * 1024
+_SVG_PRESENTATION_URL_ATTRIBUTES = (
+    "clip-path",
+    "fill",
+    "filter",
+    "marker",
+    "marker-end",
+    "marker-mid",
+    "marker-start",
+    "mask",
+    "stroke",
+)
 
 
 def _browser_url(value: str) -> str:
-    return value.translate(_BROWSER_URL_REMOVALS).strip(_ASCII_C0_SPACE)
+    normalized = value.translate(_BROWSER_URL_REMOVALS).strip(_ASCII_C0_SPACE)
+    return normalized.replace("\\", "/")
 
 
 def _external_url(value: str) -> bool:
@@ -160,13 +176,23 @@ class _ExternalAssetParser(HTMLParser):
         "image": ("href", "xlink:href"),
         "img": ("src",),
         "input": ("src",),
+        "lineargradient": ("href", "xlink:href"),
         "link": ("href",),
+        "mpath": ("href", "xlink:href"),
         "object": ("data",),
+        "pattern": ("href", "xlink:href"),
+        "radialgradient": ("href", "xlink:href"),
         "script": ("src", "href", "xlink:href"),
         "source": ("src",),
         "svg:feimage": ("href", "xlink:href"),
         "svg:image": ("href", "xlink:href"),
+        "svg:lineargradient": ("href", "xlink:href"),
+        "svg:mpath": ("href", "xlink:href"),
+        "svg:pattern": ("href", "xlink:href"),
+        "svg:radialgradient": ("href", "xlink:href"),
+        "svg:textpath": ("href", "xlink:href"),
         "svg:use": ("href", "xlink:href"),
+        "textpath": ("href", "xlink:href"),
         "track": ("src",),
         "use": ("href", "xlink:href"),
         "video": ("src", "poster"),
@@ -202,6 +228,9 @@ class _ExternalAssetParser(HTMLParser):
             self._style_buffers.append([])
         for value in self._attribute_values(attrs, "style"):
             self.urls.extend(external_css_asset_urls(value))
+        for attribute in _SVG_PRESENTATION_URL_ATTRIBUTES:
+            for value in self._attribute_values(attrs, attribute):
+                self.urls.extend(external_css_asset_urls(value))
         if tag == "iframe":
             for value in self._attribute_values(attrs, "srcdoc"):
                 self._scan_srcdoc(value)
@@ -274,6 +303,33 @@ def _normalized_css(css: str) -> str:
     return _CSS_ESCAPE.sub(_decode_css_escape, without_comments)
 
 
+def _css_image_function_strings(css: str) -> Iterator[tuple[int, str]]:
+    for match in _CSS_IMAGE_FUNCTION.finditer(css):
+        depth = 1
+        position = match.end()
+        quote: str | None = None
+        quote_depth = 0
+        quote_start = 0
+        while position < len(css) and depth:
+            character = css[position]
+            if quote is not None:
+                if character == quote:
+                    if quote_depth == 1:
+                        yield quote_start, css[quote_start:position]
+                    quote = None
+            elif character in {'"', "'"}:
+                quote = character
+                quote_depth = depth
+                quote_start = position + 1
+            elif character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+            position += 1
+        if quote is not None and quote_depth == 1:
+            yield quote_start, css[quote_start:position]
+
+
 def external_css_asset_urls(css: str) -> list[str]:
     """Return external browser-resource URLs referenced by generated CSS."""
 
@@ -283,6 +339,7 @@ def external_css_asset_urls(css: str) -> list[str]:
         for pattern in (_CSS_URL, _CSS_IMPORT)
         for match in pattern.finditer(normalized)
     ]
+    candidates.extend(_css_image_function_strings(normalized))
     return [target for _, target in sorted(candidates) if _external_url(target)]
 
 

@@ -133,6 +133,11 @@ def test_external_css_asset_urls_allow_local_and_data_targets() -> None:
         r"@\69mport '\68ttps://asset.example/escaped.css';",
         "body { background: url(/* generated */ https://asset.example/comment.png); }",
         'body { background: url("https://asset.example/unclosed.png); }',
+        'body { background: image-set("https://asset.example/set.png" 1x); }',
+        'body { background: -webkit-image-set("//asset.example/set.png" 1x); }',
+        r'body { background: \69mage-set(/* generated */ "\68ttps://asset.example/set.png" 1x); }',
+        'body { background: image("https://asset.example/fallback.png"); }',
+        r'body { background: \69mage(/* generated */ "\68ttps://asset.example/fallback.png"); }',
     ),
 )
 def test_external_css_asset_urls_decode_browser_syntax(css: str) -> None:
@@ -147,6 +152,9 @@ def test_external_css_asset_urls_allow_escaped_local_and_commented_data_targets(
     css = r"""
     .local { background: u\72l('../images/local.png'); }
     .inline { background: url(/* generated */ data:image/svg+xml;base64,AAAA); }
+    .set { background: image-set('/local.png' 1x, "data:image/png;base64,AAAA" 2x); }
+    .vendor { background: -webkit-image-set("#local" 1x); }
+    .fallback { background: image("/local.png"); }
     """
 
     assert build_site_module.external_css_asset_urls(css) == []
@@ -167,14 +175,34 @@ def test_external_css_asset_urls_allow_escaped_local_and_commented_data_targets(
         '<embed src="https://asset.example/plugin.bin">',
         '<object data="https://asset.example/object.bin"></object>',
         '<base href="https://asset.example/root/">',
+        r'<base href="\\evil.example/root/">',
+        r'<img src="\\evil.example/image.png">',
+        r'<img srcset="/local.png 1x, \\evil.example/image.png 2x">',
         '<svg><image href="https://asset.example/image.svg"></image></svg>',
         '<svg><use xlink:href="//asset.example/icons.svg#x"></use></svg>',
         '<svg><feImage href="https://asset.example/filter.svg"></feImage></svg>',
         '<svg><script href="https://asset.example/app.js"></script></svg>',
         '<svg><script xlink:href="//asset.example/app.js"></script></svg>',
+        '<svg><linearGradient href="https://asset.example/paint.svg#g"></linearGradient></svg>',
+        '<svg><radialGradient xlink:href="//asset.example/paint.svg#g"></radialGradient></svg>',
+        '<svg><pattern href="https://asset.example/pattern.svg#p"></pattern></svg>',
+        '<svg><textPath xlink:href="//asset.example/text.svg#p"></textPath></svg>',
+        '<svg><mpath href="https://asset.example/motion.svg#p"></mpath></svg>',
+        '<svg><rect fill="url(https://asset.example/paint.svg#g)"></rect></svg>',
+        '<svg><path stroke="url(//asset.example/paint.svg#g)"></path></svg>',
+        '<svg><g filter="url(https://asset.example/filter.svg#f)"></g></svg>',
+        '<svg><g mask="url(//asset.example/mask.svg#m)"></g></svg>',
+        '<svg><g clip-path="url(https://asset.example/clip.svg#c)"></g></svg>',
+        '<svg><path marker="url(//asset.example/marker.svg#m)"></path></svg>',
+        '<svg><path marker-start="url(https://asset.example/marker.svg#m)"></path></svg>',
+        '<svg><path marker-mid="url(//asset.example/marker.svg#m)"></path></svg>',
+        '<svg><path marker-end="url(https://asset.example/marker.svg#m)"></path></svg>',
         '<input type="image" src="https://asset.example/button.png">',
         '<div style="background: url(https://asset.example/inline.png)"></div>',
+        "<div style=\"background: image-set('https://asset.example/set.png' 1x)\"></div>",
+        "<div style=\"background: image('https://asset.example/fallback.png')\"></div>",
         "<style>body { background: url(//asset.example/block.png); }</style>",
+        '<style>body { background: -webkit-image-set("//asset.example/set.png" 1x); }</style>',
         "<style>body { background: url(https://asset.example/unclosed.png); }",
         "<iframe srcdoc=\"&lt;img src='https://asset.example/nested.png'>\"></iframe>",
     ),
@@ -192,14 +220,18 @@ def test_external_asset_urls_allow_navigation_and_local_resources() -> None:
     <a href="https://content.example/page">Content link</a>
     <link rel="canonical" href="https://content.example/canonical">
     <base href="/local/root/">
+    <base href="\\local/root/">
     <img src="/local.png" srcset="/local.png 1x, data:image/png;base64,AAAA 2x">
     <source src="#local" srcset="data:text/plain,https://not-loaded.example 1x">
     <video src="data:video/mp4;base64,AAAA" poster="/poster.png"></video>
     <object data="#local-object"></object>
     <svg><use href="#local-icon"></use></svg>
     <svg><script href="/local-script.js"></script></svg>
+    <svg><linearGradient href="#local-gradient"></linearGradient></svg>
+    <svg><rect fill="url(#local-gradient)" marker-end="url(#local-marker)"></rect></svg>
     <input type="image" src="data:image/png;base64,AAAA">
     <div style="background: url(data:image/png;base64,AAAA)"></div>
+    <div style="background: image-set('/local.png' 1x, 'data:image/png;base64,AAAA' 2x)"></div>
     <style>body { background: url('/local.png'); }</style>
     <iframe srcdoc="&lt;a href='https://content.example/nested'>allowed&lt;/a>"></iframe>
     """
@@ -1392,6 +1424,23 @@ def test_external_font_config_fails_before_runner_and_preserves_old_site(
         (
             "assets/comment.css",
             "body { background: url(/* generated */ https://asset.example/comment.png); }",
+        ),
+        ("backslash.html", r'<base href="\\evil.example/root/">'),
+        (
+            "assets/image-set.css",
+            'body { background: image-set("https://asset.example/set.png" 1x); }',
+        ),
+        (
+            "assets/image.css",
+            'body { background: image("https://asset.example/fallback.png"); }',
+        ),
+        (
+            "svg-href.html",
+            '<svg><pattern xlink:href="https://asset.example/pattern.svg#p"></pattern></svg>',
+        ),
+        (
+            "svg-presentation.html",
+            '<svg><rect fill="url(https://asset.example/paint.svg#g)"></rect></svg>',
         ),
     ),
 )
