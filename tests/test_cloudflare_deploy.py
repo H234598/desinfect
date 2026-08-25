@@ -192,6 +192,8 @@ def _vpn_test_environment(
     wrong_pid_countries: str = "",
     health_failures: str = "",
     health_category_sequence: str = "",
+    health_failure_prefix: str = "health check failed: category=",
+    health_failure_extra_line: str = "",
     resolver_hang_countries: str = "",
     routed_families: str = "4,6",
     de_config: str | None = None,
@@ -234,7 +236,13 @@ def _vpn_test_environment(
     )
     _write_executable(
         fake_bin / "sleep",
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$VPN_SLEEP_ARGS\"\nexit 0\n",
+        """#!/bin/sh
+printf '%s\\n' "$*" >> "$VPN_SLEEP_ARGS"
+if test "${VPN_REAL_CLEANUP_POLLING:-}" = 1 && test "$#" = 1 && test "$1" = 1; then
+  /bin/sleep 0.01
+fi
+exit 0
+""",
     )
     _write_executable(
         fake_bin / "cat",
@@ -391,7 +399,13 @@ fi
 case "$category" in
   ''|ok) ;;
   http) printf '%s\\n' 'health check failed: category=http http_status=403' >&2; exit 1 ;;
-  *) printf 'health check failed: category=%s\\n' "$category" >&2; exit 1 ;;
+  *)
+    printf '%s%s\\n' "$VPN_HEALTH_FAILURE_PREFIX" "$category" >&2
+    if test -n "$VPN_HEALTH_FAILURE_EXTRA_LINE"; then
+      printf '%s\\n' "$VPN_HEALTH_FAILURE_EXTRA_LINE" >&2
+    fi
+    exit 1
+    ;;
 esac
 """,
     )
@@ -418,6 +432,8 @@ esac
         "VPN_WRONG_PID_COUNTRIES": wrong_pid_countries,
         "VPN_WRONG_PIDS": str(tmp_path / "wrong-pids"),
         "VPN_HEALTH_FAILURES": health_failures,
+        "VPN_HEALTH_FAILURE_PREFIX": health_failure_prefix,
+        "VPN_HEALTH_FAILURE_EXTRA_LINE": health_failure_extra_line,
         "VPN_RESOLVER_HANG_COUNTRIES": resolver_hang_countries,
         "VPN_IGNORE_TERM": "1" if ignore_term else "",
         "VPN_ROUTED_FAMILIES": routed_families,
@@ -569,6 +585,127 @@ def test_vpn_health_retries_dns_after_clean_de_nl_ch_cycle(tmp_path: Path) -> No
         "vpn-de.premiumize.me.ovpn",
     ]
     assert "7" in (tmp_path / "sleep-args").read_text(encoding="utf-8").splitlines()
+
+
+@pytest.mark.parametrize(
+    "failure_category",
+    ("dns retry_reason=resolver_pending", "tls retry_reason=certificate_pending"),
+    ids=("dns-with-safe-detail", "tls-with-safe-detail"),
+)
+def test_vpn_health_retries_single_dns_or_tls_failure_line_with_safe_details(
+    tmp_path: Path, failure_category: str
+) -> None:
+    """Catches redacted verifier details turning eligible DNS/TLS provisioning terminal."""
+
+    result = _run_vpn_health(
+        tmp_path,
+        health_category_sequence=",".join((failure_category, failure_category, failure_category, "ok")),
+        provisioning_deadline_seconds="10",
+        provisioning_retry_interval_seconds="7",
+        monotonic_seconds_sequence="0,0,0,0,0,0,0",
+    )
+
+    assert result.returncode == 0
+    assert (tmp_path / "openvpn-attempts").read_text(encoding="utf-8").splitlines() == [
+        "vpn-de.premiumize.me.ovpn",
+        "vpn-nl.premiumize.me.ovpn",
+        "vpn-ch.premiumize.me.ovpn",
+        "vpn-de.premiumize.me.ovpn",
+    ]
+    assert "retry_reason=" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    ("health_failure_prefix", "health_failure_extra_line"),
+    (
+        ("spoof health check failed: category=", ""),
+        ("health check failed: category=", "untrusted diagnostic"),
+        (
+            "health check failed: category=",
+            "health check failed: category=tls retry_reason=duplicate",
+        ),
+    ),
+    ids=("spoofed-prefix", "multiline", "duplicate-category"),
+)
+def test_vpn_health_rejects_spoofed_or_multiline_provisioning_failures(
+    tmp_path: Path, health_failure_prefix: str, health_failure_extra_line: str
+) -> None:
+    """Catches untrusted, duplicate, or multiline output becoming an eligible retry."""
+
+    result = _run_vpn_health(
+        tmp_path,
+        health_category_sequence="tls retry_reason=certificate_pending,tls retry_reason=certificate_pending,tls retry_reason=certificate_pending,ok",
+        health_failure_prefix=health_failure_prefix,
+        health_failure_extra_line=health_failure_extra_line,
+        provisioning_deadline_seconds="10",
+        provisioning_retry_interval_seconds="7",
+    )
+
+    assert result.returncode == 1
+    assert (tmp_path / "openvpn-attempts").read_text(encoding="utf-8").splitlines() == [
+        "vpn-de.premiumize.me.ovpn",
+        "vpn-nl.premiumize.me.ovpn",
+        "vpn-ch.premiumize.me.ovpn",
+    ]
+    assert "category=other" in result.stderr
+    assert "untrusted diagnostic" not in result.stdout + result.stderr
+
+
+def test_vpn_health_rejects_duplicate_category_field_in_one_failure_line(tmp_path: Path) -> None:
+    """Catches a second category key smuggled into an otherwise eligible failure line."""
+
+    result = _run_vpn_health(
+        tmp_path,
+        health_category_sequence="tls retry_reason=certificate_pending category=tls,tls retry_reason=certificate_pending category=tls,tls retry_reason=certificate_pending category=tls,ok",
+        provisioning_deadline_seconds="10",
+        provisioning_retry_interval_seconds="7",
+    )
+
+    assert result.returncode == 1
+    assert (tmp_path / "openvpn-attempts").read_text(encoding="utf-8").splitlines() == [
+        "vpn-de.premiumize.me.ovpn",
+        "vpn-nl.premiumize.me.ovpn",
+        "vpn-ch.premiumize.me.ovpn",
+    ]
+    assert "category=other" in result.stderr
+
+
+def test_vpn_health_cleanup_polling_waits_for_a_delayed_term_exit(tmp_path: Path) -> None:
+    """Catches fake retry sleep making cleanup kill a daemon before its TERM grace period."""
+
+    environment = _vpn_test_environment(
+        tmp_path, health_failures="vpn-de.premiumize.me.ovpn"
+    )
+    graceful_marker = tmp_path / "graceful-term-exit"
+    _write_executable(
+        tmp_path / "bin" / "openvpn-daemon",
+        """#!/bin/sh
+set -eu
+trap '/bin/sleep 0.02; : > "$VPN_GRACEFUL_TERM_MARKER"; exit 0' TERM
+while :; do /bin/sleep 0.01; done
+""",
+    )
+    environment["VPN_REAL_CLEANUP_POLLING"] = "1"
+    environment["VPN_GRACEFUL_TERM_MARKER"] = str(graceful_marker)
+
+    result = subprocess.run(
+        [
+            "sh",
+            str(VPN_HEALTH_SCRIPT),
+            "--url",
+            "https://watchdog.example/healthz",
+            "--expected-version",
+            "abc123",
+        ],
+        check=False,
+        capture_output=True,
+        env=environment,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert graceful_marker.exists()
+    assert not (tmp_path / "vpn-state").exists()
 
 
 def test_vpn_health_stops_tls_readiness_retries_at_global_deadline(tmp_path: Path) -> None:
