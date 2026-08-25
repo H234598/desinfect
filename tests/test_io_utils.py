@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import os
 from pathlib import Path
@@ -154,4 +155,39 @@ def test_atomic_write_resists_symlink_ancestor_swap(
     atomic_write_bytes(target, b"anchored", allowed_root=root)
 
     assert (root / "nested-real" / "value.txt").read_bytes() == b"anchored"
+    assert not (outside / "value.txt").exists()
+
+
+def test_atomic_write_accepts_exact_fd_root_after_ancestor_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An FD-backed root stays bound when its pathname ancestor becomes a symlink."""
+
+    root = tmp_path / "root"
+    stage = root / "stage"
+    stage.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    original_root = root
+    root_real = tmp_path / "root-real"
+    original_open_root = io_utils.open_root_directory
+    swapped = False
+
+    @contextmanager
+    def swap_ancestor(path: Path, *, create: bool = False):
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            original_root.rename(root_real)
+            original_root.symlink_to(outside, target_is_directory=True)
+        with original_open_root(path, create=create) as descriptor:
+            yield descriptor
+
+    with io_utils.open_root_directory(stage) as descriptor:
+        fd_root = io_utils.fd_directory_path(descriptor)
+        target = fd_root / "value.txt"
+        monkeypatch.setattr(io_utils, "open_root_directory", swap_ancestor)
+        atomic_write_bytes(target, b"anchored", allowed_root=fd_root)
+
+    assert (root_real / "stage/value.txt").read_bytes() == b"anchored"
     assert not (outside / "value.txt").exists()

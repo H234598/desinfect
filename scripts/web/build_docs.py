@@ -96,6 +96,21 @@ def _path_beneath_repo(repo_root: Path, relative: PurePosixPath) -> Path:
         raise BuildDocsError(f"unsafe publication path: {relative}") from exc
 
 
+def _paths_overlap(left: PurePosixPath, right: PurePosixPath) -> bool:
+    """Return whether either canonical path is an ancestor of the other."""
+
+    return (
+        left.parts[: len(right.parts)] == right.parts
+        or right.parts[: len(left.parts)] == left.parts
+    )
+
+
+def _is_strictly_beneath(path: PurePosixPath, root: PurePosixPath) -> bool:
+    """Return whether *path* is a strict descendant of *root*."""
+
+    return path != root and path.parts[: len(root.parts)] == root.parts
+
+
 def _reject_duplicate_yaml_keys(node: yaml.nodes.Node | None) -> None:
     if isinstance(node, yaml.nodes.MappingNode):
         seen: set[tuple[str, str]] = set()
@@ -138,6 +153,14 @@ def load_publication_config(repo_root: Path) -> PublicationConfig:
     if type(parsed["schema_version"]) is not int or parsed["schema_version"] != 1:
         raise BuildDocsError("publication config schema_version must be integer 1")
     paths = {name: _config_relative_path(parsed[name], name=name) for name in _PATH_KEYS}
+    if not _is_strictly_beneath(paths["docs_dir"], paths["build_root"]):
+        raise BuildDocsError("publication config docs_dir must be strictly beneath build_root")
+    if _paths_overlap(paths["content_root"], paths["build_root"]):
+        raise BuildDocsError("publication config content_root overlaps build_root")
+    if _paths_overlap(paths["site_dir"], paths["build_root"]):
+        raise BuildDocsError("publication config site_dir overlaps build_root")
+    if _paths_overlap(paths["site_dir"], paths["content_root"]):
+        raise BuildDocsError("publication config site_dir overlaps content_root")
     sentinel = parsed["generated_sentinel"]
     if sentinel != _GENERATED_SENTINEL:
         raise BuildDocsError(f"generated_sentinel must be {_GENERATED_SENTINEL}")
@@ -239,9 +262,12 @@ def select_pages(index: ContentIndex, only: tuple[PurePosixPath, ...]) -> tuple[
 
 def _stage_root(stage: Path) -> Path:
     try:
-        return stage.resolve(strict=True)
+        metadata = stage.stat()
     except OSError as exc:
         raise BuildDocsError(f"invalid generated stage: {stage}") from exc
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise BuildDocsError(f"invalid generated stage: {stage}")
+    return stage
 
 
 def _write_generated_text(stage: Path, path: Path, text: str) -> None:

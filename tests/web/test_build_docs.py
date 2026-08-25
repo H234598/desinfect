@@ -8,6 +8,7 @@ import shutil
 
 import pytest
 
+from scripts.rki_pipeline import io_utils
 from scripts.rki_pipeline.io_utils import mark_generated_root
 from scripts.rki_pipeline import staging as staging_module
 from scripts.rki_pipeline.staging import StagingError
@@ -338,6 +339,53 @@ def test_build_docs_preview_keeps_caller_exception_when_teardown_raises(
     assert "teardown boom" in "\n".join(caller.__notes__)
 
 
+def test_render_docs_tree_keeps_fd_stage_after_ancestor_swap(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rendering through an FD stage cannot redirect writes through a swapped ancestor."""
+
+    stage = repo / "build/stage"
+    mark_generated_root(stage, allowed_root=repo)
+    outside = tmp_path / "outside"
+    outside_stage = outside / "stage"
+    outside_stage.mkdir(parents=True)
+    mark_generated_root(outside_stage, allowed_root=outside)
+    build = repo / "build"
+    build_real = repo / "build-real"
+    original_open_root = io_utils.open_root_directory
+    swapped = False
+    stage_path = stage.resolve()
+
+    @contextmanager
+    def swap_build_ancestor(path: Path, *, create: bool = False):
+        nonlocal swapped
+        if not swapped and path in {stage_path, fd_stage}:
+            swapped = True
+            build.rename(build_real)
+            build.symlink_to(outside, target_is_directory=True)
+        try:
+            with original_open_root(path, create=create) as descriptor:
+                yield descriptor
+        finally:
+            if swapped and build.is_symlink():
+                build.unlink()
+                build_real.rename(build)
+
+    try:
+        with io_utils.open_root_directory(stage) as descriptor:
+            fd_stage = io_utils.fd_directory_path(descriptor)
+            monkeypatch.setattr(io_utils, "open_root_directory", swap_build_ancestor)
+            render_docs_tree(repo, fd_stage)
+    finally:
+        if build.is_symlink():
+            build.unlink()
+        if build_real.exists():
+            build_real.rename(build)
+
+    assert (build / "stage/index.md").is_file()
+    assert not (outside_stage / "index.md").exists()
+
+
 def test_build_docs_preview_never_creates_build_root_through_injected_symlink(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -371,6 +419,65 @@ def test_build_docs_preview_never_creates_build_root_through_injected_symlink(
         config_path.write_text(original, encoding="utf-8")
 
     assert not (outside / "build").exists()
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    (
+        ({"docs_dir": "build"}, "docs_dir must be strictly beneath build_root"),
+        ({"docs_dir": "site"}, "docs_dir must be strictly beneath build_root"),
+        ({"content_root": "build/content"}, "content_root overlaps build_root"),
+        (
+            {
+                "content_root": "content",
+                "build_root": "content/build",
+                "docs_dir": "content/build/docs",
+            },
+            "content_root overlaps build_root",
+        ),
+        ({"site_dir": "build/site"}, "site_dir overlaps build_root"),
+        (
+            {
+                "build_root": "site/build",
+                "docs_dir": "site/build/docs",
+                "site_dir": "site",
+            },
+            "site_dir overlaps build_root",
+        ),
+        ({"site_dir": "content/site"}, "site_dir overlaps content_root"),
+        (
+            {"content_root": "site/content", "site_dir": "site"},
+            "site_dir overlaps content_root",
+        ),
+    ),
+)
+def test_load_publication_config_rejects_overlapping_output_paths(
+    repo: Path, overrides: dict[str, str], message: str
+) -> None:
+    """Publication roots must not overlap across source and generated trees."""
+
+    config = repo / "config/publication.yaml"
+    original = config.read_text(encoding="utf-8")
+    defaults = {
+        "content_root": "content",
+        "build_root": "build",
+        "docs_dir": "build/docs",
+        "site_dir": "site",
+    }
+    values = {**defaults, **overrides}
+    config.write_text(
+        original.replace("content_root: content", f"content_root: {values['content_root']}")
+        .replace("build_root: build", f"build_root: {values['build_root']}")
+        .replace("docs_dir: build/docs", f"docs_dir: {values['docs_dir']}")
+        .replace("site_dir: site", f"site_dir: {values['site_dir']}"),
+        encoding="utf-8",
+    )
+
+    try:
+        with pytest.raises(BuildDocsError, match=message):
+            load_publication_config(repo)
+    finally:
+        config.write_text(original, encoding="utf-8")
 
 
 def test_build_docs_rejects_duplicate_publication_config_keys(repo: Path) -> None:

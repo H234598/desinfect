@@ -123,14 +123,46 @@ def _open_directory(name: str | Path, *, dir_fd: int | None = None) -> int:
     return descriptor
 
 
+def _duplicate_fd_root(root: Path) -> int | None:
+    """Duplicate an exact process FD path after checking it names a directory."""
+
+    absolute = Path(os.path.abspath(root))
+    for base in (Path("/proc/self/fd"), Path("/dev/fd")):
+        try:
+            relative = absolute.relative_to(base)
+        except ValueError:
+            continue
+        if (
+            len(relative.parts) != 1
+            or not relative.parts[0].isdigit()
+            or str(int(relative.parts[0])) != relative.parts[0]
+        ):
+            raise UnsafePathError(f"Kein exakter FD-Wurzelpfad: {root}")
+        try:
+            descriptor = os.dup(int(relative.parts[0]))
+        except OSError as exc:
+            raise UnsafePathError(f"FD-Wurzelpfad ist nicht verfügbar: {root}") from exc
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise UnsafePathError(f"FD-Wurzelpfad ist kein Verzeichnis: {root}")
+            return descriptor
+        except BaseException:
+            os.close(descriptor)
+            raise
+    return None
+
+
 @contextmanager
 def open_root_directory(root: Path, *, create: bool = False) -> Iterator[int]:
     """Hold a no-follow descriptor for an allowed root directory."""
 
-    root = Path(os.path.abspath(root))
-    if create:
-        root.mkdir(parents=True, exist_ok=True)
-    descriptor = _open_directory(root)
+    descriptor = _duplicate_fd_root(root)
+    if descriptor is None:
+        root = Path(os.path.abspath(root))
+        if create:
+            root.mkdir(parents=True, exist_ok=True)
+        descriptor = _open_directory(root)
     try:
         yield descriptor
     finally:
