@@ -6,6 +6,7 @@ import argparse
 import http.client
 import json
 import multiprocessing
+import os
 import socket
 import ssl
 import sys
@@ -19,6 +20,7 @@ MAX_ATTEMPTS = 5
 RETRY_DELAY_SECONDS = 3
 REQUEST_TIMEOUT_SECONDS = 5
 ATTEMPT_DEADLINE_SECONDS = 10
+CLEANUP_GRACE_SECONDS = 0.25
 
 
 class Response(Protocol):
@@ -142,13 +144,35 @@ def _child_check(
         result.close()  # type: ignore[attr-defined]
 
 
+def _remaining(deadline: float) -> float:
+    return max(0, deadline - time.monotonic())
+
+
+def _hard_abort_cleanup() -> None:
+    os.write(2, b"health check failed: category=deadline_cleanup\n")
+    os._exit(1)
+
+
+def _reap_or_abort(process: multiprocessing.Process, deadline: float, grace: float) -> None:
+    if process.is_alive():
+        process.terminate()
+        process.join(min(grace, _remaining(deadline)))
+    if process.is_alive():
+        process.kill()
+        process.join(min(grace, _remaining(deadline)))
+    if process.is_alive():
+        _hard_abort_cleanup()
+    process.join(0)
+    process.close()
+
+
 def _check_with_deadline(
     host: str,
     port: int | None,
     expected_version: str,
     connection_factory: ConnectionFactory,
 ) -> Failure | None:
-    """Run one attempt in a Linux child so DNS and body reads cannot outlive its deadline."""
+    """Run one attempt in Linux fork isolation and reap it within its total deadline."""
 
     if sys.platform != "linux":
         raise RuntimeError("Cloudflare health readiness requires Linux fork process isolation")
@@ -160,22 +184,28 @@ def _check_with_deadline(
         daemon=True,
     )
     started = time.monotonic()
+    deadline = started + ATTEMPT_DEADLINE_SECONDS
+    grace = min(CLEANUP_GRACE_SECONDS, ATTEMPT_DEADLINE_SECONDS / 4)
     process.start()
     send.close()
+    reaped = False
     try:
-        process.join(max(0, ATTEMPT_DEADLINE_SECONDS - (time.monotonic() - started)))
+        process.join(max(0, _remaining(deadline) - 2 * grace))
         if process.is_alive():
-            process.terminate()
-            process.join(0)
-            if process.is_alive():
-                process.kill()
-                process.join(0)
+            _reap_or_abort(process, deadline, grace)
+            reaped = True
             return Failure("deadline")
         if receive.poll(0):
-            return receive.recv()
-        return Failure("http")
+            failure = receive.recv()
+        else:
+            failure = Failure("http")
+        _reap_or_abort(process, deadline, grace)
+        reaped = True
+        return failure
     finally:
         receive.close()
+        if not reaped:
+            _reap_or_abort(process, deadline, grace)
 
 
 def verify_health(

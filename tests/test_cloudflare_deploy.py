@@ -4,8 +4,10 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import multiprocessing
+import os
 import re
 import shutil
+import signal
 import socket
 import ssl
 import time
@@ -311,6 +313,32 @@ def test_health_check_deadline_covers_trickling_response_read(monkeypatch: pytes
             connection_factory=FakeConnections([SlowResponse(200)]),
         )
     assert time.monotonic() - started < 0.5
+
+
+def test_health_check_reaps_term_ignoring_child_before_return(monkeypatch: pytest.MonkeyPatch) -> None:
+    child_pid = multiprocessing.Value("i", 0)
+
+    class TermIgnoringResponse(FakeResponse):
+        def read(self) -> bytes:
+            child_pid.value = os.getpid()
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            time.sleep(0.75)
+            return healthy_response().read()
+
+    monkeypatch.setattr(health, "MAX_ATTEMPTS", 1)
+    monkeypatch.setattr(health, "ATTEMPT_DEADLINE_SECONDS", 0.5)
+    monkeypatch.setattr(health, "CLEANUP_GRACE_SECONDS", 0.1, raising=False)
+    started = time.monotonic()
+    with pytest.raises(health.HealthCheckError, match="category=deadline"):
+        health.verify_health(
+            "https://watchdog.example/healthz",
+            "abc123",
+            connection_factory=FakeConnections([TermIgnoringResponse(200)]),
+        )
+    assert child_pid.value
+    assert time.monotonic() - started < 0.65
+    assert not Path(f"/proc/{child_pid.value}").exists()
+    assert all(process.pid != child_pid.value for process in multiprocessing.active_children())
 
 
 def test_health_check_cli_redacts_malformed_port(capsys: pytest.CaptureFixture[str]) -> None:
