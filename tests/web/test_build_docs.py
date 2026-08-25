@@ -306,6 +306,38 @@ def test_build_docs_preview_wraps_normal_cleanup_failure(
     assert isinstance(raised.value.__cause__, OSError)
 
 
+def test_build_docs_preview_keeps_caller_exception_when_teardown_raises(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A teardown failure is noted without replacing the active caller error."""
+
+    caller = RuntimeError("caller boom")
+    preview_path = repo / "build/.docs-preview"
+
+    @contextmanager
+    def fail_teardown(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        preview_path.mkdir(parents=True)
+        try:
+            yield preview_path
+        finally:
+            raise OSError("teardown boom")
+
+    monkeypatch.setattr(build_docs_module, "preview_directory", fail_teardown)
+    monkeypatch.setattr(
+        build_docs_module,
+        "render_docs_tree",
+        lambda *args, **kwargs: build_docs_module.DocsBuildResult({}, {}, False),
+    )
+
+    with pytest.raises(RuntimeError) as raised:
+        with docs_preview_session(repo):
+            raise caller
+
+    assert raised.value is caller
+    assert "teardown boom" in "\n".join(caller.__notes__)
+
+
 def test_build_docs_preview_never_creates_build_root_through_injected_symlink(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
