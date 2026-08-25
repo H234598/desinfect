@@ -26,6 +26,8 @@ markdown_extensions:
   - md_in_html
 extra_css:
   - assets/stylesheets/extra.css
+extra_javascript:
+  - assets/javascripts/table.js
 nav:
   - Start: index.md
   - Handdesinfektion: Handdesinfektion.md

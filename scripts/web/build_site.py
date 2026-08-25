@@ -68,6 +68,7 @@ class SiteBuildResult:
 _FD_DIRECTORY_PATH = re.compile(r"^(?:/proc/self/fd|/dev/fd)/(0|[1-9][0-9]*)$")
 _STATIC_MKDOCS_KEYS = {
     "extra_css",
+    "extra_javascript",
     "markdown_extensions",
     "nav",
     "not_in_nav",
@@ -521,6 +522,8 @@ def _validate_static_mkdocs_config(parsed: dict[object, object], *, content_root
         raise SiteBuildError("mkdocs Markdown extensions are unsupported")
     if parsed.get("extra_css") != ["assets/stylesheets/extra.css"]:
         raise SiteBuildError("mkdocs extra_css must contain only the local stylesheet")
+    if parsed.get("extra_javascript") != ["assets/javascripts/table.js"]:
+        raise SiteBuildError("mkdocs extra_javascript must contain only the local table script")
     try:
         validate_navigation(parsed, build_content_index(content_root))
     except NavigationError as exc:
