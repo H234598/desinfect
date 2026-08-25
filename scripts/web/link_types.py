@@ -9,7 +9,8 @@ import unicodedata
 from scripts.web.content_model import ContentPage, mask_protected
 
 
-IMAGE_SUFFIXES = frozenset({".avif", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp"})
+IMAGE_SUFFIXES = frozenset({".avif", ".gif", ".jpeg", ".jpg", ".png", ".webp"})
+ASSET_SUFFIXES = IMAGE_SUFFIXES | {".pdf"}
 
 
 class LinkError(ValueError):

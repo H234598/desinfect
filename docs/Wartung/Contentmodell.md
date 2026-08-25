@@ -115,10 +115,13 @@ Mehrdeutige Ziele oder Anker, Case-Mismatches, Root-Escape, Traversal,
 unaufgelöste Ziele und externe Ziele liefern einen expliziten Fehlerstatus.
 Unterschiedliche Groß-/Kleinschreibung wird nicht still korrigiert.
 
-Bild-Assets dürfen per `![[bild.png]]` eingebettet werden. PDF- und andere
-zulässige lokale Assets werden als normale Links ausgegeben, nicht eingebettet.
-Markdown-Transklusion und andere Asset-Embeds bleiben gesperrt. Assetpfade
-dürfen den Contentroot auch über Symlinks nicht verlassen.
+Raster-Bild-Assets mit den Endungen `.avif`, `.gif`, `.jpeg`, `.jpg`, `.png`
+und `.webp` dürfen per `![[bild.png]]` eingebettet werden. `.pdf` ist der
+einzige zusätzliche lokale Assettyp und wird nur als normaler Link ausgegeben.
+Andere Endungen, insbesondere aktive Formate wie HTML, JavaScript oder SVG,
+bleiben gesperrt. Markdown-Transklusion und andere Asset-Embeds bleiben
+ebenfalls gesperrt. Assetpfade dürfen den Contentroot auch über Symlinks nicht
+verlassen.
 
 `convert_for_web()` arbeitet nur auf einer generierten Stringkopie.
 Es ersetzt Vorkommen von hinten nach vorn, damit Quelloffsets stabil bleiben,

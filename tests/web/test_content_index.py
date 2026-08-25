@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import builtins
+import os
 from pathlib import Path
 
 import pytest
@@ -61,7 +61,11 @@ def test_index_derives_ids_urls_and_lookup_without_writing(
         del args, kwargs
         raise AssertionError("content index must not write")
 
-    monkeypatch.setattr(builtins, "open", reject_write)
+    monkeypatch.setattr(Path, "write_bytes", reject_write)
+    monkeypatch.setattr(Path, "write_text", reject_write)
+    monkeypatch.setattr(Path, "mkdir", reject_write)
+    monkeypatch.setattr(os, "replace", reject_write)
+    monkeypatch.setattr(os, "remove", reject_write)
     index = build_content_index(tmp_path)
 
     assert index.page_for_path("index.md").canonical_url == "/"

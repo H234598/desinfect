@@ -124,8 +124,12 @@ def test_yaml_depth_and_node_budgets_accept_boundary_and_reject_excess() -> None
     assert ContentPage.from_markdown(
         "allowed.md", _source(extra=f"meta: {allowed_depth}\n")
     ).metadata["meta"]
-    with pytest.raises(ContentModelError, match="depth budget of 16"):
+    with pytest.raises(
+        ContentModelError,
+        match="depth budget of 16 nesting levels",
+    ) as exc_info:
         ContentPage.from_markdown("denied.md", _source(extra=f"meta: {denied_depth}\n"))
+    assert "YAML nodes" not in str(exc_info.value)
 
     allowed_nodes = ", ".join("0" for _ in range(1017))
     page = ContentPage.from_markdown("allowed.md", _source(extra=f"meta: [{allowed_nodes}]\n"))

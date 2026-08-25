@@ -51,6 +51,19 @@ def test_callouts_inside_fences_inline_code_and_comments_remain_byte_identical()
     assert convert_obsidian_callouts_for_web(source) == source
 
 
+def test_multiline_html_comment_inside_callout_leaves_entire_block_literal() -> None:
+    source = (
+        "> [!note] Outer\n"
+        "> before\n"
+        "> <!-- hidden starts\n"
+        "> [!warning] hidden\n"
+        "> hidden body\n"
+        "> -->\n"
+        "> after\n"
+    )
+    assert convert_obsidian_callouts_for_web(source) == source
+
+
 def test_indented_callout_syntax_is_code_and_remains_literal() -> None:
     source = "    > [!warning] hidden\n    > body\n"
     assert convert_obsidian_callouts_for_web(source) == source

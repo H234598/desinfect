@@ -143,7 +143,7 @@ class _UniqueKeyLoader(yaml.SafeLoader):
                 raise ComposerError(
                     None,
                     None,
-                    f"frontmatter exceeds depth budget of {_MAX_YAML_DEPTH} YAML nodes",
+                    f"frontmatter exceeds depth budget of {_MAX_YAML_DEPTH} nesting levels",
                     event.start_mark,
                 )
             if self._composed_nodes > _MAX_YAML_NODES:

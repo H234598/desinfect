@@ -200,6 +200,32 @@ def test_assets_and_markdown_transclusion_are_handled_explicitly(tmp_path: Path)
     assert index.page_for_path(target)
 
 
+@pytest.mark.parametrize("suffix", (".avif", ".gif", ".jpeg", ".jpg", ".png", ".webp", ".pdf"))
+def test_only_documented_local_asset_suffixes_resolve(tmp_path: Path, suffix: str) -> None:
+    source = _write_page(tmp_path, "source.md", title="Source")
+    (tmp_path / f"asset{suffix}").write_bytes(b"asset")
+
+    resolution = resolve_occurrence(
+        build_content_index(tmp_path),
+        _occurrence(source, f"[[asset{suffix}]]"),
+    )
+
+    assert resolution.ok
+
+
+@pytest.mark.parametrize("suffix", (".html", ".xhtml", ".js", ".mjs", ".svg", ".txt"))
+def test_active_or_undocumented_asset_suffixes_fail_closed(tmp_path: Path, suffix: str) -> None:
+    source = _write_page(tmp_path, "source.md", title="Source")
+    (tmp_path / f"unsafe{suffix}").write_bytes(b"unsafe")
+
+    resolution = resolve_occurrence(
+        build_content_index(tmp_path),
+        _occurrence(source, f"[[unsafe{suffix}]]"),
+    )
+
+    assert resolution.status == "missing-document"
+
+
 def test_web_conversion_encodes_relative_paths_escapes_labels_and_replaces_in_reverse(
     tmp_path: Path,
 ) -> None:

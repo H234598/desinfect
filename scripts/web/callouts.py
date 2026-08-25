@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from scripts.web.content_model import protected_spans
+from scripts.web.content_model import mask_protected, protected_spans
 
 
 _CALLOUT_START_RE = re.compile(
@@ -93,21 +93,41 @@ def _protected_line_starts(text: str, lines: list[str]) -> frozenset[int]:
     return frozenset(protected)
 
 
+def _comment_line_indexes(text: str) -> frozenset[int]:
+    without_comments = mask_protected(text, include_comments=False)
+    with_comments = mask_protected(text)
+    return frozenset(
+        index
+        for index, (plain, masked) in enumerate(
+            zip(
+                without_comments.splitlines(keepends=True),
+                with_comments.splitlines(keepends=True),
+                strict=True,
+            )
+        )
+        if plain != masked
+    )
+
+
+def _literal_block_end(lines: list[str], index: int, indent: str) -> int:
+    index += 1
+    while index < len(lines):
+        body = _CALLOUT_BODY_RE.fullmatch(lines[index])
+        if body is None or body.group("indent") != indent:
+            break
+        index += 1
+    return index
+
+
 def _copy_literal_block(
     lines: list[str],
     index: int,
     output: list[str],
     indent: str,
 ) -> int:
-    output.append(lines[index])
-    index += 1
-    while index < len(lines):
-        body = _CALLOUT_BODY_RE.fullmatch(lines[index])
-        if body is None or body.group("indent") != indent:
-            break
-        output.append(lines[index])
-        index += 1
-    return index
+    end = _literal_block_end(lines, index, indent)
+    output.extend(lines[index:end])
+    return end
 
 
 def convert_obsidian_callouts_for_web(text: str) -> str:
@@ -115,6 +135,7 @@ def convert_obsidian_callouts_for_web(text: str) -> str:
 
     lines = text.splitlines(keepends=True)
     protected = _protected_line_starts(text, lines)
+    commented = _comment_line_indexes(text)
     output: list[str] = []
     index = 0
     while index < len(lines):
@@ -128,19 +149,24 @@ def convert_obsidian_callouts_for_web(text: str) -> str:
             output.append(line)
             index += 1
             continue
+        indent = match.group("indent")
+        block_end = _literal_block_end(lines, index, indent)
+        if any(line_index in commented for line_index in range(index, block_end)):
+            output.extend(lines[index:block_end])
+            index = block_end
+            continue
         source_kind = match.group("kind").casefold()
         target_kind = CALLOUT_TYPES.get(source_kind)
         if target_kind is None:
-            index = _copy_literal_block(lines, index, output, match.group("indent"))
+            index = _copy_literal_block(lines, index, output, indent)
             continue
         raw_title = match.group("title").strip() or DEFAULT_TITLES[target_kind]
         title = _safe_title(raw_title)
         if title is None:
-            index = _copy_literal_block(lines, index, output, match.group("indent"))
+            index = _copy_literal_block(lines, index, output, indent)
             continue
         fold = match.group("fold")
         directive = "???+" if fold == "+" else ("???" if fold == "-" else "!!!")
-        indent = match.group("indent")
         newline = match.group("newline") or "\n"
         output.append(f'{indent}{directive} {target_kind} "{title}"{newline}')
         index += 1

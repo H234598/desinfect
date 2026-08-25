@@ -9,7 +9,7 @@ import unicodedata
 
 from scripts.web.content_index import ContentIndex
 from scripts.web.content_model import ContentPage, normalize_key, slugify
-from scripts.web.link_types import IMAGE_SUFFIXES, LinkOccurrence, Resolution
+from scripts.web.link_types import ASSET_SUFFIXES, IMAGE_SUFFIXES, LinkOccurrence, Resolution
 
 
 _EXTERNAL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
@@ -39,6 +39,8 @@ def _candidate_relatives(source: ContentPage, target: str) -> tuple[tuple[str, .
 
 def _safe_asset(index: ContentIndex, relative: str) -> tuple[Path | None, bool]:
     candidate = index.root / relative
+    if candidate.suffix.casefold() not in ASSET_SUFFIXES:
+        return None, False
     if candidate.is_symlink():
         return None, True
     if not candidate.is_file():
