@@ -17,11 +17,7 @@ expected_version=$4
 provisioning_deadline_seconds=${VPN_PROVISIONING_DEADLINE_SECONDS:-900}
 provisioning_retry_interval_seconds=${VPN_PROVISIONING_RETRY_INTERVAL_SECONDS:-15}
 runtime_root=${RUNNER_TEMP:-/tmp}
-runtime_dir=$(mktemp -d "$runtime_root/cloudflare-health-vpn.XXXXXX")
 tun_device=tun-health
-pid_file="$runtime_dir/openvpn.pid"
-auth_file="$runtime_dir/auth"
-vpn_log="$runtime_dir/openvpn.log"
 python_bin=${PYTHON_BIN:-python3}
 vpn_started=0
 tun_owned=0
@@ -57,6 +53,39 @@ case "$provisioning_started_at" in
     ;;
 esac
 provisioning_deadline=$((provisioning_started_at + provisioning_deadline_seconds))
+provisioning_last_at=$provisioning_started_at
+provisioning_clock_error=''
+
+update_provisioning_clock() {
+  provisioning_now=$(provisioning_monotonic_seconds) || {
+    provisioning_clock_error=unavailable
+    return 1
+  }
+  case "$provisioning_now" in
+    ''|*[!0-9]*)
+      provisioning_clock_error=unavailable
+      return 1
+      ;;
+  esac
+  if [ "$provisioning_now" -lt "$provisioning_last_at" ]; then
+    provisioning_clock_error=backwards
+    return 1
+  fi
+  provisioning_last_at=$provisioning_now
+  provisioning_clock_error=''
+}
+
+report_provisioning_clock_error() {
+  case "$provisioning_clock_error" in
+    backwards) printf '%s\n' 'VPN provisioning clock moved backwards' >&2 ;;
+    *) printf '%s\n' 'VPN provisioning clock is unavailable' >&2 ;;
+  esac
+}
+
+runtime_dir=$(mktemp -d "$runtime_root/cloudflare-health-vpn.XXXXXX")
+pid_file="$runtime_dir/openvpn.pid"
+auth_file="$runtime_dir/auth"
+vpn_log="$runtime_dir/openvpn.log"
 
 is_openvpn_pid() {
   candidate_pid=$1
@@ -313,12 +342,32 @@ while :; do
     "DE:vpn-de.premiumize.me.ovpn:$VPN_CONFIG_DE" \
     "NL:vpn-nl.premiumize.me.ovpn:$VPN_CONFIG_NL" \
     "CH:vpn-ch.premiumize.me.ovpn:$VPN_CONFIG_CH"; do
+    if ! update_provisioning_clock; then
+      report_provisioning_clock_error
+      exit 1
+    fi
+    if [ "$provisioning_now" -ge "$provisioning_deadline" ]; then
+      printf '%s\n' 'VPN health provisioning deadline reached' >&2
+      exit 1
+    fi
     country=${candidate%%:*}
     candidate=${candidate#*:}
     config_name=${candidate%%:*}
     config_value=${candidate#*:}
     health_failure_category=other
     if verify_country "$country" "$config_name" "$config_value"; then
+      if ! cleanup_vpn; then
+        printf '%s\n' 'VPN cleanup failed; refusing health success' >&2
+        exit 1
+      fi
+      if ! update_provisioning_clock; then
+        report_provisioning_clock_error
+        exit 1
+      fi
+      if [ "$provisioning_now" -ge "$provisioning_deadline" ]; then
+        printf '%s\n' 'VPN health provisioning deadline reached' >&2
+        exit 1
+      fi
       printf 'VPN health verification succeeded via %s\n' "$country"
       exit 0
     fi
@@ -335,13 +384,10 @@ while :; do
   if [ "$provisioning_cycle_retryable" -ne 1 ]; then
     break
   fi
-  provisioning_now=$(provisioning_monotonic_seconds)
-  case "$provisioning_now" in
-    ''|*[!0-9]*)
-      printf '%s\n' 'VPN provisioning clock is unavailable' >&2
-      break
-      ;;
-  esac
+  if ! update_provisioning_clock; then
+    report_provisioning_clock_error
+    break
+  fi
   provisioning_remaining=$((provisioning_deadline - provisioning_now))
   if [ "$provisioning_remaining" -le 0 ]; then
     printf '%s\n' 'VPN health provisioning deadline reached' >&2
@@ -353,6 +399,14 @@ while :; do
   fi
   printf '%s\n' 'VPN health provisioning retrying after DNS/TLS failure' >&2
   sleep "$provisioning_sleep_seconds"
+  if ! update_provisioning_clock; then
+    report_provisioning_clock_error
+    break
+  fi
+  if [ "$provisioning_now" -ge "$provisioning_deadline" ]; then
+    printf '%s\n' 'VPN health provisioning deadline reached' >&2
+    break
+  fi
 done
 
 printf '%s\n' 'VPN health verification failed for all configured countries' >&2
