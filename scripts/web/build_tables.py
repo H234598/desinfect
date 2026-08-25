@@ -223,6 +223,8 @@ def _check_structure_budget(value: object, *, name: str) -> None:
                     raise TableBuildError(f"{name}: structure node count exceeds budget")
                 stack.append((item, depth + 1))
         elif isinstance(current, list):
+            if nodes + len(current) > MAX_STRUCTURE_NODES:
+                raise TableBuildError(f"{name}: structure node count exceeds budget")
             stack.extend((item, depth + 1) for item in current)
 
 

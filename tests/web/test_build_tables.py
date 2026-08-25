@@ -18,6 +18,7 @@ from scripts.web.build_tables import (
     render_table_page,
     write_table_data_assets,
 )
+from scripts.web import build_tables as build_tables_module
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -692,6 +693,19 @@ def test_json_structure_node_budget_is_enforced(tmp_path: Path) -> None:
 
     with pytest.raises(TableBuildError, match="node count"):
         load_table_inputs(tmp_path)
+
+
+def test_structure_budget_rejects_oversized_list_before_expanding_work_stack() -> None:
+    """A certainly oversized list must fail before duplicating all child references."""
+
+    class OversizedList(list[object]):
+        def __iter__(self):  # type: ignore[no-untyped-def]
+            raise AssertionError("oversized list was expanded")
+
+    values = OversizedList([None] * (build_tables_module.MAX_STRUCTURE_NODES + 1))
+
+    with pytest.raises(TableBuildError, match="node count"):
+        build_tables_module._check_structure_budget(values, name="synthetic")
 
 
 @pytest.mark.parametrize(
