@@ -428,7 +428,7 @@ def test_apply_reloads_preimage_then_dry_runs_and_repeats_identical_patch() -> N
     updated = deepcopy(original)
     updated["rules"][0]["expression"] = payload["expression"]  # type: ignore[index]
     opener = SequentialOpener(
-        [envelope(original), envelope(updated), envelope(updated), envelope(updated)]
+        [envelope(original), envelope(None), envelope(updated), envelope(updated)]
     )
     client = routing.CloudflareClient("secret", opener=opener)
     report = routing.AuditReport(
@@ -457,6 +457,26 @@ def test_apply_reloads_preimage_then_dry_runs_and_repeats_identical_patch() -> N
     )
     assert urls[3] == urls[0]
     assert opener.requests[1].data == opener.requests[2].data  # type: ignore[attr-defined]
+
+
+def test_apply_rejects_non_null_dry_run_result_before_real_patch() -> None:
+    original = zone_ruleset([single_redirect_rule()])
+    payload = routing.build_patch_payload(original["rules"][0])  # type: ignore[index]
+    assert payload is not None
+    unexpected = deepcopy(original)
+    unexpected["rules"][0]["expression"] = payload["expression"]  # type: ignore[index]
+    opener = SequentialOpener([envelope(original), envelope(unexpected)])
+    report = routing.AuditReport(ACCOUNT_ID, ZONE_ID, original, ())
+
+    with pytest.raises(routing.RoutingAuditError, match="dry-run.*unexpected result"):
+        routing.apply_verified_exception(
+            routing.CloudflareClient("secret", opener=opener),
+            report,
+            original["rules"][0],  # type: ignore[index]
+        )
+
+    assert [request.get_method() for request in opener.requests] == ["GET", "PATCH"]  # type: ignore[attr-defined]
+    assert opener.requests[1].full_url.endswith("?dry_run=true")  # type: ignore[attr-defined]
 
 
 def test_apply_rejects_changed_preimage_before_any_patch() -> None:

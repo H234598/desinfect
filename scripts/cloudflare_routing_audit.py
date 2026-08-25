@@ -589,13 +589,8 @@ def apply_verified_exception(
         payload=payload,
         operation="dry-run-zone-single-redirect",
     )
-    _verify_update(
-        preflight,
-        _result(dry_run, "dry-run zone redirect ruleset"),
-        rule_id,
-        payload,
-        "dry-run zone redirect verification failed",
-    )
+    if _result(dry_run, "dry-run zone redirect") is not None:
+        raise RoutingAuditError("dry-run zone redirect returned unexpected result")
     updated = client.request(
         "PATCH", path, payload=payload, operation="update-zone-single-redirect"
     )
