@@ -7,7 +7,7 @@
 
 | Gesamt | Offen | In Arbeit | Im Review | Umgesetzt | Blockiert |
 |---:|---:|---:|---:|---:|---:|
-| 60 | 27 | 0 | 0 | 32 | 1 |
+| 60 | 26 | 0 | 0 | 33 | 1 |
 
 ## Abgeschlossene Phasen
 
@@ -25,6 +25,7 @@
 | P09.1 | #29 | `276e206381d9143547fddfc62cf51d6915cf046f` | Actions `30916701898`, Nach-Merge `30917009538`, CodeRabbit, qlty |
 | P09.2 | #31 | `d02447cf5bd701dbdb961d22aa2d64609a69a369` | Actions `32776756666`, Nach-Merge `32777045027`, qlty, 3 CodeRabbit-Findings behoben |
 | P09.3 | #33 | `accec2b4e5cbb92970b4157641fce69c7bcb10c5` | Actions `32781301922`, Nach-Merge `32781564903`, CodeRabbit approved, qlty, 2 Reviewthreads |
+| P10.1 | #37 | `f1e8c1bc72ec80648855a39f9b5c304bc909ff7a` | Actions `32799650475`, `32799650531`; Nach-Merge `32800771394`, `32800771392`; CodeRabbit approved, qlty, 4 Reviewthreads |
 
 ## Abgeschlossene Phase P06
 
@@ -73,16 +74,31 @@
 
 ## Blockierter Implementierungsstand P09.4
 
-- P09.4 ist nicht umgesetzt; produktive Runtimeabnahme fehlt.
+- P09.4 ist nicht umgesetzt; Staging-Freigabe, nachfolgende Production-Freigabe und produktive Runtimeabnahme fehlen.
 - PR #35 wurde mit geprüftem Head `d72b0a12c950c3beb2552af9909c66b975cb2cfa` als `f9ce544e8b094db3d919ae920c989214e25bac86` gemergt.
 - PR-Gates: Cloudflare `32786594070`, Baseline `32786594072`, CodeRabbit approved und qlty erfolgreich.
 - Nach-Merge-Gates: Cloudflare `32786895489` und Baseline `32786895469` erfolgreich.
-- Blocker: Das Repository besitzt nur das Environment `github-pages`; `cloudflare-watchdog-staging`, `cloudflare-watchdog-production` und deren Secrets fehlen. Sicherer Staging-/Production-Rollout und produktive Abnahme sind deshalb nicht möglich.
+- Custom-Domain-Fix PR #38 wurde mit geprüftem Head `2056e60a7c8333c503fe45d0916305f703f54112` als `4d1acd9c252db838c1a78223c138cf4d1d2363f2` gemergt; Actions `32799960155` und `32799960202`, CodeRabbit approved und qlty erfolgreich.
+- Staging läuft über `staging.workers.desinfect.telacore.org`, Production über `production.workers.desinfect.telacore.org`; `workers.dev` ist deaktiviert.
+- `cloudflare-watchdog-staging` und `cloudflare-watchdog-production` besitzen Required Reviewer `H234598` sowie die benannten Secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` und `CLOUDFLARE_WATCHDOG_HEALTH_URL`.
+- Workflow `32800551483`: Worker-Validierung erfolgreich; `Deploy and verify staging` wartet am manuellen Environment-Gate. Production wurde noch nicht ausgerollt oder abgenommen.
 - Keine Abnahmezeit und keine abnehmende Person eingetragen.
+
+## Abnahme P10.1
+
+- PR #37 per Squash mit geprüftem Head `8b0ddf0e59bc810756ada95df232a56112a99f1f` als `f1e8c1bc72ec80648855a39f9b5c304bc909ff7a` gemergt
+- PR-Läufe `32799650475` und `32799650531` sowie Nach-Merge-Läufe `32800771394` und `32800771392` erfolgreich
+- CodeRabbit approved, qlty erfolgreich, ungelöste Reviewthreads: 0, aufgelöste Reviewthreads: 4
+- Finale PR-CI: 1465 Pytest- und 9 Unittest-Tests erfolgreich
+- P10.1-Suite auf Merge-Stand: 123 Tests erfolgreich
+- Closeout-Gesamtsuite auf Merge-Stand: 1469 Pytest-Tests erfolgreich
+- Baseline-, Planfortschritts-, Planquellen-, Ruff-, Format- und Diff-Prüfungen erfolgreich
+- Abgenommen am: `2026-08-25T02:16:17Z`
+- Abgenommen durch: `H234598`
 
 ## Nächster Schritt
 
-P10.1 kann als unabhängiger interner Schritt parallel weitergeführt werden. P09.4 bleibt bis zur Einrichtung beider geschützter Cloudflare-Environments samt Secrets und erfolgreicher Runtimeabnahme `blockiert`.
+P10.2 ist nächster interner Schritt. P09.4 bleibt bis zur Staging-Freigabe, nachfolgenden Production-Freigabe und produktiven Runtimeabnahme `blockiert`.
 
 ## Gesperrte Architekturentscheidungen
 
