@@ -89,7 +89,6 @@ _CSS_IMPORT = re.compile(
     re.IGNORECASE,
 )
 _CSS_IMAGE_FUNCTIONS = frozenset({"-webkit-image-set", "image", "image-set"})
-_CSS_COMMENT = re.compile(r"/\*.*?(?:\*/|$)", re.DOTALL)
 _CSS_ESCAPE = re.compile(
     r"\\(?:"
     r"(?P<hex>[0-9a-f]{1,6})(?:\r\n|[\t\n\f\r ])?"
@@ -295,12 +294,44 @@ def _decode_css_escape(match: re.Match[str]) -> str:
     return chr(codepoint)
 
 
-def _normalized_css(css: str) -> str:
-    without_comments = _CSS_COMMENT.sub(" ", css)
-    return _CSS_ESCAPE.sub(_decode_css_escape, without_comments)
+def _normalized_css(css: str) -> tuple[str, frozenset[int]]:
+    normalized: list[str] = []
+    escaped_positions: set[int] = set()
+    quote: str | None = None
+    position = 0
+
+    while position < len(css):
+        character = css[position]
+        if character == "\\":
+            escape = _CSS_ESCAPE.match(css, position)
+            if escape is not None:
+                decoded = _decode_css_escape(escape)
+                if decoded:
+                    escaped_positions.add(len(normalized))
+                    normalized.append(decoded)
+                position = escape.end()
+                continue
+        if quote is None and css.startswith("/*", position):
+            comment_end = css.find("*/", position + 2)
+            normalized.append(" ")
+            position = len(css) if comment_end < 0 else comment_end + 2
+            continue
+
+        normalized.append(character)
+        if character in {'"', "'"}:
+            if quote is None:
+                quote = character
+            elif character == quote:
+                quote = None
+        position += 1
+
+    return "".join(normalized), frozenset(escaped_positions)
 
 
-def _css_image_function_strings(css: str) -> Iterator[tuple[int, str]]:
+def _css_image_function_strings(
+    css: str,
+    escaped_positions: frozenset[int] = frozenset(),
+) -> Iterator[tuple[int, str]]:
     function_stack: list[bool] = []
     token_start: int | None = None
     pending_name: str | None = None
@@ -310,13 +341,13 @@ def _css_image_function_strings(css: str) -> Iterator[tuple[int, str]]:
 
     for position, character in enumerate(css):
         if quote is not None:
-            if character == quote:
+            if character == quote and position not in escaped_positions:
                 if capture_quote:
                     yield quote_start, css[quote_start:position]
                 quote = None
             continue
 
-        if character in {'"', "'"}:
+        if character in {'"', "'"} and position not in escaped_positions:
             quote = character
             quote_start = position + 1
             capture_quote = bool(function_stack and function_stack[-1])
@@ -348,13 +379,20 @@ def _css_image_function_strings(css: str) -> Iterator[tuple[int, str]]:
 def external_css_asset_urls(css: str) -> list[str]:
     """Return external browser-resource URLs referenced by generated CSS."""
 
-    normalized = _normalized_css(css)
+    normalized, escaped_positions = _normalized_css(css)
+    regex_input = "".join(
+        " " if position in escaped_positions and character in {'"', "'"} else character
+        for position, character in enumerate(normalized)
+    )
     candidates = [
-        (match.start(), _css_target(match.group("target")))
+        (
+            match.start(),
+            _css_target(normalized[slice(*match.span("target"))]),
+        )
         for pattern in (_CSS_URL, _CSS_IMPORT)
-        for match in pattern.finditer(normalized)
+        for match in pattern.finditer(regex_input)
     ]
-    candidates.extend(_css_image_function_strings(normalized))
+    candidates.extend(_css_image_function_strings(normalized, escaped_positions))
     return [target for _, target in sorted(candidates) if _external_url(target)]
 
 

@@ -166,6 +166,8 @@ def test_external_css_asset_urls_allow_escaped_local_and_commented_data_targets(
         "x::before { content: \"image-set('https://asset.example/literal.png' 1x)\"; }",
         "[data-image=\"image('https://asset.example/literal.png')\"] { color: red; }",
         "x { --literal: \"-webkit-image-set('//asset.example/literal.png' 1x)\"; }",
+        r"""x::before { content: "\\\" image-set('https://asset.example/literal.png' 1x)"; }""",
+        r"""[data-image="\\\" image('https://asset.example/literal.png')"] { color: red; }""",
     ),
 )
 def test_external_css_asset_urls_ignore_image_functions_in_strings(css: str) -> None:
