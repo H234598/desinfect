@@ -7,12 +7,15 @@ from pathlib import Path
 import shutil
 
 import pytest
+import yaml
 
 from scripts.rki_pipeline import io_utils
 from scripts.rki_pipeline.io_utils import mark_generated_root
 from scripts.rki_pipeline import staging as staging_module
 from scripts.rki_pipeline.staging import StagingError
+import scripts.web.build_site as build_site_module
 import scripts.web.build_docs as build_docs_module
+from scripts.web.build_site import SiteBuildError, build_site, main
 from scripts.web.build_docs import (
     BuildDocsError,
     build_docs,
@@ -47,6 +50,14 @@ def _old_docs(repo: Path) -> Path:
     mark_generated_root(old, allowed_root=repo)
     (old / "keep.txt").write_text("old complete tree", encoding="utf-8")
     return old
+
+
+def _mkdocs_source(repo: Path) -> Path:
+    """Install minimal static MkDocs input required by site-build tests."""
+
+    path = repo / "mkdocs.yml"
+    path.write_text("site_name: Test\n", encoding="utf-8")
+    return path
 
 
 def test_build_docs_publishes_transformed_copy_and_preserves_sources(repo: Path) -> None:
@@ -582,3 +593,167 @@ def test_build_docs_rejects_publication_config_merge_keys(repo: Path, merge: str
             load_publication_config(repo)
     finally:
         config.write_text(original, encoding="utf-8")
+
+
+def test_partial_site_build_requires_dry_run(repo: Path) -> None:
+    """Partial site selection cannot publish or create build outputs."""
+
+    assert main(["--repo-root", str(repo), "--only", "index.md", "--strict"]) == 2
+    assert not (repo / "site").exists()
+    assert not (repo / "build/docs").exists()
+
+
+def test_force_dry_run_is_rejected(repo: Path) -> None:
+    """Force has no meaning for disposable preview transactions."""
+
+    with pytest.raises(SiteBuildError, match="force.*dry-run"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=True,
+            strict=True,
+            force=True,
+            site_url=None,
+        )
+
+
+def test_site_build_requires_strict_mode(repo: Path) -> None:
+    """Every site build mode requires MkDocs strict validation."""
+
+    assert main(["--repo-root", str(repo), "--check"]) == 2
+
+
+def test_dry_run_never_publishes_docs_or_site(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dry-run consumes live previews and removes both after the runner returns."""
+
+    _mkdocs_source(repo)
+    seen: dict[str, Path] = {}
+
+    def fake_runner(repo_root: Path, config_path: Path, *, strict: bool) -> int:
+        del repo_root
+        assert strict is True
+        parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        docs_dir = Path(parsed["docs_dir"])
+        site_dir = Path(parsed["site_dir"])
+        assert docs_dir.is_dir()
+        assert (docs_dir / "index.md").is_file()
+        assert docs_dir != (repo / "build/docs").resolve()
+        assert site_dir.is_dir()
+        seen["docs"] = docs_dir
+        seen["site"] = site_dir
+        (site_dir / "index.html").write_text("index", encoding="utf-8")
+        (site_dir / "404.html").write_text("404", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(build_site_module, "run_mkdocs_build", fake_runner)
+    result = build_site(
+        repo,
+        check=True,
+        dry_run=True,
+        strict=True,
+        force=False,
+        site_url=None,
+    )
+
+    assert result.published is False
+    assert seen["docs"].exists() is False
+    assert seen["site"].exists() is False
+    assert not (repo / "build/docs").exists()
+    assert not (repo / "site").exists()
+
+
+def test_site_build_uses_live_docs_and_staged_site_config(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Normal MkDocs config points at published docs and a held site stage."""
+
+    _mkdocs_source(repo)
+    captured: dict[str, object] = {}
+
+    def fake_runner(repo_root: Path, config_path: Path, *, strict: bool) -> int:
+        del repo_root
+        assert strict is True
+        parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        captured["config_path"] = config_path
+        captured["parsed"] = parsed
+        site_dir = Path(parsed["site_dir"])
+        (site_dir / "index.html").write_text("index", encoding="utf-8")
+        (site_dir / "404.html").write_text("404", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(build_site_module, "run_mkdocs_build", fake_runner)
+    result = build_site(
+        repo,
+        check=True,
+        dry_run=False,
+        strict=True,
+        force=False,
+        site_url=None,
+    )
+
+    parsed = captured["parsed"]
+    assert isinstance(parsed, dict)
+    assert parsed["docs_dir"] == str((repo / "build/docs").resolve())
+    site_dir = Path(parsed["site_dir"])
+    assert site_dir.parent == (repo / "site").parent
+    assert site_dir.name.startswith(".site.staging-")
+    assert not Path(captured["config_path"]).exists()
+    assert result.published is True
+    assert (repo / "site/index.html").is_file()
+    assert (repo / "site/404.html").is_file()
+
+
+def test_strict_site_failure_preserves_old_complete_site(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed strict runner cannot replace an existing complete site."""
+
+    _mkdocs_source(repo)
+    old = repo / "site"
+    mark_generated_root(old, allowed_root=repo)
+    (old / "keep.txt").write_text("old complete tree", encoding="utf-8")
+
+    def failing_runner(repo_root: Path, config_path: Path, *, strict: bool) -> int:
+        del repo_root
+        assert strict is True
+        parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        (Path(parsed["site_dir"]) / "incomplete.txt").write_text("incomplete", encoding="utf-8")
+        return 1
+
+    monkeypatch.setattr(build_site_module, "run_mkdocs_build", failing_runner)
+    with pytest.raises(SiteBuildError, match="MkDocs"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=False,
+            strict=True,
+            force=False,
+            site_url=None,
+        )
+
+    assert (old / "keep.txt").read_text(encoding="utf-8") == "old complete tree"
+    assert not list(repo.glob(".site.staging-*"))
+
+
+def test_site_build_rejects_unmarked_existing_site(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unmarked site is never treated as replaceable generated output."""
+
+    _mkdocs_source(repo)
+    site = repo / "site"
+    site.mkdir()
+    (site / "private.txt").write_text("private", encoding="utf-8")
+    monkeypatch.setattr(build_site_module, "run_mkdocs_build", lambda *args, **kwargs: 0)
+
+    with pytest.raises(SiteBuildError):
+        build_site(
+            repo,
+            check=True,
+            dry_run=False,
+            strict=True,
+            force=False,
+            site_url=None,
+        )
+
+    assert (site / "private.txt").read_text(encoding="utf-8") == "private"
