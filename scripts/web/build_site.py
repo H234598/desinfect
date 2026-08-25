@@ -249,9 +249,9 @@ def write_temp_mkdocs_config(
         )
         path = Path(raw_path)
         try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
                 descriptor = -1
-                yaml.safe_dump(parsed, handle, allow_unicode=True, sort_keys=False)
+                yaml.safe_dump(parsed, handle, allow_unicode=True, sort_keys=True)
         except BaseException:
             if descriptor != -1:
                 os.close(descriptor)

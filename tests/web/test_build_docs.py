@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import hashlib
 from html.parser import HTMLParser
 from pathlib import Path
 import os
@@ -70,6 +71,16 @@ def _mkdocs_source(repo: Path) -> Path:
     path = repo / "mkdocs.yml"
     assert path.is_file()
     return path
+
+
+def _sha256_tree(root: Path, *, repo_root: Path) -> dict[str, str]:
+    """Return regular-file hashes with sorted repository-relative POSIX keys."""
+
+    return {
+        path.relative_to(repo_root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"), key=lambda item: item.as_posix())
+        if path.is_file() and not path.is_symlink()
+    }
 
 
 class _ExternalAssetParser(HTMLParser):
@@ -1075,6 +1086,110 @@ def test_strict_site_is_local_german_and_has_404(
     assert "@import" not in stylesheet.lower()
     assert "url(" not in stylesheet.lower()
     assert "@font-face" not in stylesheet.lower()
+
+
+def test_full_site_build_is_reproducible_and_preserves_sources(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wall-clock output or source mutation makes identical full builds diverge."""
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    before = snapshot_sources(repo)
+
+    first = build_site(
+        repo,
+        check=True,
+        dry_run=False,
+        strict=True,
+        force=False,
+        site_url="https://h234598.github.io/desinfect/",
+    )
+    first_hashes = _sha256_tree(repo / "site", repo_root=repo)
+    assert (repo / "site/index.html").is_file()
+    assert (repo / "site/404.html").is_file()
+
+    second = build_site(
+        repo,
+        check=True,
+        dry_run=False,
+        strict=True,
+        force=True,
+        site_url="https://h234598.github.io/desinfect/",
+    )
+    second_hashes = _sha256_tree(repo / "site", repo_root=repo)
+
+    assert (repo / "site/index.html").is_file()
+    assert (repo / "site/404.html").is_file()
+    assert first.published is True
+    assert second.published is True
+    assert first_hashes == second_hashes
+    assert snapshot_sources(repo) == before
+
+
+def test_temp_mkdocs_config_is_reproducible_for_equivalent_key_order(repo: Path) -> None:
+    """Equivalent YAML key order must not alter generated configuration bytes."""
+
+    docs_dir = repo / "content"
+    site_dir = repo / "site-stage"
+    site_dir.mkdir()
+    source = _mkdocs_source(repo)
+
+    first_path = build_site_module.write_temp_mkdocs_config(
+        repo_root=repo,
+        docs_dir=docs_dir,
+        site_dir=site_dir,
+        site_url="https://h234598.github.io/desinfect/",
+        source_date_epoch=1700000000,
+    )
+    try:
+        first = first_path.read_bytes()
+    finally:
+        first_path.unlink()
+
+    parsed = yaml.safe_load(source.read_text(encoding="utf-8"))
+    source.write_text(
+        yaml.safe_dump(
+            {key: parsed[key] for key in reversed(tuple(parsed))},
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    second_path = build_site_module.write_temp_mkdocs_config(
+        repo_root=repo,
+        docs_dir=docs_dir,
+        site_dir=site_dir,
+        site_url="https://h234598.github.io/desinfect/",
+        source_date_epoch=1700000000,
+    )
+    try:
+        second = second_path.read_bytes()
+    finally:
+        second_path.unlink()
+
+    assert first == second
+
+
+def test_invalid_epoch_preserves_old_complete_site(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Invalid reproducibility input must fail before replacing marked output."""
+
+    old = _old_site(repo)
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "not-an-epoch")
+
+    with pytest.raises(ValueError, match="SOURCE_DATE_EPOCH"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=False,
+            strict=True,
+            force=True,
+            site_url="https://h234598.github.io/desinfect/",
+        )
+
+    assert (old / "keep.txt").read_text(encoding="utf-8") == "old complete tree"
 
 
 def test_external_font_config_fails_before_runner_and_preserves_old_site(
