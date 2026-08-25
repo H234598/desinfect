@@ -1,6 +1,6 @@
 ---
 title: Implementierungsplan V3 – Steuerung
-status: P10.1 umgesetzt; P09.4 blockiert; P10.2 als nächster interner Schritt
+status: P10.3 umgesetzt; P09.4 blockiert; P10.4 als nächster interner Schritt
 source_plan_sha256: aa50863cde1313a7039691b4ca596c1ab498d0fab0008da324de5cb69f12ffc4
 repository: H234598/desinfect
 branch: main
@@ -52,11 +52,14 @@ Diese Datei pflegt den aktiven Umsetzungszustand der vollständig bereitgestellt
 - **P09.4-Blocker:** Workflow `32800551483` hat die Worker-Validierung erfolgreich abgeschlossen und wartet vor dem Staging-Deploy auf menschliche Environment-Freigabe. Danach fehlen Production-Freigabe, Production-Rollout und produktive Runtimeabnahme. P09.4 ist nicht umgesetzt.
 - **P10.1:** PR #37, Merge `f1e8c1bc72ec80648855a39f9b5c304bc909ff7a`
 - **P10.1-Gate:** geprüfter Head `8b0ddf0`; GitHub Actions `32799650475` und `32799650531` sowie Nach-Merge-Läufe `32800771394` und `32800771392` erfolgreich; CodeRabbit approved und qlty erfolgreich; alle vier Reviewthreads aufgelöst; finale PR-CI mit 1465 Pytest- und 9 Unittest-Tests, P10.1-Suite auf Merge-Stand mit 123 Tests sowie Closeout-Gesamtsuite mit 1469 Pytest-Tests erfolgreich.
-- **Fortschritt:** 33 von 60 Arbeitspaketen umgesetzt; 26 offen; 0 in Arbeit; 0 im Review; 1 blockiert.
+- **P10.2:** PR #42, Merge `996e8973e5720ac6f5b93b13c2e15d6f5c47bec1`
+- **P10.3:** PRs #45, #46, #49, #50 und #51; Abschlussmerge `79a5e91967af9af89167c3c085acd362ad455aaf`; Status-Closeout PR #52, Merge `143a78af9eb779581e0ed054d557b0c3643fe4cf`
+- **P10.3-Gate:** geprüfter Abschluss-Head `7074ba719ab56a0ec522e8ee64bbc2446a19946e`; Nach-Merge-Läufe `32901411769` und `32901411756` erfolgreich; CodeRabbit current-head success, qlty status success, 0 offene Reviewthreads; 1833 Pytest-, 9 Unittest-, 12 Node- und 37 Worker-Tests sowie Strict Full/Partial erfolgreich.
+- **Fortschritt:** 35 von 60 Arbeitspaketen umgesetzt; 24 offen; 0 in Arbeit; 0 im Review; 1 blockiert.
 
-## Nächster interner Schritt P10.2
+## Nächster interner Schritt P10.4
 
-P10.1 ist umgesetzt. P10.2 bleibt `offen`, bis atomarer Webbuild und MkDocs Strict implementiert, gemergt und remote abgenommen sind. P09.4 bleibt bis zur menschlichen Staging-Freigabe, nachfolgenden Production-Freigabe und produktiven Runtimeabnahme `blockiert`.
+P10.2 und P10.3 sind umgesetzt. P10.4 bleibt bis zur Implementierung, zum Merge und zur Remoteabnahme `offen`. P11.4 bleibt für echte Browser-, Axe- und 390px-Smokes `offen`. P09.4 bleibt bis zur menschlichen Staging-Freigabe, nachfolgenden Production-Freigabe und produktiven Runtimeabnahme `blockiert`.
 
 ## Arbeitspakete
 
@@ -94,8 +97,8 @@ P10.1 ist umgesetzt. P10.2 bleibt `offen`, bis atomarer Webbuild und MkDocs Stri
 - [x] **P09.3** DO-Sperre, Idempotenz, Alarm und Nachkontrolle _(umgesetzt, PR #33, Merge `accec2b4e5cbb92970b4157641fce69c7bcb10c5`)_
 - [ ] **P09.4** Cloudflare-Deploy und Betriebsgrenzen _(blockiert; PRs #35 und #38 gemergt; Staging-Freigabe, Production-Rollout und Runtimeabnahme fehlen)_
 - [x] **P10.1** Contentmodell, Wikilinks und Callouts _(umgesetzt, PR #37, Merge `f1e8c1bc72ec80648855a39f9b5c304bc909ff7a`)_
-- [ ] **P10.2** Atomarer Webbuild und MkDocs Strict
-- [ ] **P10.3** Informationsarchitektur, Wartungsicon und Tabellen
+- [x] **P10.2** Atomarer Webbuild und MkDocs Strict _(umgesetzt, PR #42, Merge `996e8973e5720ac6f5b93b13c2e15d6f5c47bec1`)_
+- [x] **P10.3** Informationsarchitektur, Wartungsicon und Tabellen _(umgesetzt über PRs #45, #46, #49, #50 und #51; Abschlussmerge `79a5e91967af9af89167c3c085acd362ad455aaf`)_
 - [ ] **P10.4** Backendneutrale Downloads, Status- und Rechtshinweise
 - [ ] **P11.1** Read-only PR-Validierung mit Diagnosen
 - [ ] **P11.2** Pages Build/Deploy aus `site/`
