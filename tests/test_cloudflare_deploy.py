@@ -50,6 +50,24 @@ def test_repository_cloudflare_deploy_contract_is_valid() -> None:
         (ROOT / "cloudflare" / "watchdog" / "package.json").read_text(encoding="utf-8")
     )
     assert package["scripts"]["deploy:dry-run"] == 'wrangler deploy --dry-run --env=""'
+    wrangler = json.loads(
+        (ROOT / "cloudflare" / "watchdog" / "wrangler.jsonc").read_text(encoding="utf-8")
+    )
+    assert wrangler.get("workers_dev") is False
+    assert wrangler.get("routes") == [
+        {
+            "pattern": "production.workers.desinfect.telacore.org",
+            "custom_domain": True,
+        }
+    ]
+    staging = wrangler["env"]["staging"]
+    assert staging.get("workers_dev") is False
+    assert staging.get("routes") == [
+        {
+            "pattern": "staging.workers.desinfect.telacore.org",
+            "custom_domain": True,
+        }
+    ]
 
 
 def test_pull_requests_and_main_pushes_validate_without_deploying() -> None:
@@ -145,6 +163,75 @@ def test_validator_rejects_staging_cron(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert any(issue.code == "CFD010" for issue in validate_repository(root))
+
+
+@pytest.mark.parametrize(
+    ("environment", "replacement"),
+    (
+        ("production", {"workers_dev": True}),
+        (
+            "production",
+            {
+                "routes": [
+                    {
+                        "pattern": "invalid.example.org",
+                        "custom_domain": True,
+                    }
+                ]
+            },
+        ),
+        ("staging", {"workers_dev": True}),
+        (
+            "staging",
+            {
+                "routes": [
+                    {
+                        "pattern": "production.workers.desinfect.telacore.org",
+                        "custom_domain": True,
+                    }
+                ]
+            },
+        ),
+    ),
+)
+def test_validator_rejects_workers_dev_or_wrong_custom_domain(
+    tmp_path: Path,
+    environment: str,
+    replacement: dict[str, object],
+) -> None:
+    root = contract_copy(tmp_path)
+    path = root / "cloudflare" / "watchdog" / "wrangler.jsonc"
+    config = json.loads(path.read_text(encoding="utf-8"))
+    config.update(
+        {
+            "workers_dev": False,
+            "routes": [
+                {
+                    "pattern": "production.workers.desinfect.telacore.org",
+                    "custom_domain": True,
+                }
+            ],
+        }
+    )
+    config["env"]["staging"].update(
+        {
+            "workers_dev": False,
+            "routes": [
+                {
+                    "pattern": "staging.workers.desinfect.telacore.org",
+                    "custom_domain": True,
+                }
+            ],
+        }
+    )
+    path.write_text(json.dumps(config), encoding="utf-8")
+    assert validate_repository(root) == []
+
+    target = config if environment == "production" else config["env"]["staging"]
+    target.update(replacement)
+    path.write_text(json.dumps(config), encoding="utf-8")
+
+    assert [issue.code for issue in validate_repository(root)] == ["CFD012"]
 
 
 def test_validator_rejects_unguarded_or_unstaged_production(tmp_path: Path) -> None:

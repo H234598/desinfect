@@ -155,6 +155,43 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
             issues.append(_issue(wrangler_path, "CFD010", "Staging braucht dieselbe feste DO-Bindungsform"))
         if wrangler_value.get("vars", {}).get("DEPLOYMENT_VERSION") != "local" or staging_config.get("vars", {}).get("DEPLOYMENT_VERSION") != "local":
             issues.append(_issue(wrangler_path, "CFD009", "Healthversion muss in beiden Umgebungen deklariert sein"))
+        if (
+            wrangler_value.get("workers_dev") is not False
+            or wrangler_value.get("routes")
+            != [
+                {
+                    "pattern": "production.workers.desinfect.telacore.org",
+                    "custom_domain": True,
+                }
+            ]
+            or "route" in wrangler_value
+        ):
+            issues.append(
+                _issue(
+                    wrangler_path,
+                    "CFD012",
+                    "Production braucht feste Custom Domain und workers_dev=false",
+                )
+            )
+        if (
+            not isinstance(staging_config, dict)
+            or staging_config.get("workers_dev") is not False
+            or staging_config.get("routes")
+            != [
+                {
+                    "pattern": "staging.workers.desinfect.telacore.org",
+                    "custom_domain": True,
+                }
+            ]
+            or "route" in staging_config
+        ):
+            issues.append(
+                _issue(
+                    wrangler_path,
+                    "CFD012",
+                    "Staging braucht getrennte feste Custom Domain und workers_dev=false",
+                )
+            )
 
     worker_value, error = _load(worker_path, lambda value: value)
     if error:
