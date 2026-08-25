@@ -461,18 +461,24 @@ def test_vpn_health_stops_for_a_live_pid_with_wrong_identity(tmp_path: Path) -> 
     """Catches cleanup that could signal an unrelated live process before a fallback."""
 
     result = _run_vpn_health(tmp_path, wrong_pid_countries="vpn-de.premiumize.me.ovpn")
+    wrong_pids = (tmp_path / "wrong-pids").read_text(encoding="utf-8").splitlines()
 
     try:
         assert result.returncode == 1
         assert (tmp_path / "openvpn-attempts").read_text(encoding="utf-8").splitlines() == [
             "vpn-de.premiumize.me.ovpn"
         ]
+        assert all(Path(f"/proc/{raw_pid}").exists() for raw_pid in wrong_pids)
     finally:
-        for raw_pid in (tmp_path / "wrong-pids").read_text(encoding="utf-8").splitlines():
+        for raw_pid in wrong_pids:
             try:
                 os.kill(int(raw_pid), signal.SIGKILL)
             except ProcessLookupError:
                 pass
+        deadline = time.monotonic() + 1
+        while any(Path(f"/proc/{raw_pid}").exists() for raw_pid in wrong_pids) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not any(Path(f"/proc/{raw_pid}").exists() for raw_pid in wrong_pids)
 
 
 def test_vpn_health_falls_back_after_bounded_resolver_timeout(tmp_path: Path) -> None:
