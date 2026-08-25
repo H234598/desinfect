@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 import shutil
 
 import pytest
 
 from scripts.rki_pipeline.io_utils import mark_generated_root
+from scripts.rki_pipeline.staging import StagingError
 import scripts.web.build_docs as build_docs_module
-from scripts.web.build_docs import BuildDocsError, build_docs, snapshot_sources
+from scripts.web.build_docs import (
+    BuildDocsError,
+    build_docs,
+    docs_preview_session,
+    load_publication_config,
+    render_docs_tree,
+    snapshot_sources,
+)
 from scripts.web.link_types import LinkError
 
 
@@ -113,8 +122,8 @@ def test_build_docs_rejects_output_symlink_without_replacing_old_docs(
     old = _old_docs(repo)
     real_copy = build_docs_module.copy_only_regular_local_assets
 
-    def copy_with_symlink(source: Path, destination: Path) -> None:
-        real_copy(source, destination)
+    def copy_with_symlink(source: Path, destination: Path, **kwargs: object) -> None:
+        real_copy(source, destination, **kwargs)
         if source == repo / "content":
             (destination / "escape").symlink_to(repo / "content/index.md")
 
@@ -160,3 +169,73 @@ def test_build_docs_rejects_source_hash_drift_without_replacing_old_docs(
         source.write_bytes(original)
 
     assert (old / "keep.txt").read_text(encoding="utf-8") == "old complete tree"
+
+
+def test_build_docs_never_follows_existing_stage_output_symlinks(
+    repo: Path, tmp_path: Path
+) -> None:
+    """Following a staged page or asset link would overwrite an external victim."""
+
+    source_asset = repo / "content/asset.txt"
+    source_asset.write_bytes(b"source asset")
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    page_victim = tmp_path / "page-victim.md"
+    asset_victim = tmp_path / "asset-victim.txt"
+    page_victim.write_bytes(b"page victim")
+    asset_victim.write_bytes(b"asset victim")
+    (stage / "index.md").symlink_to(page_victim)
+    (stage / "asset.txt").symlink_to(asset_victim)
+
+    with pytest.raises(BuildDocsError):
+        render_docs_tree(repo, stage)
+
+    assert page_victim.read_bytes() == b"page victim"
+    assert asset_victim.read_bytes() == b"asset victim"
+
+
+def test_build_docs_wraps_staging_error_with_cause(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unwrapped staging error would leak the lower-level public API."""
+
+    @contextmanager
+    def fail_staging(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise StagingError("staging lock failed")
+        yield
+
+    monkeypatch.setattr(build_docs_module, "staged_directory", fail_staging)
+
+    with pytest.raises(BuildDocsError, match="staging lock failed") as raised:
+        build_docs(repo, force=False)
+
+    assert isinstance(raised.value.__cause__, StagingError)
+
+
+def test_build_docs_preview_preserves_caller_exception_and_cleans_up(repo: Path) -> None:
+    """Wrapping caller failure would hide its error and leak preview ownership."""
+
+    preview_path: Path | None = None
+    with pytest.raises(ValueError, match="caller boom") as raised:
+        with docs_preview_session(repo) as preview:
+            preview_path = preview.docs_dir
+            raise ValueError("caller boom")
+
+    assert type(raised.value) is ValueError
+    assert preview_path is not None
+    assert not preview_path.exists()
+
+
+def test_build_docs_rejects_duplicate_publication_config_keys(repo: Path) -> None:
+    """Safe YAML loading alone accepts duplicate keys and hides configuration mistakes."""
+
+    config = repo / "config/publication.yaml"
+    original = config.read_text(encoding="utf-8")
+    config.write_text(original + "site_dir: site\n", encoding="utf-8")
+
+    try:
+        with pytest.raises(BuildDocsError, match="duplicate"):
+            load_publication_config(repo)
+    finally:
+        config.write_text(original, encoding="utf-8")

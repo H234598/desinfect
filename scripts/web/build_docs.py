@@ -6,7 +6,6 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
-import shutil
 import stat
 import tempfile
 
@@ -14,13 +13,15 @@ import yaml
 
 from scripts.rki_pipeline.io_utils import (
     UnsafePathError,
+    atomic_write_bytes,
+    atomic_write_text,
     ensure_within,
     mark_generated_root,
     normalize_posix_path,
     relative_path_beneath,
     sha256_file,
 )
-from scripts.rki_pipeline.staging import staged_directory
+from scripts.rki_pipeline.staging import StagingError, staged_directory
 from scripts.web.callouts import convert_obsidian_callouts_for_web
 from scripts.web.content_index import ContentIndex, build_content_index
 from scripts.web.content_model import ContentPage
@@ -96,6 +97,33 @@ def _path_beneath_repo(repo_root: Path, relative: PurePosixPath) -> Path:
         raise BuildDocsError(f"unsafe publication path: {relative}") from exc
 
 
+def _reject_duplicate_yaml_keys(node: yaml.nodes.Node | None) -> None:
+    if isinstance(node, yaml.nodes.MappingNode):
+        seen: set[tuple[str, str]] = set()
+        for key, value in node.value:
+            if isinstance(key, yaml.nodes.ScalarNode):
+                identifier = (key.tag, key.value)
+                if identifier in seen:
+                    raise BuildDocsError("duplicate YAML key in publication config")
+                seen.add(identifier)
+            _reject_duplicate_yaml_keys(key)
+            _reject_duplicate_yaml_keys(value)
+    elif isinstance(node, yaml.nodes.SequenceNode):
+        for value in node.value:
+            _reject_duplicate_yaml_keys(value)
+
+
+def _load_publication_yaml(config_path: Path) -> object:
+    try:
+        document = config_path.read_text(encoding="utf-8")
+        _reject_duplicate_yaml_keys(yaml.compose(document, Loader=yaml.SafeLoader))
+        return yaml.safe_load(document)
+    except BuildDocsError:
+        raise
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise BuildDocsError(f"invalid publication config: {config_path}") from exc
+
+
 def load_publication_config(repo_root: Path) -> PublicationConfig:
     """Load exactly one safe publication configuration from *repo_root*."""
 
@@ -103,10 +131,7 @@ def load_publication_config(repo_root: Path) -> PublicationConfig:
     config_path = _path_beneath_repo(root, _CONFIG_PATH)
     if config_path.is_symlink():
         raise BuildDocsError("publication config must not be a symlink")
-    try:
-        parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
-        raise BuildDocsError(f"invalid publication config: {config_path}") from exc
+    parsed = _load_publication_yaml(config_path)
     if not isinstance(parsed, dict) or set(parsed) != _CONFIG_KEYS:
         raise BuildDocsError("publication config must contain exactly the required keys")
     if type(parsed["schema_version"]) is not int or parsed["schema_version"] != 1:
@@ -211,28 +236,45 @@ def select_pages(index: ContentIndex, only: tuple[PurePosixPath, ...]) -> tuple[
     return tuple(selected)
 
 
+def _stage_root(stage: Path) -> Path:
+    try:
+        return stage.resolve(strict=True)
+    except OSError as exc:
+        raise BuildDocsError(f"invalid generated stage: {stage}") from exc
+
+
+def _write_generated_text(stage: Path, path: Path, text: str) -> None:
+    root = _stage_root(stage)
+    try:
+        relative = relative_path_beneath(path, stage)
+        atomic_write_text(root / relative, text, allowed_root=root)
+    except (OSError, UnsafePathError) as exc:
+        raise BuildDocsError(f"cannot write generated output: {path}") from exc
+
+
 def write_generated_markdown(path: Path, rendered: str, *, stage: Path) -> None:
     """Write one transformed UTF-8 Markdown page below generated stage."""
 
-    try:
-        relative_path_beneath(path, stage)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(rendered, encoding="utf-8")
-    except (OSError, UnsafePathError) as exc:
-        raise BuildDocsError(f"cannot write generated Markdown: {path}") from exc
+    _write_generated_text(stage, path, rendered)
 
 
-def copy_only_regular_local_assets(source: Path, destination: Path) -> None:
+def copy_only_regular_local_assets(
+    source: Path, destination: Path, *, stage: Path | None = None
+) -> None:
     """Copy non-Markdown regular files while rejecting all source symlinks."""
 
+    root = stage if stage is not None else destination
+    stage_root = _stage_root(root)
+    try:
+        prefix = PurePosixPath() if stage is None else relative_path_beneath(destination, root)
+    except UnsafePathError as exc:
+        raise BuildDocsError(f"unsafe generated asset destination: {destination}") from exc
     for relative, path in _regular_files(source, required=False):
         if path.suffix.casefold() == ".md":
             continue
-        target = destination / Path(relative.as_posix())
         try:
-            relative_path_beneath(target, destination)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(path, target, follow_symlinks=False)
+            target = stage_root / Path((prefix / relative).as_posix())
+            atomic_write_bytes(target, path.read_bytes(), allowed_root=stage_root)
         except (OSError, UnsafePathError) as exc:
             raise BuildDocsError(f"cannot copy local asset: {path}") from exc
 
@@ -278,9 +320,13 @@ def render_docs_tree(
             )
             rendered = convert_obsidian_callouts_for_web(wikilinks_converted)
             write_generated_markdown(stage / page.relative_path, rendered, stage=stage)
-        (stage / config.generated_sentinel).write_text("generated by desinfect\n", encoding="utf-8")
+        _write_generated_text(
+            stage,
+            stage / config.generated_sentinel,
+            "generated by desinfect\n",
+        )
         copy_only_regular_local_assets(config.content_root, stage)
-        copy_only_regular_local_assets(root / "web/assets", stage / "assets")
+        copy_only_regular_local_assets(root / "web/assets", stage / "assets", stage=stage)
         docs_hashes = validate_generated_docs(stage)
         current = snapshot_sources(root)
         require_unchanged(current, before)
@@ -301,7 +347,7 @@ def build_docs(repo_root: Path, *, force: bool) -> DocsBuildResult:
             result = render_docs_tree(root, stage)
     except BuildDocsError:
         raise
-    except (OSError, UnsafePathError, ValueError) as exc:
+    except (OSError, StagingError, UnsafePathError, ValueError) as exc:
         raise BuildDocsError(str(exc)) from exc
     return replace(result, published=True)
 
@@ -318,14 +364,16 @@ def docs_preview_session(
     config = load_publication_config(root)
     try:
         config.build_root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(
-            prefix=".docs-preview-", dir=config.build_root
-        ) as directory:
-            preview = Path(directory)
-            mark_generated_root(preview, allowed_root=root)
-            result = render_docs_tree(root, preview, only=only)
-            yield DocsPreview(docs_dir=preview.resolve(), result=result)
-    except BuildDocsError:
-        raise
+        temporary = tempfile.TemporaryDirectory(prefix=".docs-preview-", dir=config.build_root)
     except (OSError, UnsafePathError, ValueError) as exc:
         raise BuildDocsError(str(exc)) from exc
+    with temporary as directory:
+        preview = Path(directory)
+        try:
+            mark_generated_root(preview, allowed_root=root)
+            result = render_docs_tree(root, preview, only=only)
+        except BuildDocsError:
+            raise
+        except (OSError, UnsafePathError, ValueError) as exc:
+            raise BuildDocsError(str(exc)) from exc
+        yield DocsPreview(docs_dir=preview.resolve(), result=result)
