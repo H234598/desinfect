@@ -191,6 +191,7 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
             "sanitize_openvpn_config",
             'if ($0 == "<ca>")',
             "--resolve-addresses",
+            'timeout --foreground --signal=TERM --kill-after=5s 15s "$python_bin"',
             "ip -4 route get",
             "ip -6 route get",
             '--resolved-address "$resolved_address"',

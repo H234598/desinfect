@@ -103,7 +103,7 @@ cleanup_vpn() {
           cleanup_failed=1
         fi
       fi
-    else
+    elif sudo -n kill -0 "$vpn_pid" >/dev/null 2>&1; then
       cleanup_failed=1
     fi
   fi
@@ -201,7 +201,8 @@ wait_for_vpn() {
 
 resolve_target_routes() {
   resolved_address=''
-  resolved_addresses=$("$python_bin" scripts/verify_cloudflare_health.py --url "$health_url" --resolve-addresses) || return 1
+  resolved_addresses=$(timeout --foreground --signal=TERM --kill-after=5s 15s "$python_bin" \
+    scripts/verify_cloudflare_health.py --url "$health_url" --resolve-addresses) || return 1
   test -n "$resolved_addresses" || return 1
   while IFS=' ' read -r address_family address; do
     case "$address_family" in

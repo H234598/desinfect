@@ -178,7 +178,10 @@ def _vpn_test_environment(
     tmp_path: Path,
     *,
     openvpn_failures: str = "",
+    openvpn_exit_after_pid_countries: str = "",
+    wrong_pid_countries: str = "",
     health_failures: str = "",
+    resolver_hang_countries: str = "",
     routed_families: str = "4,6",
     de_config: str | None = None,
     ignore_term: bool = False,
@@ -214,6 +217,14 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 shift
+case "$*" in
+  *--resolve-addresses*)
+    name=$(cat "$VPN_STATE")
+    case ",${VPN_RESOLVER_HANG_COUNTRIES}," in
+      *",${name},"*) exit 124 ;;
+    esac
+    ;;
+esac
 exec "$@"
 """,
     )
@@ -223,6 +234,10 @@ exec "$@"
 if test "${VPN_IGNORE_TERM:-}" = 1; then trap '' TERM; fi
 while :; do /bin/sleep 60; done
 """,
+    )
+    _write_executable(
+        fake_bin / "wrong-daemon",
+        "#!/bin/sh\n/bin/sleep 2\n",
     )
     _write_executable(
         fake_bin / "openvpn",
@@ -244,6 +259,21 @@ if test -e "$VPN_STATE"; then
 fi
 case ",${VPN_OPENVPN_FAILURES}," in
   *",${name},"*) exit 1 ;;
+esac
+case ",${VPN_OPENVPN_EXIT_AFTER_PID_COUNTRIES}," in
+  *",${name},"*)
+    printf '%s\\n' "$$" > "$pidfile"
+    exit 1
+    ;;
+esac
+case ",${VPN_WRONG_PID_COUNTRIES}," in
+  *",${name},"*)
+    "$(dirname "$0")/wrong-daemon" --writepid "$pidfile" &
+    printf '%s\\n' "$!" > "$pidfile"
+    printf '%s\\n' "$!" >> "$VPN_WRONG_PIDS"
+    printf '%s\\n' "$name" > "$VPN_STATE"
+    exit 1
+    ;;
 esac
 "$(dirname "$0")/openvpn-daemon" --config "$config" --writepid "$pidfile" &
 printf '%s\\n' "$!" > "$pidfile"
@@ -284,6 +314,10 @@ esac
 set -eu
 case "$*" in
   *--resolve-addresses*)
+    name=$(cat "$VPN_STATE")
+    case ",${VPN_RESOLVER_HANG_COUNTRIES}," in
+      *",${name},"*) /bin/sleep 0.3 ;;
+    esac
     printf '%s\\n' "$VPN_RESOLVED_ADDRESSES"
     exit 0
     ;;
@@ -313,7 +347,11 @@ esac
         "VPN_TIMEOUT_ARGS": str(timeout_args),
         "VPN_DAEMON_PIDS": str(daemon_pids),
         "VPN_OPENVPN_FAILURES": openvpn_failures,
+        "VPN_OPENVPN_EXIT_AFTER_PID_COUNTRIES": openvpn_exit_after_pid_countries,
+        "VPN_WRONG_PID_COUNTRIES": wrong_pid_countries,
+        "VPN_WRONG_PIDS": str(tmp_path / "wrong-pids"),
         "VPN_HEALTH_FAILURES": health_failures,
+        "VPN_RESOLVER_HANG_COUNTRIES": resolver_hang_countries,
         "VPN_IGNORE_TERM": "1" if ignore_term else "",
         "VPN_ROUTED_FAMILIES": routed_families,
         "VPN_RESOLVED_ADDRESSES": "4 198.51.100.17\n6 2001:db8::17",
@@ -399,6 +437,57 @@ def test_vpn_health_fails_closed_after_all_country_health_failures(tmp_path: Pat
         "vpn-ch.premiumize.me.ovpn",
     ]
     assert not (tmp_path / "vpn-state").exists()
+
+
+def test_vpn_health_falls_back_when_openvpn_exited_after_writing_its_own_pid(
+    tmp_path: Path,
+) -> None:
+    """Catches a clean OpenVPN startup failure that incorrectly blocks later countries."""
+
+    result = _run_vpn_health(
+        tmp_path,
+        openvpn_exit_after_pid_countries="vpn-de.premiumize.me.ovpn,vpn-nl.premiumize.me.ovpn",
+    )
+
+    assert result.returncode == 0
+    assert (tmp_path / "openvpn-attempts").read_text(encoding="utf-8").splitlines() == [
+        "vpn-de.premiumize.me.ovpn",
+        "vpn-nl.premiumize.me.ovpn",
+        "vpn-ch.premiumize.me.ovpn",
+    ]
+
+
+def test_vpn_health_stops_for_a_live_pid_with_wrong_identity(tmp_path: Path) -> None:
+    """Catches cleanup that could signal an unrelated live process before a fallback."""
+
+    result = _run_vpn_health(tmp_path, wrong_pid_countries="vpn-de.premiumize.me.ovpn")
+
+    try:
+        assert result.returncode == 1
+        assert (tmp_path / "openvpn-attempts").read_text(encoding="utf-8").splitlines() == [
+            "vpn-de.premiumize.me.ovpn"
+        ]
+    finally:
+        for raw_pid in (tmp_path / "wrong-pids").read_text(encoding="utf-8").splitlines():
+            try:
+                os.kill(int(raw_pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_vpn_health_falls_back_after_bounded_resolver_timeout(tmp_path: Path) -> None:
+    """Catches a resolver hang that waits for the job timeout instead of trying NL."""
+
+    result = _run_vpn_health(tmp_path, resolver_hang_countries="vpn-de.premiumize.me.ovpn")
+
+    assert result.returncode == 0
+    assert (tmp_path / "openvpn-attempts").read_text(encoding="utf-8").splitlines() == [
+        "vpn-de.premiumize.me.ovpn",
+        "vpn-nl.premiumize.me.ovpn",
+    ]
+    timeout_arguments = (tmp_path / "timeout-args").read_text(encoding="utf-8")
+    assert "--kill-after=5s 15s" in timeout_arguments
+    assert "--resolve-addresses" in timeout_arguments
 
 
 def test_vpn_health_kills_term_ignoring_daemon_before_next_country(tmp_path: Path) -> None:
@@ -1086,6 +1175,22 @@ def test_validator_rejects_missing_tunnel_socket_binding(tmp_path: Path) -> None
     path = root / "scripts" / "verify_cloudflare_health.py"
     path.write_text(
         path.read_text(encoding="utf-8").replace("socket.SO_BINDTODEVICE", "socket.SO_RCVBUF"),
+        encoding="utf-8",
+    )
+
+    assert any(issue.code == "CFD009" for issue in validate_repository(root))
+
+
+def test_validator_rejects_unbounded_target_resolver(tmp_path: Path) -> None:
+    """Catches DNS resolution that can consume an entire deploy job."""
+
+    root = contract_copy(tmp_path)
+    path = root / "scripts" / "verify_cloudflare_health_via_vpn.sh"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            'timeout --foreground --signal=TERM --kill-after=5s 15s "$python_bin"',
+            '"$python_bin"',
+        ),
         encoding="utf-8",
     )
 
