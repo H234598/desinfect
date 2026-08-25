@@ -3,16 +3,24 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import hashlib
 from pathlib import Path
+import os
 import shutil
+from types import SimpleNamespace
 
+import material
+import mkdocs.config
 import pytest
+import yaml
 
 from scripts.rki_pipeline import io_utils
 from scripts.rki_pipeline.io_utils import mark_generated_root
 from scripts.rki_pipeline import staging as staging_module
 from scripts.rki_pipeline.staging import StagingError
+import scripts.web.build_site as build_site_module
 import scripts.web.build_docs as build_docs_module
+from scripts.web.build_site import SiteBuildError, build_site, main
 from scripts.web.build_docs import (
     BuildDocsError,
     build_docs,
@@ -47,6 +55,222 @@ def _old_docs(repo: Path) -> Path:
     mark_generated_root(old, allowed_root=repo)
     (old / "keep.txt").write_text("old complete tree", encoding="utf-8")
     return old
+
+
+def _old_site(repo: Path) -> Path:
+    old = repo / "site"
+    mark_generated_root(old, allowed_root=repo)
+    (old / "keep.txt").write_text("old complete tree", encoding="utf-8")
+    return old
+
+
+def _mkdocs_source(repo: Path) -> Path:
+    """Return static MkDocs input required by site-build tests."""
+
+    path = repo / "mkdocs.yml"
+    assert path.is_file()
+    return path
+
+
+def _sha256_tree(root: Path, *, repo_root: Path) -> dict[str, str]:
+    """Return regular-file hashes with sorted repository-relative POSIX keys."""
+
+    return {
+        path.relative_to(repo_root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"), key=lambda item: item.as_posix())
+        if path.is_file() and not path.is_symlink()
+    }
+
+
+def test_external_asset_urls_are_case_and_whitespace_insensitive() -> None:
+    """Remote resource schemes and link relations follow HTML casing rules."""
+
+    html = """
+    <script src="HTTPS://script.example/app.js"></script>
+    <script src=" https://space.example/app.js"></script>
+    <img src="//image.example/pixel.png">
+    <source src="HTTP://media.example/movie.mp4">
+    <iframe src=" https://frame.example/"></iframe>
+    <link rel="STYLESHEET" href="https://style.example/site.css">
+    <link rel="canonical" href="https://content.example/canonical">
+    <a href="https://content.example/page">Content link</a>
+    """
+
+    assert build_site_module.external_asset_urls(html) == [
+        "HTTPS://script.example/app.js",
+        " https://space.example/app.js",
+        "//image.example/pixel.png",
+        "HTTP://media.example/movie.mp4",
+        " https://frame.example/",
+        "https://style.example/site.css",
+    ]
+
+
+def test_external_css_asset_urls_allow_local_and_data_targets() -> None:
+    """CSS parser detects remote imports and URLs without rejecting local data."""
+
+    css = """
+    @import " HTTPS://style.example/remote.css";
+    body { background: url( //image.example/background.png ); }
+    .local { background: url('../images/local.png'); }
+    .inline { background: url(data:image/svg+xml;base64,AAAA); }
+    """
+
+    assert build_site_module.external_css_asset_urls(css) == [
+        "HTTPS://style.example/remote.css",
+        "//image.example/background.png",
+    ]
+
+
+@pytest.mark.parametrize(
+    "css",
+    (
+        r"body { background: u\72l(\68ttps://asset.example/escaped.png); }",
+        r"body { background: \000075\000072\00006c(\000068ttps://asset.example/six.png); }",
+        r"body { background: url(\68 ttps://asset.example/spaced.png); }",
+        r"body { background: url(https\:\/\/asset.example/characters.png); }",
+        "body { background: url(ht\\\ntps://asset.example/continued.png); }",
+        r"@\69mport '\68ttps://asset.example/escaped.css';",
+        "body { background: url(/* generated */ https://asset.example/comment.png); }",
+        'body { background: url("https://asset.example/unclosed.png); }',
+        'body { background: image-set("https://asset.example/set.png" 1x); }',
+        'body { background: -webkit-image-set("//asset.example/set.png" 1x); }',
+        r'body { background: \69mage-set(/* generated */ "\68ttps://asset.example/set.png" 1x); }',
+        'body { background: image("https://asset.example/fallback.png"); }',
+        r'body { background: \69mage(/* generated */ "\68ttps://asset.example/fallback.png"); }',
+    ),
+)
+def test_external_css_asset_urls_decode_browser_syntax(css: str) -> None:
+    """Escapes, comments, and ambiguous remote targets cannot hide fetches."""
+
+    assert build_site_module.external_css_asset_urls(css)
+
+
+def test_external_css_asset_urls_allow_escaped_local_and_commented_data_targets() -> None:
+    """CSS normalization does not turn local or data targets into remote assets."""
+
+    css = r"""
+    .local { background: u\72l('../images/local.png'); }
+    .inline { background: url(/* generated */ data:image/svg+xml;base64,AAAA); }
+    .set { background: image-set('/local.png' 1x, "data:image/png;base64,AAAA" 2x); }
+    .vendor { background: -webkit-image-set("#local" 1x); }
+    .fallback { background: image("/local.png"); }
+    """
+
+    assert build_site_module.external_css_asset_urls(css) == []
+
+
+@pytest.mark.parametrize(
+    "css",
+    (
+        "x::before { content: \"image-set('https://asset.example/literal.png' 1x)\"; }",
+        "[data-image=\"image('https://asset.example/literal.png')\"] { color: red; }",
+        "x { --literal: \"-webkit-image-set('//asset.example/literal.png' 1x)\"; }",
+        r"""x::before { content: "\\\" image-set('https://asset.example/literal.png' 1x)"; }""",
+        r"""[data-image="\\\" image('https://asset.example/literal.png')"] { color: red; }""",
+    ),
+)
+def test_external_css_asset_urls_ignore_image_functions_in_strings(css: str) -> None:
+    """Image-function text inside a CSS string does not load a resource."""
+
+    assert build_site_module.external_css_asset_urls(css) == []
+
+
+def test_css_image_function_scan_has_linear_character_reads() -> None:
+    """Nested image functions cannot trigger a rescan from every opening token."""
+
+    reads = [0]
+
+    class CountingCss(str):
+        def __getitem__(self, key: int | slice) -> str:
+            reads[0] += 1
+            return super().__getitem__(key)
+
+    target = "https://asset.example/nested.png"
+    nesting = 200
+    css = CountingCss("image(" * nesting + repr(target) + ")" * nesting)
+
+    assert [value for _, value in build_site_module._css_image_function_strings(css)] == [target]
+    assert reads[0] <= len(css) * 2
+
+
+@pytest.mark.parametrize(
+    "html",
+    (
+        '<script src="\x01 h\tttps://asset.example/app.js"></script>',
+        '<img srcset="/local.png 1x, https://asset.example/image.png 2x">',
+        '<source srcset="/local.webp 1x, //asset.example/image.webp 2x">',
+        '<link rel="preload" href="/local.png" '
+        'imagesrcset="/local.png 1x, HTTP://asset.example/image.png 2x">',
+        '<video src="https://asset.example/movie.mp4"></video>',
+        '<video poster="//asset.example/poster.png"></video>',
+        '<audio src="https://asset.example/audio.mp3"></audio>',
+        '<track src="https://asset.example/captions.vtt">',
+        '<embed src="https://asset.example/plugin.bin">',
+        '<object data="https://asset.example/object.bin"></object>',
+        '<base href="https://asset.example/root/">',
+        r'<base href="\\evil.example/root/">',
+        r'<img src="\\evil.example/image.png">',
+        r'<img srcset="/local.png 1x, \\evil.example/image.png 2x">',
+        '<svg><image href="https://asset.example/image.svg"></image></svg>',
+        '<svg><use xlink:href="//asset.example/icons.svg#x"></use></svg>',
+        '<svg><feImage href="https://asset.example/filter.svg"></feImage></svg>',
+        '<svg><script href="https://asset.example/app.js"></script></svg>',
+        '<svg><script xlink:href="//asset.example/app.js"></script></svg>',
+        '<svg><linearGradient href="https://asset.example/paint.svg#g"></linearGradient></svg>',
+        '<svg><radialGradient xlink:href="//asset.example/paint.svg#g"></radialGradient></svg>',
+        '<svg><pattern href="https://asset.example/pattern.svg#p"></pattern></svg>',
+        '<svg><textPath xlink:href="//asset.example/text.svg#p"></textPath></svg>',
+        '<svg><mpath href="https://asset.example/motion.svg#p"></mpath></svg>',
+        '<svg><rect fill="url(https://asset.example/paint.svg#g)"></rect></svg>',
+        '<svg><path stroke="url(//asset.example/paint.svg#g)"></path></svg>',
+        '<svg><g filter="url(https://asset.example/filter.svg#f)"></g></svg>',
+        '<svg><g mask="url(//asset.example/mask.svg#m)"></g></svg>',
+        '<svg><g clip-path="url(https://asset.example/clip.svg#c)"></g></svg>',
+        '<svg><path marker="url(//asset.example/marker.svg#m)"></path></svg>',
+        '<svg><path marker-start="url(https://asset.example/marker.svg#m)"></path></svg>',
+        '<svg><path marker-mid="url(//asset.example/marker.svg#m)"></path></svg>',
+        '<svg><path marker-end="url(https://asset.example/marker.svg#m)"></path></svg>',
+        '<input type="image" src="https://asset.example/button.png">',
+        '<div style="background: url(https://asset.example/inline.png)"></div>',
+        "<div style=\"background: image-set('https://asset.example/set.png' 1x)\"></div>",
+        "<div style=\"background: image('https://asset.example/fallback.png')\"></div>",
+        "<style>body { background: url(//asset.example/block.png); }</style>",
+        '<style>body { background: -webkit-image-set("//asset.example/set.png" 1x); }</style>',
+        "<style>body { background: url(https://asset.example/unclosed.png); }",
+        "<iframe srcdoc=\"&lt;img src='https://asset.example/nested.png'>\"></iframe>",
+    ),
+)
+def test_external_asset_urls_cover_browser_resource_carriers(html: str) -> None:
+    """Every browser-loading attribute or embedded CSS form is rejected."""
+
+    assert build_site_module.external_asset_urls(html)
+
+
+def test_external_asset_urls_allow_navigation_and_local_resources() -> None:
+    """Navigation links plus local, fragment, and data resources stay valid."""
+
+    html = """
+    <a href="https://content.example/page">Content link</a>
+    <link rel="canonical" href="https://content.example/canonical">
+    <base href="/local/root/">
+    <base href="\\local/root/">
+    <img src="/local.png" srcset="/local.png 1x, data:image/png;base64,AAAA 2x">
+    <source src="#local" srcset="data:text/plain,https://not-loaded.example 1x">
+    <video src="data:video/mp4;base64,AAAA" poster="/poster.png"></video>
+    <object data="#local-object"></object>
+    <svg><use href="#local-icon"></use></svg>
+    <svg><script href="/local-script.js"></script></svg>
+    <svg><linearGradient href="#local-gradient"></linearGradient></svg>
+    <svg><rect fill="url(#local-gradient)" marker-end="url(#local-marker)"></rect></svg>
+    <input type="image" src="data:image/png;base64,AAAA">
+    <div style="background: url(data:image/png;base64,AAAA)"></div>
+    <div style="background: image-set('/local.png' 1x, 'data:image/png;base64,AAAA' 2x)"></div>
+    <style>body { background: url('/local.png'); }</style>
+    <iframe srcdoc="&lt;a href='https://content.example/nested'>allowed&lt;/a>"></iframe>
+    """
+
+    assert build_site_module.external_asset_urls(html) == []
 
 
 def test_build_docs_publishes_transformed_copy_and_preserves_sources(repo: Path) -> None:
@@ -582,3 +806,790 @@ def test_build_docs_rejects_publication_config_merge_keys(repo: Path, merge: str
             load_publication_config(repo)
     finally:
         config.write_text(original, encoding="utf-8")
+
+
+def test_partial_site_build_requires_dry_run(repo: Path) -> None:
+    """Partial site selection cannot publish or create build outputs."""
+
+    assert main(["--repo-root", str(repo), "--only", "index.md", "--strict"]) == 2
+    assert not (repo / "site").exists()
+    assert not (repo / "build/docs").exists()
+
+
+def test_force_dry_run_is_rejected(repo: Path) -> None:
+    """Force has no meaning for disposable preview transactions."""
+
+    with pytest.raises(SiteBuildError, match="force.*dry-run"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=True,
+            strict=True,
+            force=True,
+            site_url=None,
+        )
+
+
+def test_site_build_requires_strict_mode(repo: Path) -> None:
+    """Every site build mode requires MkDocs strict validation."""
+
+    assert main(["--repo-root", str(repo), "--check"]) == 2
+
+
+def test_dry_run_never_publishes_docs_or_site(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dry-run consumes live previews and removes both after the runner returns."""
+
+    _mkdocs_source(repo)
+    seen: dict[str, Path] = {}
+
+    def fake_runner(
+        repo_root: Path,
+        config_path: Path,
+        *,
+        strict: bool,
+        epoch: int,
+        pass_fds: tuple[int, ...],
+    ) -> int:
+        del repo_root, epoch, pass_fds
+        assert strict is True
+        parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        docs_dir = Path(parsed["docs_dir"])
+        site_dir = Path(parsed["site_dir"])
+        assert docs_dir.is_dir()
+        assert (docs_dir / "index.md").is_file()
+        assert docs_dir != (repo / "build/docs").resolve()
+        assert site_dir.is_dir()
+        seen["docs"] = docs_dir
+        seen["site"] = site_dir
+        (site_dir / "index.html").write_text("index", encoding="utf-8")
+        (site_dir / "404.html").write_text("404", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(build_site_module, "run_mkdocs_build", fake_runner)
+    result = build_site(
+        repo,
+        check=True,
+        dry_run=True,
+        strict=True,
+        force=False,
+        site_url=None,
+    )
+
+    assert result.published is False
+    assert seen["docs"].exists() is False
+    assert seen["site"].exists() is False
+    assert not (repo / "build/docs").exists()
+    assert not (repo / "site").exists()
+
+
+def test_site_build_uses_live_docs_and_staged_site_config(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Normal MkDocs config points at published docs and a held site stage."""
+
+    _mkdocs_source(repo)
+    captured: dict[str, object] = {}
+
+    def fake_runner(
+        repo_root: Path,
+        config_path: Path,
+        *,
+        strict: bool,
+        epoch: int,
+        pass_fds: tuple[int, ...],
+    ) -> int:
+        del repo_root, epoch, pass_fds
+        assert strict is True
+        parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        captured["config_path"] = config_path
+        captured["parsed"] = parsed
+        site_dir = Path(parsed["site_dir"])
+        (site_dir / "index.html").write_text("index", encoding="utf-8")
+        (site_dir / "404.html").write_text("404", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(build_site_module, "run_mkdocs_build", fake_runner)
+    result = build_site(
+        repo,
+        check=True,
+        dry_run=False,
+        strict=True,
+        force=False,
+        site_url=None,
+    )
+
+    parsed = captured["parsed"]
+    assert isinstance(parsed, dict)
+    assert str(parsed["docs_dir"]).startswith(("/proc/self/fd/", "/dev/fd/"))
+    site_dir = Path(parsed["site_dir"])
+    assert site_dir.as_posix().startswith(("/proc/self/fd/", "/dev/fd/"))
+    assert not Path(captured["config_path"]).exists()
+    assert result.published is True
+    assert (repo / "site/index.html").is_file()
+    assert (repo / "site/404.html").is_file()
+
+
+def test_strict_site_failure_preserves_old_complete_site(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed strict runner cannot replace an existing complete site."""
+
+    _mkdocs_source(repo)
+    old = repo / "site"
+    mark_generated_root(old, allowed_root=repo)
+    (old / "keep.txt").write_text("old complete tree", encoding="utf-8")
+
+    def failing_runner(
+        repo_root: Path,
+        config_path: Path,
+        *,
+        strict: bool,
+        epoch: int,
+        pass_fds: tuple[int, ...],
+    ) -> int:
+        del repo_root, epoch, pass_fds
+        assert strict is True
+        parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        (Path(parsed["site_dir"]) / "incomplete.txt").write_text("incomplete", encoding="utf-8")
+        return 1
+
+    monkeypatch.setattr(build_site_module, "run_mkdocs_build", failing_runner)
+    with pytest.raises(SiteBuildError, match="MkDocs"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=False,
+            strict=True,
+            force=False,
+            site_url=None,
+        )
+
+    assert (old / "keep.txt").read_text(encoding="utf-8") == "old complete tree"
+    assert not list(repo.glob(".site.staging-*"))
+
+
+def test_site_build_rejects_unmarked_existing_site(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unmarked site is never treated as replaceable generated output."""
+
+    _mkdocs_source(repo)
+    site = repo / "site"
+    site.mkdir()
+    (site / "private.txt").write_text("private", encoding="utf-8")
+
+    def valid_runner(
+        repo_root: Path,
+        config_path: Path,
+        *,
+        strict: bool,
+        epoch: int,
+        pass_fds: tuple[int, ...],
+    ) -> int:
+        del repo_root, strict, epoch, pass_fds
+        parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        output = Path(parsed["site_dir"])
+        (output / "index.html").write_text("index", encoding="utf-8")
+        (output / "404.html").write_text("404", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(build_site_module, "run_mkdocs_build", valid_runner)
+
+    with pytest.raises(SiteBuildError):
+        build_site(
+            repo,
+            check=True,
+            dry_run=False,
+            strict=True,
+            force=False,
+            site_url=None,
+        )
+
+    assert (site / "private.txt").read_text(encoding="utf-8") == "private"
+
+
+def test_fd_site_stage_survives_ancestor_swap(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MkDocs must keep writing through held FD stage after ancestor replacement."""
+
+    _mkdocs_source(repo)
+    parent = tmp_path / "held-parent"
+    parent.mkdir()
+    stage = parent / "stage"
+    stage.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    descriptor = os.open(stage, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        fd_stage = io_utils.fd_directory_path(descriptor)
+        swapped = tmp_path / "held-parent-old"
+
+        def runner(
+            repo_root: Path,
+            config_path: Path,
+            *,
+            strict: bool,
+            epoch: int,
+            pass_fds: tuple[int, ...],
+        ) -> int:
+            del repo_root, strict, epoch, pass_fds
+            parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            configured_stage = Path(parsed["site_dir"])
+            parent.rename(swapped)
+            parent.symlink_to(outside, target_is_directory=True)
+            (configured_stage / "index.html").write_text("index", encoding="utf-8")
+            (configured_stage / "404.html").write_text("404", encoding="utf-8")
+            return 0
+
+        monkeypatch.setattr(build_site_module, "run_mkdocs_build", runner)
+        hashes = build_site_module._run_site_build(
+            repo_root=repo,
+            docs_dir=repo / "content",
+            site_dir=fd_stage,
+            site_url=None,
+            epoch=0,
+        )
+
+        assert "index.html" in hashes
+        assert (swapped / "stage/index.html").read_text(encoding="utf-8") == "index"
+        assert not (outside / "stage/index.html").exists()
+    finally:
+        os.close(descriptor)
+
+
+def test_normal_site_build_holds_docs_and_config_across_build_swap(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real child reads held docs/config and writes held site after build/ replacement."""
+
+    old = _old_site(repo)
+    build_root = repo / "build"
+    moved_build = repo / "build-held"
+    outside = repo.parent / "outside-build"
+    outside.mkdir()
+    real_runner = build_site_module.run_mkdocs_build
+    swapped = False
+    returncodes: list[int] = []
+
+    def runner_after_swap(
+        repo_root: Path,
+        config_path: Path,
+        *,
+        strict: bool,
+        epoch: int,
+        pass_fds: tuple[int, ...],
+    ) -> int:
+        nonlocal swapped
+        build_root.rename(moved_build)
+        build_root.symlink_to(outside, target_is_directory=True)
+        swapped = True
+        returncode = real_runner(
+            repo_root,
+            config_path,
+            strict=strict,
+            epoch=epoch,
+            pass_fds=pass_fds,
+        )
+        returncodes.append(returncode)
+        return returncode
+
+    monkeypatch.setattr(build_site_module, "run_mkdocs_build", runner_after_swap)
+    with pytest.raises(SiteBuildError, match="unsafe publication path"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=False,
+            strict=True,
+            force=False,
+            site_url=None,
+        )
+
+    assert swapped is True
+    assert returncodes == [0]
+    assert (old / "keep.txt").read_text(encoding="utf-8") == "old complete tree"
+    assert (moved_build / "docs/index.md").is_file()
+    assert not list(moved_build.rglob(".mkdocs-build-*.yml"))
+    assert not list((moved_build / ".mkdocs-config-preview").iterdir())
+    assert not list(outside.iterdir())
+
+
+def test_site_build_cleanup_error_does_not_replace_runner_error(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Temporary-config cleanup failure is only an annotation on primary failure."""
+
+    _mkdocs_source(repo)
+    config_path = repo / "build/config.yml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("site_name: Test\n", encoding="utf-8")
+    monkeypatch.setattr(
+        build_site_module,
+        "write_temp_mkdocs_config",
+        lambda **kwargs: config_path,
+    )
+
+    def fail_unlink(self: Path, missing_ok: bool = False) -> None:
+        del self, missing_ok
+        raise OSError("unlink boom")
+
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+
+    def fail_runner(*args: object, **kwargs: object) -> int:
+        del args, kwargs
+        raise SiteBuildError("runner boom")
+
+    monkeypatch.setattr(build_site_module, "run_mkdocs_build", fail_runner)
+    with pytest.raises(SiteBuildError, match="runner boom") as raised:
+        build_site_module._run_site_build(
+            repo_root=repo,
+            docs_dir=repo / "content",
+            site_dir=repo / "site-stage",
+            site_url=None,
+            epoch=0,
+        )
+
+    assert any("unlink boom" in note for note in raised.value.__notes__)
+
+
+@pytest.mark.parametrize("raw", ("./index.md", "a//b.md", "index.md/"))
+def test_cli_rejects_noncanonical_only_syntax(repo: Path, raw: str) -> None:
+    """CLI validates raw --only spelling before PurePosixPath normalization."""
+
+    assert main(["--repo-root", str(repo), "--dry-run", "--strict", "--only", raw]) == 2
+    assert not (repo / "site").exists()
+    assert not (repo / "build/docs").exists()
+
+
+def test_mkdocs_runner_receives_default_source_date_epoch(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Subprocess receives copied environment with deterministic default epoch."""
+
+    _mkdocs_source(repo)
+    monkeypatch.delenv("SOURCE_DATE_EPOCH", raising=False)
+    captured: dict[str, str] = {}
+
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path,
+        check: bool,
+        capture_output: bool,
+        text: bool,
+        env: dict[str, str],
+        pass_fds: tuple[int, ...],
+    ) -> SimpleNamespace:
+        del cwd, check, capture_output, text
+        captured.update(env)
+        assert len(pass_fds) == 3
+        config_path = Path(command[command.index("--config-file") + 1])
+        parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        output = Path(parsed["site_dir"])
+        (output / "index.html").write_text("index", encoding="utf-8")
+        (output / "404.html").write_text("404", encoding="utf-8")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setenv("KEEP_ENV", "yes")
+    monkeypatch.setattr(build_site_module.subprocess, "run", fake_run)
+    build_site(
+        repo,
+        check=True,
+        dry_run=True,
+        strict=True,
+        force=False,
+        site_url=None,
+    )
+
+    assert captured["SOURCE_DATE_EPOCH"] == "0"
+    assert captured["KEEP_ENV"] == "yes"
+
+
+def test_cli_catches_invalid_source_date_epoch(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Invalid reproducibility input returns CLI failure before publication."""
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "not-an-integer")
+    assert main(["--repo-root", str(repo), "--check", "--strict"]) == 2
+    assert not (repo / "site").exists()
+    assert not (repo / "build/docs").exists()
+
+
+def test_real_mkdocs_child_can_use_held_fd_stages(repo: Path) -> None:
+    """A real MkDocs child can open both inherited FD-backed stage paths."""
+
+    _mkdocs_source(repo)
+    result = build_site(
+        repo,
+        check=True,
+        dry_run=True,
+        strict=True,
+        force=False,
+        site_url=None,
+    )
+
+    assert result.published is False
+    assert not (repo / "site").exists()
+    assert not (repo / "build/docs").exists()
+
+
+def test_strict_site_is_local_german_and_has_404(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wrong locale, remote assets, or missing local 404 output breaks full build."""
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    result = build_site(
+        repo,
+        check=True,
+        dry_run=False,
+        strict=True,
+        force=False,
+        site_url="https://h234598.github.io/desinfect/",
+    )
+
+    config = mkdocs.config.load_config(
+        config_file=str(repo / "mkdocs.yml"), docs_dir=str(repo / "content")
+    )
+    theme = config["theme"]
+    index_html = (repo / "site/index.html").read_text(encoding="utf-8")
+    not_found = (repo / "site/404.html").read_text(encoding="utf-8")
+    stylesheet = (repo / "site/assets/stylesheets/extra.css").read_text(encoding="utf-8")
+
+    assert result.published is True
+    assert config["site_name"] == "Desinfect"
+    assert theme.name == "material"
+    assert theme["language"] == "de"
+    assert theme["font"] is False
+    assert config["plugins"]["material/search"].config["lang"] == ["de"]
+    assert {entry["media"] for entry in theme["palette"]} == {
+        "(prefers-color-scheme: light)",
+        "(prefers-color-scheme: dark)",
+    }
+    assert config["extra_css"] == ["assets/stylesheets/extra.css"]
+    assert Path(material.__file__).is_file()
+    assert "Desinfect" in index_html
+    assert "404" in not_found
+    assert "Seite nicht gefunden" in not_found
+    assert '<a href="/desinfect/">Zur Startseite</a>' in not_found
+    assert not build_site_module.external_asset_urls(index_html + not_found)
+    assert all(not path.is_symlink() for path in (repo / "site").rglob("*"))
+    assert "@import" not in stylesheet.lower()
+    assert "url(" not in stylesheet.lower()
+    assert "@font-face" not in stylesheet.lower()
+
+
+def test_full_site_build_is_reproducible_and_preserves_sources(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wall-clock output or source mutation makes identical full builds diverge."""
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    before = snapshot_sources(repo)
+
+    first = build_site(
+        repo,
+        check=True,
+        dry_run=False,
+        strict=True,
+        force=False,
+        site_url="https://h234598.github.io/desinfect/",
+    )
+    first_hashes = _sha256_tree(repo / "site", repo_root=repo)
+    assert (repo / "site/index.html").is_file()
+    assert (repo / "site/404.html").is_file()
+
+    second = build_site(
+        repo,
+        check=True,
+        dry_run=False,
+        strict=True,
+        force=True,
+        site_url="https://h234598.github.io/desinfect/",
+    )
+    second_hashes = _sha256_tree(repo / "site", repo_root=repo)
+
+    assert (repo / "site/index.html").is_file()
+    assert (repo / "site/404.html").is_file()
+    assert first.published is True
+    assert second.published is True
+    assert first_hashes == second_hashes
+    assert snapshot_sources(repo) == before
+
+
+def test_temp_mkdocs_config_is_reproducible_for_equivalent_key_order(repo: Path) -> None:
+    """Equivalent YAML key order must not alter generated configuration bytes."""
+
+    docs_dir = repo / "content"
+    site_dir = repo / "site-stage"
+    site_dir.mkdir()
+    source = _mkdocs_source(repo)
+    config_dir = repo / "config-stage"
+    config_dir.mkdir()
+    descriptor = os.open(config_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        held_config_dir = io_utils.fd_directory_path(descriptor)
+        first_path = build_site_module.write_temp_mkdocs_config(
+            repo_root=repo,
+            config_dir=held_config_dir,
+            docs_dir=docs_dir,
+            site_dir=site_dir,
+            site_url="https://h234598.github.io/desinfect/",
+            source_date_epoch=1700000000,
+        )
+        try:
+            first = first_path.read_bytes()
+        finally:
+            first_path.unlink()
+
+        parsed = yaml.safe_load(source.read_text(encoding="utf-8"))
+        source.write_text(
+            yaml.safe_dump(
+                {key: parsed[key] for key in reversed(tuple(parsed))},
+                allow_unicode=True,
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        second_path = build_site_module.write_temp_mkdocs_config(
+            repo_root=repo,
+            config_dir=held_config_dir,
+            docs_dir=docs_dir,
+            site_dir=site_dir,
+            site_url="https://h234598.github.io/desinfect/",
+            source_date_epoch=1700000000,
+        )
+        try:
+            second = second_path.read_bytes()
+        finally:
+            second_path.unlink()
+    finally:
+        os.close(descriptor)
+
+    assert first == second
+
+
+def test_invalid_epoch_preserves_old_complete_site(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Invalid reproducibility input must fail before replacing marked output."""
+
+    old = _old_site(repo)
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "not-an-epoch")
+
+    with pytest.raises(ValueError, match="SOURCE_DATE_EPOCH"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=False,
+            strict=True,
+            force=True,
+            site_url="https://h234598.github.io/desinfect/",
+        )
+
+    assert (old / "keep.txt").read_text(encoding="utf-8") == "old complete tree"
+
+
+def test_external_font_config_fails_before_runner_and_preserves_old_site(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Configured font download must fail closed before MkDocs can publish."""
+
+    old = _old_site(repo)
+    config_path = repo / "mkdocs.yml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace("font: false", "font:\n    text: Roboto"),
+        encoding="utf-8",
+    )
+
+    def unexpected_runner(*args: object, **kwargs: object) -> int:
+        del args, kwargs
+        raise AssertionError("MkDocs runner must not execute")
+
+    monkeypatch.setattr(build_site_module, "run_mkdocs_build", unexpected_runner)
+    with pytest.raises(SiteBuildError, match="font"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=False,
+            strict=True,
+            force=False,
+            site_url=None,
+        )
+
+    assert (old / "keep.txt").read_text(encoding="utf-8") == "old complete tree"
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "content"),
+    (
+        (
+            "nested/details.html",
+            '<a href="https://content.example/page">allowed</a>'
+            '<IMG SRC=" HTTPS://asset.example/tracker.png">',
+        ),
+        ("assets/remote-import.css", '@IMPORT " HTTPS://asset.example/theme.css";'),
+        ("assets/remote-url.css", "body { background: URL( //asset.example/image.png ); }"),
+        ("control.html", '<script src="ht\ntps://asset.example/app.js"></script>'),
+        (
+            "srcset.html",
+            '<img src="/local.png" srcset="/local.png 1x, h\tttps://asset.example/image.png 2x">',
+        ),
+        (
+            "inline-style.html",
+            '<div style="background: url(https://asset.example/inline.png)"></div>',
+        ),
+        ("base.html", '<base href=" //asset.example/root/">'),
+        ("media.html", '<video poster="https://asset.example/poster.png"></video>'),
+        ("object.html", '<object data="HTTP://asset.example/object.bin"></object>'),
+        (
+            "svg-script.html",
+            '<svg><script xlink:href="https://asset.example/app.js"></script></svg>',
+        ),
+        ("input.html", '<input type="image" src="//asset.example/button.png">'),
+        (
+            "unclosed-style.html",
+            "<style>body { background: url(https://asset.example/unclosed.png); }",
+        ),
+        (
+            "assets/escaped.css",
+            r"body { background: u\72l(\68ttps://asset.example/escaped.png); }",
+        ),
+        (
+            "assets/comment.css",
+            "body { background: url(/* generated */ https://asset.example/comment.png); }",
+        ),
+        ("backslash.html", r'<base href="\\evil.example/root/">'),
+        (
+            "assets/image-set.css",
+            'body { background: image-set("https://asset.example/set.png" 1x); }',
+        ),
+        (
+            "assets/image.css",
+            'body { background: image("https://asset.example/fallback.png"); }',
+        ),
+        (
+            "svg-href.html",
+            '<svg><pattern xlink:href="https://asset.example/pattern.svg#p"></pattern></svg>',
+        ),
+        (
+            "svg-presentation.html",
+            '<svg><rect fill="url(https://asset.example/paint.svg#g)"></rect></svg>',
+        ),
+    ),
+)
+def test_external_generated_resource_preserves_old_site(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    relative_path: str,
+    content: str,
+) -> None:
+    """Remote resources anywhere in generated HTML or CSS abort publication."""
+
+    old = _old_site(repo)
+    before = _sha256_tree(old, repo_root=repo)
+
+    def runner_with_remote_resource(
+        repo_root: Path,
+        config_path: Path,
+        *,
+        strict: bool,
+        epoch: int,
+        pass_fds: tuple[int, ...],
+    ) -> int:
+        del repo_root, strict, epoch, pass_fds
+        parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        stage = Path(parsed["site_dir"])
+        (stage / "index.html").write_text("index", encoding="utf-8")
+        (stage / "404.html").write_text("404", encoding="utf-8")
+        mutation = stage / relative_path
+        mutation.parent.mkdir(parents=True, exist_ok=True)
+        mutation.write_text(content, encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(
+        build_site_module,
+        "run_mkdocs_build",
+        runner_with_remote_resource,
+    )
+    with pytest.raises(SiteBuildError, match="external browser resource"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=False,
+            strict=True,
+            force=False,
+            site_url=None,
+        )
+
+    assert _sha256_tree(old, repo_root=repo) == before
+
+
+def test_post_build_symlink_preserves_old_site(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A symlink inserted after real MkDocs output must abort site replacement."""
+
+    old = _old_site(repo)
+    real_runner = build_site_module.run_mkdocs_build
+    real_returncodes: list[int] = []
+
+    def runner_with_symlink(
+        repo_root: Path,
+        config_path: Path,
+        *,
+        strict: bool,
+        epoch: int,
+        pass_fds: tuple[int, ...],
+    ) -> int:
+        returncode = real_runner(
+            repo_root,
+            config_path,
+            strict=strict,
+            epoch=epoch,
+            pass_fds=pass_fds,
+        )
+        real_returncodes.append(returncode)
+        parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        (Path(parsed["site_dir"]) / "escape").symlink_to(repo / "content/index.md")
+        return returncode
+
+    monkeypatch.setattr(build_site_module, "run_mkdocs_build", runner_with_symlink)
+    with pytest.raises(SiteBuildError, match="cannot validate generated site"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=False,
+            strict=True,
+            force=False,
+            site_url=None,
+        )
+
+    assert real_returncodes == [0]
+    assert (old / "keep.txt").read_text(encoding="utf-8") == "old complete tree"
+
+
+def test_invalid_site_url_is_classified_as_site_build_error(repo: Path) -> None:
+    """Malformed bracketed URL must not leak urllib ValueError through API or CLI."""
+
+    with pytest.raises(SiteBuildError):
+        build_site(
+            repo,
+            check=True,
+            dry_run=True,
+            strict=True,
+            force=False,
+            site_url="https://[invalid",
+        )
+    assert (
+        main(
+            [
+                "--repo-root",
+                str(repo),
+                "--check",
+                "--dry-run",
+                "--strict",
+                "--site-url",
+                "https://[invalid",
+            ]
+        )
+        == 2
+    )
