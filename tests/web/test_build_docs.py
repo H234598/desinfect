@@ -122,6 +122,55 @@ def test_external_css_asset_urls_allow_local_and_data_targets() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "html",
+    (
+        '<script src="\x01 h\tttps://asset.example/app.js"></script>',
+        '<img srcset="/local.png 1x, https://asset.example/image.png 2x">',
+        '<source srcset="/local.webp 1x, //asset.example/image.webp 2x">',
+        '<link rel="preload" href="/local.png" '
+        'imagesrcset="/local.png 1x, HTTP://asset.example/image.png 2x">',
+        '<video src="https://asset.example/movie.mp4"></video>',
+        '<video poster="//asset.example/poster.png"></video>',
+        '<audio src="https://asset.example/audio.mp3"></audio>',
+        '<track src="https://asset.example/captions.vtt">',
+        '<embed src="https://asset.example/plugin.bin">',
+        '<object data="https://asset.example/object.bin"></object>',
+        '<base href="https://asset.example/root/">',
+        '<svg><image href="https://asset.example/image.svg"></image></svg>',
+        '<svg><use xlink:href="//asset.example/icons.svg#x"></use></svg>',
+        '<svg><feImage href="https://asset.example/filter.svg"></feImage></svg>',
+        '<div style="background: url(https://asset.example/inline.png)"></div>',
+        "<style>body { background: url(//asset.example/block.png); }</style>",
+        "<iframe srcdoc=\"&lt;img src='https://asset.example/nested.png'>\"></iframe>",
+    ),
+)
+def test_external_asset_urls_cover_browser_resource_carriers(html: str) -> None:
+    """Every browser-loading attribute or embedded CSS form is rejected."""
+
+    assert build_site_module.external_asset_urls(html)
+
+
+def test_external_asset_urls_allow_navigation_and_local_resources() -> None:
+    """Navigation links plus local, fragment, and data resources stay valid."""
+
+    html = """
+    <a href="https://content.example/page">Content link</a>
+    <link rel="canonical" href="https://content.example/canonical">
+    <base href="/local/root/">
+    <img src="/local.png" srcset="/local.png 1x, data:image/png;base64,AAAA 2x">
+    <source src="#local" srcset="data:text/plain,https://not-loaded.example 1x">
+    <video src="data:video/mp4;base64,AAAA" poster="/poster.png"></video>
+    <object data="#local-object"></object>
+    <svg><use href="#local-icon"></use></svg>
+    <div style="background: url(data:image/png;base64,AAAA)"></div>
+    <style>body { background: url('/local.png'); }</style>
+    <iframe srcdoc="&lt;a href='https://content.example/nested'>allowed&lt;/a>"></iframe>
+    """
+
+    assert build_site_module.external_asset_urls(html) == []
+
+
 def test_build_docs_publishes_transformed_copy_and_preserves_sources(repo: Path) -> None:
     """Missing conversion, sentinel, or source purity makes this fail."""
 
@@ -1279,6 +1328,18 @@ def test_external_font_config_fails_before_runner_and_preserves_old_site(
         ),
         ("assets/remote-import.css", '@IMPORT " HTTPS://asset.example/theme.css";'),
         ("assets/remote-url.css", "body { background: URL( //asset.example/image.png ); }"),
+        ("control.html", '<script src="ht\ntps://asset.example/app.js"></script>'),
+        (
+            "srcset.html",
+            '<img src="/local.png" srcset="/local.png 1x, h\tttps://asset.example/image.png 2x">',
+        ),
+        (
+            "inline-style.html",
+            '<div style="background: url(https://asset.example/inline.png)"></div>',
+        ),
+        ("base.html", '<base href=" //asset.example/root/">'),
+        ("media.html", '<video poster="https://asset.example/poster.png"></video>'),
+        ("object.html", '<object data="HTTP://asset.example/object.bin"></object>'),
     ),
 )
 def test_external_generated_resource_preserves_old_site(
@@ -1290,6 +1351,7 @@ def test_external_generated_resource_preserves_old_site(
     """Remote resources anywhere in generated HTML or CSS abort publication."""
 
     old = _old_site(repo)
+    before = _sha256_tree(old, repo_root=repo)
 
     def runner_with_remote_resource(
         repo_root: Path,
@@ -1324,7 +1386,7 @@ def test_external_generated_resource_preserves_old_site(
             site_url=None,
         )
 
-    assert (old / "keep.txt").read_text(encoding="utf-8") == "old complete tree"
+    assert _sha256_tree(old, repo_root=repo) == before
 
 
 def test_post_build_symlink_preserves_old_site(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:

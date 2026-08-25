@@ -88,37 +88,139 @@ _CSS_IMPORT = re.compile(
     r"@import\s+(?P<target>\"[^\"]*\"|'[^']*'|[^;\s]+)",
     re.IGNORECASE,
 )
+_ASCII_C0_SPACE = "".join(chr(value) for value in range(0x21))
+_ASCII_WHITESPACE = "\t\n\f\r "
+_BROWSER_URL_REMOVALS = str.maketrans("", "", "\t\n\r")
+_MAX_SRCDOC_DEPTH = 4
+_MAX_SRCDOC_LENGTH = 64 * 1024
+
+
+def _browser_url(value: str) -> str:
+    return value.translate(_BROWSER_URL_REMOVALS).strip(_ASCII_C0_SPACE)
 
 
 def _external_url(value: str) -> bool:
-    return value.lstrip().casefold().startswith(("http:", "https:", "//"))
+    return _browser_url(value).casefold().startswith(("http:", "https:", "//"))
+
+
+def _srcset_urls(value: str) -> Iterator[str]:
+    normalized = value.translate(_BROWSER_URL_REMOVALS)
+    position = 0
+    while position < len(normalized):
+        while position < len(normalized) and normalized[position] in _ASCII_WHITESPACE + ",":
+            position += 1
+        start = position
+        while position < len(normalized) and normalized[position] not in _ASCII_WHITESPACE:
+            position += 1
+        candidate = normalized[start:position]
+        if candidate.endswith(","):
+            candidate = candidate.rstrip(",")
+            if candidate:
+                yield candidate
+            continue
+        if candidate:
+            yield candidate
+        parentheses = 0
+        while position < len(normalized):
+            character = normalized[position]
+            position += 1
+            if character == "(":
+                parentheses += 1
+            elif character == ")" and parentheses:
+                parentheses -= 1
+            elif character == "," and not parentheses:
+                break
+
+
+def _external_srcset(value: str) -> bool:
+    return any(_external_url(candidate) for candidate in _srcset_urls(value))
+
+
+def _contains_external_url_token(value: str) -> bool:
+    normalized = value.translate(_BROWSER_URL_REMOVALS).casefold()
+    return any(token in normalized for token in ("http:", "https:", "//"))
 
 
 class _ExternalAssetParser(HTMLParser):
     _RESOURCE_ATTRIBUTES = {
-        "iframe": "src",
-        "img": "src",
-        "link": "href",
-        "script": "src",
-        "source": "src",
+        "audio": ("src",),
+        "base": ("href",),
+        "embed": ("src",),
+        "feimage": ("href", "xlink:href"),
+        "iframe": ("src",),
+        "image": ("href", "xlink:href"),
+        "img": ("src",),
+        "link": ("href",),
+        "object": ("data",),
+        "script": ("src",),
+        "source": ("src",),
+        "svg:feimage": ("href", "xlink:href"),
+        "svg:image": ("href", "xlink:href"),
+        "svg:use": ("href", "xlink:href"),
+        "track": ("src",),
+        "use": ("href", "xlink:href"),
+        "video": ("src", "poster"),
+    }
+    _SRCSET_ATTRIBUTES = {
+        "img": ("srcset",),
+        "link": ("imagesrcset",),
+        "source": ("srcset",),
     }
 
-    def __init__(self) -> None:
+    def __init__(self, *, srcdoc_depth: int = 0) -> None:
         super().__init__()
         self.urls: list[str] = []
+        self._srcdoc_depth = srcdoc_depth
+        self._style_buffers: list[list[str]] = []
+
+    @staticmethod
+    def _attribute_values(attrs: list[tuple[str, str | None]], name: str) -> Iterator[str]:
+        return (value for attribute, value in attrs if attribute == name and value is not None)
+
+    def _scan_srcdoc(self, value: str) -> None:
+        if self._srcdoc_depth >= _MAX_SRCDOC_DEPTH or len(value) > _MAX_SRCDOC_LENGTH:
+            if _contains_external_url_token(value):
+                self.urls.append(value)
+            return
+        nested = _ExternalAssetParser(srcdoc_depth=self._srcdoc_depth + 1)
+        nested.feed(value)
+        nested.close()
+        self.urls.extend(nested.urls)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        attribute = self._RESOURCE_ATTRIBUTES.get(tag)
-        if attribute is None:
-            return
-        attributes = dict(attrs)
-        if tag == "link" and not _RESOURCE_LINK_RELATIONS.intersection(
-            (attributes.get("rel") or "").casefold().split()
-        ):
-            return
-        value = attributes.get(attribute)
-        if value is not None and _external_url(value):
-            self.urls.append(value)
+        if tag == "style":
+            self._style_buffers.append([])
+        for value in self._attribute_values(attrs, "style"):
+            self.urls.extend(external_css_asset_urls(value))
+        if tag == "iframe":
+            for value in self._attribute_values(attrs, "srcdoc"):
+                self._scan_srcdoc(value)
+
+        if tag == "link":
+            relations = {
+                token
+                for value in self._attribute_values(attrs, "rel")
+                for token in value.casefold().split()
+            }
+            if not _RESOURCE_LINK_RELATIONS.intersection(relations):
+                return
+
+        for attribute in self._RESOURCE_ATTRIBUTES.get(tag, ()):
+            for value in self._attribute_values(attrs, attribute):
+                if _external_url(value):
+                    self.urls.append(value)
+        for attribute in self._SRCSET_ATTRIBUTES.get(tag, ()):
+            for value in self._attribute_values(attrs, attribute):
+                if _external_srcset(value):
+                    self.urls.append(value)
+
+    def handle_data(self, data: str) -> None:
+        if self._style_buffers:
+            self._style_buffers[-1].append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "style" and self._style_buffers:
+            self.urls.extend(external_css_asset_urls("".join(self._style_buffers.pop())))
 
 
 def external_asset_urls(html: str) -> list[str]:
