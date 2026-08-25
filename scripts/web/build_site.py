@@ -7,6 +7,7 @@ import argparse
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from html.parser import HTMLParser
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -23,9 +24,15 @@ if __package__ in {None, ""}:
 
 from scripts.rki_pipeline.io_utils import (
     UnsafePathError,
+    assert_generated_root_fd,
+    fd_directory_path,
     normalize_posix_path,
+    open_directory_beneath,
+    open_root_directory,
+    relative_path_beneath,
     sha256_file,
     source_date_epoch,
+    validate_tree_no_symlinks_fd,
 )
 from scripts.rki_pipeline.staging import StagingError, preview_directory, staged_directory
 from scripts.web.build_docs import (
@@ -60,6 +67,85 @@ _STATIC_MKDOCS_KEYS = {
     "site_name",
     "theme",
 }
+_RESOURCE_LINK_RELATIONS = frozenset(
+    {
+        "dns-prefetch",
+        "icon",
+        "manifest",
+        "modulepreload",
+        "preconnect",
+        "prefetch",
+        "preload",
+        "prerender",
+        "stylesheet",
+    }
+)
+_CSS_URL = re.compile(
+    r"url\s*\(\s*(?P<target>\"[^\"]*\"|'[^']*'|[^)]*)\s*\)",
+    re.IGNORECASE,
+)
+_CSS_IMPORT = re.compile(
+    r"@import\s+(?P<target>\"[^\"]*\"|'[^']*'|[^;\s]+)",
+    re.IGNORECASE,
+)
+
+
+def _external_url(value: str) -> bool:
+    return value.lstrip().casefold().startswith(("http:", "https:", "//"))
+
+
+class _ExternalAssetParser(HTMLParser):
+    _RESOURCE_ATTRIBUTES = {
+        "iframe": "src",
+        "img": "src",
+        "link": "href",
+        "script": "src",
+        "source": "src",
+    }
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.urls: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attribute = self._RESOURCE_ATTRIBUTES.get(tag)
+        if attribute is None:
+            return
+        attributes = dict(attrs)
+        if tag == "link" and not _RESOURCE_LINK_RELATIONS.intersection(
+            (attributes.get("rel") or "").casefold().split()
+        ):
+            return
+        value = attributes.get(attribute)
+        if value is not None and _external_url(value):
+            self.urls.append(value)
+
+
+def external_asset_urls(html: str) -> list[str]:
+    """Return external browser-resource URLs referenced by generated HTML."""
+
+    parser = _ExternalAssetParser()
+    parser.feed(html)
+    parser.close()
+    return parser.urls
+
+
+def _css_target(raw: str) -> str:
+    target = raw.strip()
+    if len(target) >= 2 and target[0] == target[-1] and target[0] in {'"', "'"}:
+        target = target[1:-1].strip()
+    return target
+
+
+def external_css_asset_urls(css: str) -> list[str]:
+    """Return external browser-resource URLs referenced by generated CSS."""
+
+    candidates = [
+        (match.start(), _css_target(match.group("target")))
+        for pattern in (_CSS_URL, _CSS_IMPORT)
+        for match in pattern.finditer(css)
+    ]
+    return [target for _, target in sorted(candidates) if _external_url(target)]
 
 
 def _repo_root(repo_root: Path) -> Path:
@@ -183,6 +269,16 @@ def _regular_site_hashes(stage: Path) -> Mapping[str, str]:
     try:
         hashes: dict[str, str] = {}
         for relative, path in _regular_files(stage, required=True, allow_root_symlink=True):
+            if path.suffix.casefold() == ".html":
+                external = external_asset_urls(path.read_text(encoding="utf-8"))
+            elif path.suffix.casefold() == ".css":
+                external = external_css_asset_urls(path.read_text(encoding="utf-8"))
+            else:
+                external = []
+            if external:
+                raise SiteBuildError(
+                    f"external browser resource in generated site file: {relative}"
+                )
             hashes[relative.as_posix()] = sha256_file(path)
         return dict(sorted(hashes.items()))
     except (BuildDocsError, OSError, ValueError) as exc:
@@ -207,12 +303,13 @@ def _validate_site_tree(stage: Path) -> Mapping[str, str]:
 def write_temp_mkdocs_config(
     *,
     repo_root: Path,
+    config_dir: Path,
     docs_dir: Path,
     site_dir: Path,
     site_url: str | None,
     source_date_epoch: int,
 ) -> Path:
-    """Write one absolute-path MkDocs config beneath the repository build root."""
+    """Write one MkDocs config through a held FD-backed config directory."""
 
     del source_date_epoch
     source = repo_root / "mkdocs.yml"
@@ -237,15 +334,15 @@ def write_temp_mkdocs_config(
         )
         if not absolute_docs.is_dir() or not absolute_site.is_dir():
             raise SiteBuildError("mkdocs docs_dir and site_dir must be existing directories")
+        if _FD_DIRECTORY_PATH.fullmatch(config_dir.as_posix()) is None or not config_dir.is_dir():
+            raise SiteBuildError("mkdocs config_dir must be an existing FD-backed directory")
         parsed["theme"]["custom_dir"] = str((repo_root / "web/overrides").resolve(strict=True))
         parsed["docs_dir"] = str(absolute_docs)
         parsed["site_dir"] = str(absolute_site)
         if site_url is not None:
             parsed["site_url"] = site_url
-        build_root = repo_root / "build"
-        build_root.mkdir(parents=True, exist_ok=True)
         descriptor, raw_path = tempfile.mkstemp(
-            prefix=".mkdocs-build-", suffix=".yml", dir=build_root
+            prefix=".mkdocs-build-", suffix=".yml", dir=config_dir
         )
         path = Path(raw_path)
         try:
@@ -272,6 +369,21 @@ def _fd_descriptor(path: Path) -> int | None:
         return int(match.group(1))
     except ValueError as exc:
         raise SiteBuildError(f"invalid FD-backed stage path: {path}") from exc
+
+
+@contextmanager
+def _held_generated_directory(target: Path, *, allowed_root: Path) -> Iterator[Path]:
+    """Yield a no-follow, sentinel-validated FD path for generated output."""
+
+    relative = relative_path_beneath(target, allowed_root)
+    with open_root_directory(allowed_root) as root_fd:
+        descriptor = open_directory_beneath(root_fd, relative.parts)
+        try:
+            assert_generated_root_fd(descriptor)
+            validate_tree_no_symlinks_fd(descriptor)
+            yield fd_directory_path(descriptor)
+        finally:
+            os.close(descriptor)
 
 
 def run_mkdocs_build(
@@ -317,49 +429,64 @@ def _run_site_build(
     site_url: str | None,
     epoch: int,
 ) -> Mapping[str, str]:
-    config_path: Path | None = None
     try:
-        config_path = write_temp_mkdocs_config(
-            repo_root=repo_root,
-            docs_dir=docs_dir,
-            site_dir=site_dir,
-            site_url=site_url,
-            source_date_epoch=epoch,
-        )
-        descriptors = tuple(
-            sorted(
-                {
-                    descriptor
-                    for descriptor in (_fd_descriptor(docs_dir), _fd_descriptor(site_dir))
-                    if descriptor is not None
-                }
-            )
-        )
-        if (
-            run_mkdocs_build(
-                repo_root,
-                config_path,
-                strict=True,
-                epoch=epoch,
-                pass_fds=descriptors,
-            )
-            != 0
-        ):
-            raise SiteBuildError("MkDocs strict build failed")
-        result = _validate_site_tree(site_dir)
-    except BaseException as primary:
-        if config_path is not None:
+        publication = load_publication_config(repo_root)
+        config_target = publication.build_root / ".mkdocs-config-preview" / "config"
+        with preview_directory(config_target, allowed_root=repo_root) as config_stage:
+            config_path: Path | None = None
             try:
-                config_path.unlink(missing_ok=True)
-            except BaseException as cleanup_error:
-                primary.add_note(f"Temporary MkDocs config cleanup failed: {cleanup_error}")
+                config_path = write_temp_mkdocs_config(
+                    repo_root=repo_root,
+                    config_dir=config_stage,
+                    docs_dir=docs_dir,
+                    site_dir=site_dir,
+                    site_url=site_url,
+                    source_date_epoch=epoch,
+                )
+                descriptors = tuple(
+                    sorted(
+                        {
+                            descriptor
+                            for descriptor in (
+                                _fd_descriptor(config_stage),
+                                _fd_descriptor(docs_dir),
+                                _fd_descriptor(site_dir),
+                            )
+                            if descriptor is not None
+                        }
+                    )
+                )
+                if (
+                    run_mkdocs_build(
+                        repo_root,
+                        config_path,
+                        strict=True,
+                        epoch=epoch,
+                        pass_fds=descriptors,
+                    )
+                    != 0
+                ):
+                    raise SiteBuildError("MkDocs strict build failed")
+                result = _validate_site_tree(site_dir)
+            except BaseException as primary:
+                if config_path is not None:
+                    try:
+                        config_path.unlink(missing_ok=True)
+                    except BaseException as cleanup_error:
+                        primary.add_note(f"Temporary MkDocs config cleanup failed: {cleanup_error}")
+                raise
+            if config_path is not None:
+                try:
+                    config_path.unlink(missing_ok=True)
+                except BaseException as cleanup_error:
+                    raise SiteBuildError(
+                        "Temporary MkDocs config cleanup failed"
+                    ) from cleanup_error
+            return result
+    except SiteBuildError:
         raise
-    if config_path is not None:
-        try:
-            config_path.unlink(missing_ok=True)
-        except BaseException as cleanup_error:
-            raise SiteBuildError("Temporary MkDocs config cleanup failed") from cleanup_error
-    return result
+    except (BuildDocsError, OSError, StagingError, UnsafePathError, ValueError) as exc:
+        raise SiteBuildError(str(exc)) from exc
 
 
 @contextmanager
@@ -449,16 +576,17 @@ def build_site(
 
     try:
         docs = build_docs(root, force=force)
-        with staged_directory(config.site_dir, allowed_root=root, force=force) as site_stage:
-            site_hashes = _run_site_build(
-                repo_root=root,
-                docs_dir=(root / "build/docs").resolve(strict=True),
-                site_dir=site_stage,
-                site_url=validated_url,
-                epoch=epoch,
-            )
-            if snapshot_sources(root) != before:
-                raise SiteBuildError("source-hash drift during site build")
+        with _held_generated_directory(config.docs_dir, allowed_root=root) as held_docs:
+            with staged_directory(config.site_dir, allowed_root=root, force=force) as site_stage:
+                site_hashes = _run_site_build(
+                    repo_root=root,
+                    docs_dir=held_docs,
+                    site_dir=site_stage,
+                    site_url=validated_url,
+                    epoch=epoch,
+                )
+                if snapshot_sources(root) != before:
+                    raise SiteBuildError("source-hash drift during site build")
     except SiteBuildError:
         raise
     except (BuildDocsError, OSError, StagingError, UnsafePathError, ValueError) as exc:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import hashlib
-from html.parser import HTMLParser
 from pathlib import Path
 import os
 import shutil
@@ -83,59 +82,43 @@ def _sha256_tree(root: Path, *, repo_root: Path) -> dict[str, str]:
     }
 
 
-class _ExternalAssetParser(HTMLParser):
-    _RESOURCE_ATTRIBUTES = {
-        "iframe": "src",
-        "img": "src",
-        "link": "href",
-        "script": "src",
-        "source": "src",
-    }
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.urls: list[str] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        attribute = self._RESOURCE_ATTRIBUTES.get(tag)
-        if attribute is None:
-            return
-        attributes = dict(attrs)
-        if tag == "link" and not {
-            "icon",
-            "manifest",
-            "modulepreload",
-            "preload",
-            "stylesheet",
-        }.intersection((attributes.get("rel") or "").lower().split()):
-            return
-        value = attributes.get(attribute)
-        normalized = value.lstrip().lower() if value is not None else ""
-        if normalized.startswith(("http:", "https:", "//")):
-            self.urls.append(value)
-
-
-def _external_asset_urls(html: str) -> list[str]:
-    parser = _ExternalAssetParser()
-    parser.feed(html)
-    parser.close()
-    return parser.urls
-
-
 def test_external_asset_urls_are_case_and_whitespace_insensitive() -> None:
     """Remote resource schemes and link relations follow HTML casing rules."""
 
     html = """
     <script src="HTTPS://script.example/app.js"></script>
     <script src=" https://space.example/app.js"></script>
+    <img src="//image.example/pixel.png">
+    <source src="HTTP://media.example/movie.mp4">
+    <iframe src=" https://frame.example/"></iframe>
     <link rel="STYLESHEET" href="https://style.example/site.css">
+    <link rel="canonical" href="https://content.example/canonical">
     <a href="https://content.example/page">Content link</a>
     """
 
-    assert _external_asset_urls(html) == [
+    assert build_site_module.external_asset_urls(html) == [
         "HTTPS://script.example/app.js",
         " https://space.example/app.js",
+        "//image.example/pixel.png",
+        "HTTP://media.example/movie.mp4",
+        " https://frame.example/",
         "https://style.example/site.css",
+    ]
+
+
+def test_external_css_asset_urls_allow_local_and_data_targets() -> None:
+    """CSS parser detects remote imports and URLs without rejecting local data."""
+
+    css = """
+    @import " HTTPS://style.example/remote.css";
+    body { background: url( //image.example/background.png ); }
+    .local { background: url('../images/local.png'); }
+    .inline { background: url(data:image/svg+xml;base64,AAAA); }
+    """
+
+    assert build_site_module.external_css_asset_urls(css) == [
+        "HTTPS://style.example/remote.css",
+        "//image.example/background.png",
     ]
 
 
@@ -786,7 +769,7 @@ def test_site_build_uses_live_docs_and_staged_site_config(
 
     parsed = captured["parsed"]
     assert isinstance(parsed, dict)
-    assert parsed["docs_dir"] == str((repo / "build/docs").resolve())
+    assert str(parsed["docs_dir"]).startswith(("/proc/self/fd/", "/dev/fd/"))
     site_dir = Path(parsed["site_dir"])
     assert site_dir.as_posix().startswith(("/proc/self/fd/", "/dev/fd/"))
     assert not Path(captured["config_path"]).exists()
@@ -924,6 +907,62 @@ def test_fd_site_stage_survives_ancestor_swap(
         os.close(descriptor)
 
 
+def test_normal_site_build_holds_docs_and_config_across_build_swap(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real child reads held docs/config and writes held site after build/ replacement."""
+
+    old = _old_site(repo)
+    build_root = repo / "build"
+    moved_build = repo / "build-held"
+    outside = repo.parent / "outside-build"
+    outside.mkdir()
+    real_runner = build_site_module.run_mkdocs_build
+    swapped = False
+    returncodes: list[int] = []
+
+    def runner_after_swap(
+        repo_root: Path,
+        config_path: Path,
+        *,
+        strict: bool,
+        epoch: int,
+        pass_fds: tuple[int, ...],
+    ) -> int:
+        nonlocal swapped
+        build_root.rename(moved_build)
+        build_root.symlink_to(outside, target_is_directory=True)
+        swapped = True
+        returncode = real_runner(
+            repo_root,
+            config_path,
+            strict=strict,
+            epoch=epoch,
+            pass_fds=pass_fds,
+        )
+        returncodes.append(returncode)
+        return returncode
+
+    monkeypatch.setattr(build_site_module, "run_mkdocs_build", runner_after_swap)
+    with pytest.raises(SiteBuildError, match="unsafe publication path"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=False,
+            strict=True,
+            force=False,
+            site_url=None,
+        )
+
+    assert swapped is True
+    assert returncodes == [0]
+    assert (old / "keep.txt").read_text(encoding="utf-8") == "old complete tree"
+    assert (moved_build / "docs/index.md").is_file()
+    assert not list(moved_build.rglob(".mkdocs-build-*.yml"))
+    assert not list((moved_build / ".mkdocs-config-preview").iterdir())
+    assert not list(outside.iterdir())
+
+
 def test_site_build_cleanup_error_does_not_replace_runner_error(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -992,7 +1031,7 @@ def test_mkdocs_runner_receives_default_source_date_epoch(
     ) -> SimpleNamespace:
         del cwd, check, capture_output, text
         captured.update(env)
-        assert len(pass_fds) == 2
+        assert len(pass_fds) == 3
         config_path = Path(command[command.index("--config-file") + 1])
         parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         output = Path(parsed["site_dir"])
@@ -1081,7 +1120,7 @@ def test_strict_site_is_local_german_and_has_404(
     assert "404" in not_found
     assert "Seite nicht gefunden" in not_found
     assert '<a href="/desinfect/">Zur Startseite</a>' in not_found
-    assert not _external_asset_urls(index_html + not_found)
+    assert not build_site_module.external_asset_urls(index_html + not_found)
     assert all(not path.is_symlink() for path in (repo / "site").rglob("*"))
     assert "@import" not in stylesheet.lower()
     assert "url(" not in stylesheet.lower()
@@ -1133,40 +1172,48 @@ def test_temp_mkdocs_config_is_reproducible_for_equivalent_key_order(repo: Path)
     site_dir = repo / "site-stage"
     site_dir.mkdir()
     source = _mkdocs_source(repo)
-
-    first_path = build_site_module.write_temp_mkdocs_config(
-        repo_root=repo,
-        docs_dir=docs_dir,
-        site_dir=site_dir,
-        site_url="https://h234598.github.io/desinfect/",
-        source_date_epoch=1700000000,
-    )
+    config_dir = repo / "config-stage"
+    config_dir.mkdir()
+    descriptor = os.open(config_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
-        first = first_path.read_bytes()
-    finally:
-        first_path.unlink()
+        held_config_dir = io_utils.fd_directory_path(descriptor)
+        first_path = build_site_module.write_temp_mkdocs_config(
+            repo_root=repo,
+            config_dir=held_config_dir,
+            docs_dir=docs_dir,
+            site_dir=site_dir,
+            site_url="https://h234598.github.io/desinfect/",
+            source_date_epoch=1700000000,
+        )
+        try:
+            first = first_path.read_bytes()
+        finally:
+            first_path.unlink()
 
-    parsed = yaml.safe_load(source.read_text(encoding="utf-8"))
-    source.write_text(
-        yaml.safe_dump(
-            {key: parsed[key] for key in reversed(tuple(parsed))},
-            allow_unicode=True,
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-        newline="\n",
-    )
-    second_path = build_site_module.write_temp_mkdocs_config(
-        repo_root=repo,
-        docs_dir=docs_dir,
-        site_dir=site_dir,
-        site_url="https://h234598.github.io/desinfect/",
-        source_date_epoch=1700000000,
-    )
-    try:
-        second = second_path.read_bytes()
+        parsed = yaml.safe_load(source.read_text(encoding="utf-8"))
+        source.write_text(
+            yaml.safe_dump(
+                {key: parsed[key] for key in reversed(tuple(parsed))},
+                allow_unicode=True,
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        second_path = build_site_module.write_temp_mkdocs_config(
+            repo_root=repo,
+            config_dir=held_config_dir,
+            docs_dir=docs_dir,
+            site_dir=site_dir,
+            site_url="https://h234598.github.io/desinfect/",
+            source_date_epoch=1700000000,
+        )
+        try:
+            second = second_path.read_bytes()
+        finally:
+            second_path.unlink()
     finally:
-        second_path.unlink()
+        os.close(descriptor)
 
     assert first == second
 
@@ -1210,6 +1257,64 @@ def test_external_font_config_fails_before_runner_and_preserves_old_site(
 
     monkeypatch.setattr(build_site_module, "run_mkdocs_build", unexpected_runner)
     with pytest.raises(SiteBuildError, match="font"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=False,
+            strict=True,
+            force=False,
+            site_url=None,
+        )
+
+    assert (old / "keep.txt").read_text(encoding="utf-8") == "old complete tree"
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "content"),
+    (
+        (
+            "nested/details.html",
+            '<a href="https://content.example/page">allowed</a>'
+            '<IMG SRC=" HTTPS://asset.example/tracker.png">',
+        ),
+        ("assets/remote-import.css", '@IMPORT " HTTPS://asset.example/theme.css";'),
+        ("assets/remote-url.css", "body { background: URL( //asset.example/image.png ); }"),
+    ),
+)
+def test_external_generated_resource_preserves_old_site(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    relative_path: str,
+    content: str,
+) -> None:
+    """Remote resources anywhere in generated HTML or CSS abort publication."""
+
+    old = _old_site(repo)
+
+    def runner_with_remote_resource(
+        repo_root: Path,
+        config_path: Path,
+        *,
+        strict: bool,
+        epoch: int,
+        pass_fds: tuple[int, ...],
+    ) -> int:
+        del repo_root, strict, epoch, pass_fds
+        parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        stage = Path(parsed["site_dir"])
+        (stage / "index.html").write_text("index", encoding="utf-8")
+        (stage / "404.html").write_text("404", encoding="utf-8")
+        mutation = stage / relative_path
+        mutation.parent.mkdir(parents=True, exist_ok=True)
+        mutation.write_text(content, encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(
+        build_site_module,
+        "run_mkdocs_build",
+        runner_with_remote_resource,
+    )
+    with pytest.raises(SiteBuildError, match="external browser resource"):
         build_site(
             repo,
             check=True,
