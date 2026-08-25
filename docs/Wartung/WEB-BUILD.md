@@ -115,8 +115,68 @@ Fehlerpfad verwenden. Kein `rm -rf`, kein manuelles Umbenennen, kein Löschen vo
 gehört zu P11.2. Festlegung der GitHub-Pages-Site-URL gehört zu P14. Eine Custom
 Domain benötigt eine separate Adminentscheidung.
 
-## 7. Nicht Teil von P10.2
+## 7. P10.3-Navigation und Tabellendaten
 
-P10.3-Navigation, Wartungsicon und Tabellen fehlen absichtlich. Dieses Runbook
-konfiguriert oder deployt keine GitHub Pages und trifft keine Custom-Domain-
-Entscheidung.
+P10.3 ist Teil des Strict-Builds. Der Vollbuild erzeugt `site/index.html`,
+`site/Tabelle/index.html`, `site/WARTUNG/index.html` und die neun verlinkten Seiten unter
+`site/Wartung/`. Die Lesernavigation enthält keinen Projekt-/Wartungspunkt. Werkzeuglink und
+Wartungshub bleiben trotzdem lokale, strikt geprüfte Linkziele.
+
+Tabellen verwenden diese kanonischen Quellen:
+
+- `status.json` für Gate und Zustandsmaschine;
+- optional `research/corpus-readiness.json` und `research/taxonomy.yml` gemäß Gatezustand;
+- optional `content/generated-data/corpus-table.json` für Korpuszeilen;
+- `content/generated-data/anleitungen.json` nur im vollständig freigegebenen Zustand.
+
+Die Eingaben werden begrenzt gelesen, schema-validiert und vor jeder Veröffentlichung
+gegeneinander geprüft. Öffentliche Projektionen liegen danach ausschließlich unter
+`build/docs/assets/data/`; rohe `content/generated-data/`-Pfade werden nicht kopiert.
+Vollständige Tabellenzeilen stehen zugleich serverseitig in `build/docs/Tabelle.md` und
+`site/Tabelle/index.html`. Browser-JavaScript ist keine Datenquelle.
+
+## 8. Zulässiger Vor-Gate- und Fehlerzustand
+
+Ein noch nicht erfülltes Taxonomie-Gate ist kein Buildfehler. Ohne Korpusprojektion zeigt die
+Seite den Text „Noch keine validierten Dokumentmanifeste“, Caption und alle 14 Korpusspalten.
+Bei Gate `false`, Readiness-/Taxonomie-Review oder Proposal bleibt die Anleitungstabelle
+ausgeblendet. Erst `approved` mit vollständiger Readiness, freigegebener Taxonomie und
+passender Anleitungsprojektion veröffentlicht sie.
+
+Widersprüchliche Gatewerte, verfrühte Taxonomie-/Anleitungsdateien, fehlende Pflichtdateien
+im freigegebenen Zustand, Schema-/Versionsdrift, unvollständige Evidenz, unbekannte
+Kategorien oder Grenzwertverletzungen brechen fail-closed ab. Nicht durch Umbenennen,
+Löschen oder Ändern kanonischer Quellen „reparieren“. Zuerst Fehlermeldung und die vier
+Gate-Eingaben prüfen:
+
+```bash
+python3 scripts/web/build_site.py --check --dry-run --strict \
+  --only Tabelle.md \
+  --site-url https://h234598.github.io/desinfect/
+python3 -m pytest -q tests/web/test_build_tables.py tests/web/test_build_docs.py
+git status --short
+```
+
+Der Teilpreview baut nur die ausgewählte Seite in Wegwerfverzeichnissen und publiziert
+nichts. `git status --short` muss danach für kanonische Quellen leer bleiben.
+
+## 9. Atomizität, Rollback und Diagnose
+
+Docs und Site bleiben zwei getrennte atomare Veröffentlichungen. `build/docs/` wird zuerst
+vollständig gestaged, validiert und ersetzt. Danach baut MkDocs aus einem festgehaltenen
+Docs-Baum eine vollständige Site und ersetzt `site/` atomar. Ein später Sitefehler rollt
+nicht die bereits vollständigen neuen Docs zurück; die vorherige vollständige Site bleibt
+aktiv. Ein Fehler innerhalb einer Stagingtransaktion stellt das jeweilige sentinel-geprüfte
+alte Ziel wieder her.
+
+Diagnose bleibt read-only gegenüber `content/`, `config/`, `web/`, `mkdocs.yml`,
+`status.json` und `research/`. Erlaubt sind Logs, Hashvergleiche, `git diff`,
+sentinel-geprüfte Zielinspektion und der Dry-run. Keine Source-Mutation, kein manuelles
+Verschieben veröffentlichter Bäume und kein Löschen eines Backups. `--force` erst nach
+Identitäts- und Sentinelprüfung wie in Abschnitt 5 verwenden.
+
+## 10. Abgrenzung
+
+Der Build konfiguriert oder deployt keine GitHub Pages und trifft keine Custom-Domain-
+Entscheidung. Echte Browser-, Axe- und 390-Pixel-Abnahme gehört zu P11.4. P09.4-Live-
+Deployment und dessen separater 301-Blocker werden durch P10.3 nicht verändert.

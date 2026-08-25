@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,38 @@ from scripts.web.build_tables import (
     write_table_data_assets,
 )
 from scripts.web import build_tables as build_tables_module
+
+
+class _RenderedTableParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.header_counts: list[int] = []
+        self.row_cell_counts: list[list[int]] = []
+        self._table = -1
+        self._in_body = False
+        self._row_cells: int | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        if tag == "table":
+            self._table += 1
+            self.header_counts.append(0)
+            self.row_cell_counts.append([])
+        elif tag == "th":
+            self.header_counts[self._table] += 1
+        elif tag == "tbody":
+            self._in_body = True
+        elif tag == "tr" and self._in_body:
+            self._row_cells = 0
+        elif tag == "td" and self._row_cells is not None:
+            self._row_cells += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "tr" and self._row_cells is not None:
+            self.row_cell_counts[self._table].append(self._row_cells)
+            self._row_cells = None
+        elif tag == "tbody":
+            self._in_body = False
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -367,7 +400,9 @@ def test_instruction_projection_rejects_duplicate_identity_and_unknown_root_key(
         load_table_inputs(tmp_path)
 
 
-def test_approved_state_renders_sorted_server_rows_and_public_assets(tmp_path: Path) -> None:
+def test_semantic_approved_state_renders_sorted_complete_server_rows_and_assets(
+    tmp_path: Path,
+) -> None:
     """Global ranking, missing server rows, or noncanonical assets make this fail."""
 
     _write_corpus(
@@ -392,6 +427,9 @@ def test_approved_state_renders_sorted_server_rows_and_public_assets(tmp_path: P
 
     inputs = load_table_inputs(tmp_path)
     rendered = render_table_fragment(inputs)
+    parser = _RenderedTableParser()
+    parser.feed(rendered)
+    parser.close()
     stage = tmp_path / "stage"
     stage.mkdir()
     write_table_data_assets(stage, inputs)
@@ -400,6 +438,8 @@ def test_approved_state_renders_sorted_server_rows_and_public_assets(tmp_path: P
     assert [row.title for row in inputs.instruction_rows] == ["Fläche hoch", "Hoch", "Niedrig"]
     assert rendered.index("Fläche hoch") < rendered.index("Hoch") < rendered.index("Niedrig")
     assert "Rangfolgen gelten nur innerhalb" in rendered
+    assert parser.header_counts == [14, 13]
+    assert parser.row_cell_counts == [[14, 14], [13, 13, 13]]
     corpus_asset = json.loads((stage / "assets/data/corpus-table.json").read_text("utf-8"))
     instruction_asset = json.loads((stage / "assets/data/anleitungen.json").read_text("utf-8"))
     assert [row["title"] for row in corpus_asset["rows"]] == ["Neu", "Alt"]

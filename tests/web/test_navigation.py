@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 from urllib.parse import urljoin, urlsplit
 
@@ -118,6 +119,49 @@ def _anchors(path: Path) -> list[dict[str, str]]:
     return parser.anchors
 
 
+class _TableParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.regions: list[dict[str, str]] = []
+        self.tables: list[dict[str, object]] = []
+        self._table: dict[str, object] | None = None
+        self._in_body = False
+        self._row_cells: int | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = {name: value or "" for name, value in attrs}
+        if tag == "div" and "table-region" in attributes.get("class", "").split():
+            self.regions.append(attributes)
+        elif tag == "table":
+            self._table = {"captions": 0, "header_scopes": [], "row_cells": []}
+            self.tables.append(self._table)
+        elif tag == "caption" and self._table is not None:
+            self._table["captions"] += 1
+        elif tag == "th" and self._table is not None:
+            self._table["header_scopes"].append(attributes.get("scope"))
+        elif tag == "tbody" and self._table is not None:
+            self._in_body = True
+        elif tag == "tr" and self._in_body:
+            self._row_cells = 0
+        elif tag == "td" and self._row_cells is not None:
+            self._row_cells += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "tr" and self._row_cells is not None and self._table is not None:
+            self._table["row_cells"].append(self._row_cells)
+            self._row_cells = None
+        elif tag == "tbody":
+            self._in_body = False
+        elif tag == "table":
+            self._table = None
+
+
+def _css_rule(stylesheet: str, selector: str) -> str:
+    match = re.search(rf"{re.escape(selector)}\s*\{{([^{{}}]*)\}}", stylesheet, re.DOTALL)
+    assert match is not None, f"missing CSS rule for {selector}"
+    return " ".join(match.group(1).split())
+
+
 def test_navigation_is_exact_and_maintenance_is_hidden(repo: Path) -> None:
     config = _load_config(repo)
     index = build_content_index(repo / "content")
@@ -185,7 +229,9 @@ def test_runtime_navigation_projection_removes_only_partial_nav(repo: Path) -> N
     assert config == original
 
 
-def test_strict_site_exposes_cards_tool_link_and_all_maintenance_pages(repo: Path) -> None:
+def test_accessible_responsive_strict_site_exposes_reader_links_and_local_css(
+    repo: Path,
+) -> None:
     build_site(
         repo,
         check=True,
@@ -212,6 +258,41 @@ def test_strict_site_exposes_cards_tool_link_and_all_maintenance_pages(repo: Pat
     assert tool["aria-label"] == "Wartung, Projekt und Automatisierung"
     assert urlsplit(tool["href"]).path == "WARTUNG/"
 
+    for anchor in (*cards.values(), tool):
+        parsed = urlsplit(anchor["href"])
+        assert not parsed.scheme and not parsed.netloc
+        assert (anchor.get("aria-label") or anchor["text"] or anchor.get("title", "")).strip()
+        assert (repo / "site" / parsed.path / "index.html").is_file()
+
+    stylesheet = (repo / "site/assets/stylesheets/extra.css").read_text(encoding="utf-8")
+    tool_rule = _css_rule(stylesheet, ".maintenance-tool")
+    cards_rule = _css_rule(stylesheet, ".landing-cards")
+    table_rule = _css_rule(stylesheet, ".table-region")
+    scroll_hint_rule = _css_rule(stylesheet, ".table-region::before")
+    assert "min-width: 44px" in tool_rule and "min-height: 44px" in tool_rule
+    assert "display: grid" in cards_rule
+    assert "max-width: 100%" in table_rule and "overflow-x: auto" in table_rule
+    assert 'content: "Seitlich scrollen, um alle Spalten zu sehen."' in scroll_hint_rule
+    assert ".landing-card:hover" in stylesheet
+    focus_match = re.search(r"([^{}]*:focus-visible[^{}]*)\{([^{}]*)\}", stylesheet, re.DOTALL)
+    assert focus_match is not None
+    focus_selectors, focus_rule = focus_match.groups()
+    assert all(
+        selector in focus_selectors
+        for selector in (
+            ".landing-card:focus-visible",
+            ".maintenance-tool:focus-visible",
+            ".table-region button:focus-visible",
+        )
+    )
+    assert "outline: 3px solid" in focus_rule and "outline-offset: 3px" in focus_rule
+    assert "@media (max-width: 44rem)" in stylesheet
+    narrow = stylesheet.split("@media (max-width: 44rem)", 1)[1]
+    assert "grid-template-columns: 1fr" in narrow
+    assert "@media (prefers-reduced-motion: reduce)" in stylesheet
+    reduced = stylesheet.split("@media (prefers-reduced-motion: reduce)", 1)[1]
+    assert "transition: none" in reduced and "animation: none" in reduced
+
     index = build_content_index(repo / "content")
     assert all(index.page_for_path(path) is not None for path in MAINTENANCE_PATHS)
     hub = _anchors(repo / "site/WARTUNG/index.html")
@@ -221,6 +302,31 @@ def test_strict_site_exposes_cards_tool_link_and_all_maintenance_pages(repo: Pat
         (repo / "site" / path.removesuffix(".md") / "index.html").is_file()
         for path in MAINTENANCE_PATHS
     )
+
+
+def test_semantic_strict_table_has_named_region_headers_caption_and_empty_state(
+    repo: Path,
+) -> None:
+    build_site(
+        repo,
+        check=True,
+        dry_run=False,
+        strict=True,
+        force=False,
+        site_url=None,
+    )
+
+    source = (repo / "site/Tabelle/index.html").read_text(encoding="utf-8")
+    parser = _TableParser()
+    parser.feed(source)
+    parser.close()
+
+    assert len(parser.regions) == 1
+    assert parser.regions[0]["role"] == "region"
+    assert parser.regions[0]["tabindex"] == "0"
+    assert parser.regions[0]["aria-label"] == "Korpustabelle mit Dokumentmanifesten"
+    assert parser.tables == [{"captions": 1, "header_scopes": ["col"] * 14, "row_cells": []}]
+    assert "Noch keine validierten Dokumentmanifeste" in source
 
 
 def test_partial_strict_preview_keeps_sources_and_publishes_nothing(repo: Path) -> None:
