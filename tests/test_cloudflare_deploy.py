@@ -269,6 +269,51 @@ def test_health_check_exact_response_returns_without_retry() -> None:
     assert connections.calls.value == 1
 
 
+def test_health_check_retries_after_process_start_oserror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_start = multiprocessing.context.ForkProcess.start
+    starts = 0
+    sleeps: list[float] = []
+
+    def flaky_start(process: multiprocessing.context.ForkProcess) -> None:
+        nonlocal starts
+        starts += 1
+        if starts == 1:
+            raise OSError("secret resource detail")
+        original_start(process)
+
+    monkeypatch.setattr(multiprocessing.context.ForkProcess, "start", flaky_start)
+    connections = FakeConnections([healthy_response()])
+
+    health.verify_health(
+        "https://watchdog.example/healthz",
+        "abc123",
+        connection_factory=connections,
+        sleep=sleeps.append,
+    )
+
+    assert starts == 2
+    assert connections.calls.value == 1
+    assert sleeps == [health.RETRY_DELAY_SECONDS]
+
+
+def test_health_check_cli_safely_reports_process_start_oserror(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def fail_start(_: multiprocessing.context.ForkProcess) -> None:
+        raise OSError("secret resource detail")
+
+    monkeypatch.setattr(health, "MAX_ATTEMPTS", 1)
+    monkeypatch.setattr(multiprocessing.context.ForkProcess, "start", fail_start)
+
+    assert (
+        health.main(["--url", "https://watchdog.example/healthz", "--expected-version", "abc123"])
+        == 1
+    )
+    assert capsys.readouterr().err == "health check failed: category=http\n"
+
+
 def test_health_check_cli_logs_only_safe_failure_details(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     error = health.HealthCheckError(
         "health check failed: category=http http_status=301 location_hostname=awsas.de"

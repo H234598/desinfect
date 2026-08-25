@@ -186,10 +186,16 @@ def _check_with_deadline(
     started = time.monotonic()
     deadline = started + ATTEMPT_DEADLINE_SECONDS
     grace = min(CLEANUP_GRACE_SECONDS, ATTEMPT_DEADLINE_SECONDS / 4)
-    process.start()
-    send.close()
+    process_started = False
     reaped = False
     try:
+        try:
+            process.start()
+            process_started = True
+        except OSError:
+            return Failure("http")
+        finally:
+            send.close()
         process.join(max(0, _remaining(deadline) - 2 * grace))
         if process.is_alive():
             _reap_or_abort(process, deadline, grace)
@@ -204,7 +210,7 @@ def _check_with_deadline(
         return failure
     finally:
         receive.close()
-        if not reaped:
+        if process_started and not reaped:
             _reap_or_abort(process, deadline, grace)
 
 
