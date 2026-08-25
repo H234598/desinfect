@@ -28,6 +28,7 @@ ACCOUNT_RULE_ID = "f" * 32
 LIST_ID = "1" * 32
 ITEM_ID = "2" * 32
 PAGE_RULE_ID = "3" * 32
+NON_REDIRECT_PAGE_RULE_ID = "4" * 32
 
 
 def single_redirect_rule(
@@ -119,6 +120,33 @@ def test_zone_redirect_selection_rejects_unexpected_rule_shape() -> None:
 
     with pytest.raises(routing.RoutingAuditError, match="unexpected zone redirect rule"):
         routing.select_zone_redirect_rule(zone_ruleset([malformed]))
+
+
+@pytest.mark.parametrize(
+    "target_url",
+    (
+        {"value": "https://awsas.de/403-page.html"},
+        {"value": "awsas.de/403-page.html?source=lookalike"},
+        {"expression": 'concat("awsas.de/403-page.html", http.request.uri.path)'},
+    ),
+    ids=("absolute-url", "query-suffix", "dynamic-expression"),
+)
+def test_zone_redirect_selection_rejects_non_exact_target(
+    target_url: dict[str, str],
+) -> None:
+    rule = single_redirect_rule()
+    rule["action_parameters"]["from_value"]["target_url"] = target_url  # type: ignore[index]
+
+    with pytest.raises(routing.RoutingAuditError, match="exactly one active zone single redirect"):
+        routing.select_zone_redirect_rule(zone_ruleset([rule]))
+
+
+def test_zone_redirect_selection_rejects_unknown_semantic_key() -> None:
+    rule = single_redirect_rule()
+    rule["unknown_semantics"] = {"unsafe": True}
+
+    with pytest.raises(routing.RoutingAuditError, match="unexpected zone redirect rule"):
+        routing.select_zone_redirect_rule(zone_ruleset([rule]))
 
 
 def test_patch_payload_wraps_exact_expression_and_preserves_rule_definition() -> None:
@@ -279,8 +307,7 @@ def test_audit_checks_exact_zone_account_and_all_redirect_sources() -> None:
             f"/client/v4/accounts/{ACCOUNT_ID}/rulesets/phases/http_request_redirect/entrypoint",
         ): envelope(account_ruleset),
         ("GET", f"/client/v4/accounts/{ACCOUNT_ID}/rules/lists"): envelope(
-            [{"id": LIST_ID, "name": "legacy_redirects", "kind": "redirect"}],
-            {"page": 1, "total_pages": 1},
+            [{"id": LIST_ID, "name": "legacy_redirects", "kind": "redirect"}]
         ),
         (
             "GET",
@@ -311,9 +338,19 @@ def test_audit_checks_exact_zone_account_and_all_redirect_sources() -> None:
                     "actions": [
                         {"id": "forwarding_url", "value": {"url": "https://awsas.de/403-page.html", "status_code": 301}}
                     ],
-                }
-            ],
-            {"page": 1, "total_pages": 1},
+                },
+                {
+                    "id": NON_REDIRECT_PAGE_RULE_ID,
+                    "status": "active",
+                    "targets": [
+                        {
+                            "target": "url",
+                            "constraint": {"operator": "matches", "value": "*telacore.org/*"},
+                        }
+                    ],
+                    "actions": [{"id": "browser_check", "value": "on"}],
+                },
+            ]
         ),
     }
     opener = RecordingOpener(responses)
@@ -327,6 +364,11 @@ def test_audit_checks_exact_zone_account_and_all_redirect_sources() -> None:
         "account_bulk_redirect_item",
         "legacy_page_rule",
     }
+    assert [
+        finding.object_id
+        for finding in report.findings
+        if finding.kind == "legacy_page_rule"
+    ] == [PAGE_RULE_ID]
     zone_request = opener.requests[0]
     query = parse_qs(urlsplit(zone_request.full_url).query)  # type: ignore[attr-defined]
     assert query == {
@@ -343,7 +385,23 @@ def test_audit_checks_exact_zone_account_and_all_redirect_sources() -> None:
         if urlsplit(request.full_url).path.endswith(f"/rules/lists/{LIST_ID}/items")
     )
     assert parse_qs(urlsplit(item_request.full_url).query) == {"per_page": ["500"]}
-    rendered = "\n".join(finding.render() for finding in report.findings)
+    list_request = next(
+        request
+        for request in opener.requests
+        if urlsplit(request.full_url).path.endswith(f"/accounts/{ACCOUNT_ID}/rules/lists")
+    )
+    assert urlsplit(list_request.full_url).query == ""
+    page_rule_request = next(
+        request
+        for request in opener.requests
+        if urlsplit(request.full_url).path.endswith(f"/zones/{ZONE_ID}/pagerules")
+    )
+    assert parse_qs(urlsplit(page_rule_request.full_url).query) == {"status": ["active"]}
+    rendered = "\n".join(report.render())
+    assert report.render()[0] == "routing_audit zone=telacore.org"
+    assert ACCOUNT_ID not in rendered
+    assert ZONE_ID not in rendered
+    assert "secret" not in rendered
     assert "http.host contains" not in rendered
     assert "/healthz" not in rendered
     assert "403-page.html" not in rendered

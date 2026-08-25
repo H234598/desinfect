@@ -41,6 +41,7 @@ PATCH_FIELDS = (
     "enabled",
     "ref",
 )
+ZONE_RULE_KEYS = {*PATCH_FIELDS, "id", "version", "last_updated", "categories"}
 
 
 class RoutingAuditError(RuntimeError):
@@ -75,7 +76,7 @@ class AuditReport:
 
     def render(self) -> list[str]:
         return [
-            f"routing_audit zone={ZONE_NAME} account_id={self.account_id} zone_id={self.zone_id}",
+            f"routing_audit zone={ZONE_NAME}",
             *(finding.render() for finding in self.findings),
             f"audit_summary relevant_matches={len(self.findings)}",
         ]
@@ -176,49 +177,36 @@ def _query(path: str, values: dict[str, object]) -> str:
     return f"{path}?{urlencode(values)}"
 
 
-def _list_results(
+def _cursor_results(
     client: CloudflareClient,
     path: str,
     operation: str,
-    *,
-    query: dict[str, object] | None = None,
-    cursor: bool = False,
 ) -> list[object]:
     items: list[object] = []
-    marker: str | int | None = None if cursor else 1
+    marker: str | None = None
     seen: set[str] = set()
     while True:
-        params = {**(query or {}), "per_page": 500 if cursor else 50}
+        params: dict[str, object] = {"per_page": 500}
         if marker is not None:
-            params["cursor" if cursor else "page"] = marker
+            params["cursor"] = marker
         envelope = client.request("GET", _query(path, params), operation=operation)
         result = _result(envelope, operation)
         info = envelope.get("result_info") if envelope else None
-        if not isinstance(result, list) or not isinstance(info, dict):
+        cursors = info.get("cursors") if isinstance(info, dict) else None
+        if not isinstance(result, list) or not isinstance(cursors, dict):
             raise RoutingAuditError(f"unexpected {operation} response")
         items.extend(result)
-        if cursor:
-            cursors = info.get("cursors")
-            after = cursors.get("after") if isinstance(cursors, dict) else False
-            if after is None:
-                return items
-            if not isinstance(after, str) or not after or after in seen:
-                raise RoutingAuditError(f"unexpected {operation} pagination")
-            seen.add(after)
-            marker = after
-        else:
-            page, total = info.get("page"), info.get("total_pages")
-            if not isinstance(page, int) or not isinstance(total, int) or page != marker:
-                raise RoutingAuditError(f"unexpected {operation} pagination")
-            if page == total:
-                return items
-            if total < page:
-                raise RoutingAuditError(f"unexpected {operation} pagination")
-            marker = page + 1
+        after = cursors.get("after")
+        if after is None:
+            return items
+        if not isinstance(after, str) or not after or after in seen:
+            raise RoutingAuditError(f"unexpected {operation} pagination")
+        seen.add(after)
+        marker = after
 
 
 def _zone_rule(value: object) -> dict[str, object]:
-    if not isinstance(value, dict):
+    if not isinstance(value, dict) or not set(value) <= ZONE_RULE_KEYS:
         raise RoutingAuditError("unexpected zone redirect rule")
     try:
         rule_id = value["id"]
@@ -246,6 +234,11 @@ def _zone_rule(value: object) -> dict[str, object]:
     if not isinstance(target, dict) or set(target) not in ({"value"}, {"expression"}):
         raise RoutingAuditError("unexpected zone redirect rule")
     if not isinstance(next(iter(target.values())), str) or not next(iter(target.values())):
+        raise RoutingAuditError("unexpected zone redirect rule")
+    if "categories" in value and (
+        not isinstance(value["categories"], list)
+        or not all(isinstance(category, str) for category in value["categories"])
+    ):
         raise RoutingAuditError("unexpected zone redirect rule")
     return value
 
@@ -276,7 +269,9 @@ def select_zone_redirect_rule(ruleset: object) -> dict[str, object]:
     matches = [
         rule
         for rule in rules  # type: ignore[union-attr]
-        if rule["enabled"] is True and TARGET_FRAGMENT in _target(rule)
+        if rule["enabled"] is True
+        and rule["action_parameters"]["from_value"]["target_url"]  # type: ignore[index]
+        == {"value": TARGET_FRAGMENT}
     ]
     if len(matches) != 1:
         raise RoutingAuditError("expected exactly one active zone single redirect match")
@@ -435,11 +430,14 @@ def _bulk_audit(client: CloudflareClient, account_id: str) -> list[AuditFinding]
             active_lists.append((rule_id, name))
     if not active_lists:
         return findings
-    values = _list_results(
-        client,
+    lists_envelope = client.request(
+        "GET",
         f"/accounts/{account_id}/rules/lists",
-        "read-account-redirect-lists",
+        operation="read-account-redirect-lists",
     )
+    values = _result(lists_envelope, "read-account-redirect-lists")
+    if not isinstance(values, list):
+        raise RoutingAuditError("unexpected read-account-redirect-lists response")
     lists: dict[str, str] = {}
     for value in values:
         if not isinstance(value, dict) or value.get("kind") != "redirect":
@@ -452,11 +450,10 @@ def _bulk_audit(client: CloudflareClient, account_id: str) -> list[AuditFinding]
         if name not in lists:
             raise RoutingAuditError("active account redirect list not found")
         list_id = lists[name]
-        items = _list_results(
+        items = _cursor_results(
             client,
             f"/accounts/{account_id}/rules/lists/{list_id}/items",
             "read-account-redirect-list-items",
-            cursor=True,
         )
         for item in items:
             redirect = item.get("redirect") if isinstance(item, dict) else None
@@ -480,12 +477,14 @@ def _bulk_audit(client: CloudflareClient, account_id: str) -> list[AuditFinding]
 
 
 def _page_rule_audit(client: CloudflareClient, zone_id: str) -> list[AuditFinding]:
-    values = _list_results(
-        client,
-        f"/zones/{zone_id}/pagerules",
-        "read-legacy-page-rules",
-        query={"status": "active"},
+    envelope = client.request(
+        "GET",
+        _query(f"/zones/{zone_id}/pagerules", {"status": "active"}),
+        operation="read-legacy-page-rules",
     )
+    values = _result(envelope, "read-legacy-page-rules")
+    if not isinstance(values, list):
+        raise RoutingAuditError("unexpected read-legacy-page-rules response")
     findings = []
     for rule in values:
         if (
@@ -495,7 +494,14 @@ def _page_rule_audit(client: CloudflareClient, zone_id: str) -> list[AuditFindin
             or not isinstance(rule.get("actions"), list)
         ):
             raise RoutingAuditError("unexpected legacy page rule")
-        signals = _signals(rule["targets"], rule["actions"])
+        forwarding = [
+            action
+            for action in rule["actions"]
+            if isinstance(action, dict) and action.get("id") == "forwarding_url"
+        ]
+        if not forwarding:
+            continue
+        signals = _signals(rule["targets"], forwarding)
         if not signals:
             continue
         action_ids = [
