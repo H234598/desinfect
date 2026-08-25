@@ -1,0 +1,26 @@
+site_name: Desinfect
+theme:
+  name: material
+  language: de
+  font: false
+  custom_dir: web/overrides
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Dunkles Farbschema aktivieren
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Helles Farbschema aktivieren
+plugins:
+  - search:
+      lang: de
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+extra_css:
+  - assets/stylesheets/extra.css

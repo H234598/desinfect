@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from html.parser import HTMLParser
 from pathlib import Path
 import os
 import shutil
 from types import SimpleNamespace
 
+import material
+import mkdocs.config
 import pytest
 import yaml
 
@@ -54,12 +57,57 @@ def _old_docs(repo: Path) -> Path:
     return old
 
 
+def _old_site(repo: Path) -> Path:
+    old = repo / "site"
+    mark_generated_root(old, allowed_root=repo)
+    (old / "keep.txt").write_text("old complete tree", encoding="utf-8")
+    return old
+
+
 def _mkdocs_source(repo: Path) -> Path:
-    """Install minimal static MkDocs input required by site-build tests."""
+    """Return static MkDocs input required by site-build tests."""
 
     path = repo / "mkdocs.yml"
-    path.write_text("site_name: Test\n", encoding="utf-8")
+    assert path.is_file()
     return path
+
+
+class _ExternalAssetParser(HTMLParser):
+    _RESOURCE_ATTRIBUTES = {
+        "iframe": "src",
+        "img": "src",
+        "link": "href",
+        "script": "src",
+        "source": "src",
+    }
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.urls: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attribute = self._RESOURCE_ATTRIBUTES.get(tag)
+        if attribute is None:
+            return
+        attributes = dict(attrs)
+        if tag == "link" and not {
+            "icon",
+            "manifest",
+            "modulepreload",
+            "preload",
+            "stylesheet",
+        }.intersection((attributes.get("rel") or "").split()):
+            return
+        value = attributes.get(attribute)
+        if value is not None and value.startswith(("http:", "https:", "//")):
+            self.urls.append(value)
+
+
+def _external_asset_urls(html: str) -> list[str]:
+    parser = _ExternalAssetParser()
+    parser.feed(html)
+    parser.close()
+    return parser.urls
 
 
 def test_build_docs_publishes_transformed_copy_and_preserves_sources(repo: Path) -> None:
@@ -963,6 +1011,124 @@ def test_real_mkdocs_child_can_use_held_fd_stages(repo: Path) -> None:
     assert result.published is False
     assert not (repo / "site").exists()
     assert not (repo / "build/docs").exists()
+
+
+def test_strict_site_is_local_german_and_has_404(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wrong locale, remote assets, or missing local 404 output breaks full build."""
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    result = build_site(
+        repo,
+        check=True,
+        dry_run=False,
+        strict=True,
+        force=False,
+        site_url="https://h234598.github.io/desinfect/",
+    )
+
+    config = mkdocs.config.load_config(
+        config_file=str(repo / "mkdocs.yml"), docs_dir=str(repo / "content")
+    )
+    theme = config["theme"]
+    index_html = (repo / "site/index.html").read_text(encoding="utf-8")
+    not_found = (repo / "site/404.html").read_text(encoding="utf-8")
+    stylesheet = (repo / "site/assets/stylesheets/extra.css").read_text(encoding="utf-8")
+
+    assert result.published is True
+    assert config["site_name"] == "Desinfect"
+    assert theme.name == "material"
+    assert theme["language"] == "de"
+    assert theme["font"] is False
+    assert config["plugins"]["material/search"].config["lang"] == ["de"]
+    assert {entry["media"] for entry in theme["palette"]} == {
+        "(prefers-color-scheme: light)",
+        "(prefers-color-scheme: dark)",
+    }
+    assert config["extra_css"] == ["assets/stylesheets/extra.css"]
+    assert Path(material.__file__).is_file()
+    assert "Desinfect" in index_html
+    assert "404" in not_found
+    assert "Seite nicht gefunden" in not_found
+    assert '<a href="/desinfect/">Zur Startseite</a>' in not_found
+    assert not _external_asset_urls(index_html + not_found)
+    assert all(not path.is_symlink() for path in (repo / "site").rglob("*"))
+    assert "@import" not in stylesheet.lower()
+    assert "url(" not in stylesheet.lower()
+    assert "@font-face" not in stylesheet.lower()
+
+
+def test_external_font_config_fails_before_runner_and_preserves_old_site(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Configured font download must fail closed before MkDocs can publish."""
+
+    old = _old_site(repo)
+    config_path = repo / "mkdocs.yml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace("font: false", "font:\n    text: Roboto"),
+        encoding="utf-8",
+    )
+
+    def unexpected_runner(*args: object, **kwargs: object) -> int:
+        del args, kwargs
+        raise AssertionError("MkDocs runner must not execute")
+
+    monkeypatch.setattr(build_site_module, "run_mkdocs_build", unexpected_runner)
+    with pytest.raises(SiteBuildError, match="font"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=False,
+            strict=True,
+            force=False,
+            site_url=None,
+        )
+
+    assert (old / "keep.txt").read_text(encoding="utf-8") == "old complete tree"
+
+
+def test_post_build_symlink_preserves_old_site(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A symlink inserted after real MkDocs output must abort site replacement."""
+
+    old = _old_site(repo)
+    real_runner = build_site_module.run_mkdocs_build
+    real_returncodes: list[int] = []
+
+    def runner_with_symlink(
+        repo_root: Path,
+        config_path: Path,
+        *,
+        strict: bool,
+        epoch: int,
+        pass_fds: tuple[int, ...],
+    ) -> int:
+        returncode = real_runner(
+            repo_root,
+            config_path,
+            strict=strict,
+            epoch=epoch,
+            pass_fds=pass_fds,
+        )
+        real_returncodes.append(returncode)
+        parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        (Path(parsed["site_dir"]) / "escape").symlink_to(repo / "content/index.md")
+        return returncode
+
+    monkeypatch.setattr(build_site_module, "run_mkdocs_build", runner_with_symlink)
+    with pytest.raises(SiteBuildError, match="cannot validate generated site"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=False,
+            strict=True,
+            force=False,
+            site_url=None,
+        )
+
+    assert real_returncodes == [0]
+    assert (old / "keep.txt").read_text(encoding="utf-8") == "old complete tree"
 
 
 def test_invalid_site_url_is_classified_as_site_build_error(repo: Path) -> None:

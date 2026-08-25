@@ -53,6 +53,13 @@ class SiteBuildResult:
 
 
 _FD_DIRECTORY_PATH = re.compile(r"^(?:/proc/self/fd|/dev/fd)/(0|[1-9][0-9]*)$")
+_STATIC_MKDOCS_KEYS = {
+    "extra_css",
+    "markdown_extensions",
+    "plugins",
+    "site_name",
+    "theme",
+}
 
 
 def _repo_root(repo_root: Path) -> Path:
@@ -104,6 +111,74 @@ def _validated_only(only: tuple[PurePosixPath, ...]) -> tuple[PurePosixPath, ...
     return tuple(selected)
 
 
+def _contains_external_url(value: object) -> bool:
+    if isinstance(value, str):
+        return value.lstrip().lower().startswith(("http:", "https:", "//"))
+    if isinstance(value, Mapping):
+        return any(_contains_external_url(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_external_url(item) for item in value)
+    return False
+
+
+def _validate_static_mkdocs_config(parsed: dict[object, object]) -> None:
+    theme = parsed.get("theme")
+    if isinstance(theme, Mapping):
+        asset_fields = (
+            parsed.get("extra_css"),
+            parsed.get("extra_javascript"),
+            theme.get("favicon"),
+            theme.get("font"),
+            theme.get("icon"),
+            theme.get("logo"),
+        )
+        if any(_contains_external_url(value) for value in asset_fields):
+            raise SiteBuildError("mkdocs asset and font fields must use local resources")
+    if set(parsed) != _STATIC_MKDOCS_KEYS:
+        raise SiteBuildError("mkdocs configuration has unsupported top-level fields")
+    if parsed.get("site_name") != "Desinfect":
+        raise SiteBuildError("mkdocs site_name must be Desinfect")
+    if not isinstance(theme, dict):
+        raise SiteBuildError("mkdocs theme must be one Material mapping")
+    if theme.get("font") is not False:
+        raise SiteBuildError("mkdocs theme font must be false")
+    if theme != {
+        "name": "material",
+        "language": "de",
+        "font": False,
+        "custom_dir": "web/overrides",
+        "palette": [
+            {
+                "media": "(prefers-color-scheme: light)",
+                "scheme": "default",
+                "toggle": {
+                    "icon": "material/brightness-7",
+                    "name": "Dunkles Farbschema aktivieren",
+                },
+            },
+            {
+                "media": "(prefers-color-scheme: dark)",
+                "scheme": "slate",
+                "toggle": {
+                    "icon": "material/brightness-4",
+                    "name": "Helles Farbschema aktivieren",
+                },
+            },
+        ],
+    }:
+        raise SiteBuildError("mkdocs theme must use local German Material settings")
+    if parsed.get("plugins") != [{"search": {"lang": "de"}}]:
+        raise SiteBuildError("mkdocs search plugin language must be de")
+    if parsed.get("markdown_extensions") != [
+        "admonition",
+        "pymdownx.details",
+        "pymdownx.superfences",
+    ]:
+        raise SiteBuildError("mkdocs Markdown extensions are unsupported")
+    if parsed.get("extra_css") != ["assets/stylesheets/extra.css"]:
+        raise SiteBuildError("mkdocs extra_css must contain only the local stylesheet")
+
+
 def _regular_site_hashes(stage: Path) -> Mapping[str, str]:
     try:
         hashes: dict[str, str] = {}
@@ -147,6 +222,7 @@ def write_temp_mkdocs_config(
         parsed = yaml.safe_load(source.read_text(encoding="utf-8"))
         if not isinstance(parsed, dict):
             raise SiteBuildError("mkdocs configuration must be a mapping")
+        _validate_static_mkdocs_config(parsed)
         if not docs_dir.is_absolute() or not site_dir.is_absolute():
             raise SiteBuildError("mkdocs docs_dir and site_dir must be absolute directories")
         absolute_docs = (
@@ -161,6 +237,7 @@ def write_temp_mkdocs_config(
         )
         if not absolute_docs.is_dir() or not absolute_site.is_dir():
             raise SiteBuildError("mkdocs docs_dir and site_dir must be existing directories")
+        parsed["theme"]["custom_dir"] = str((repo_root / "web/overrides").resolve(strict=True))
         parsed["docs_dir"] = str(absolute_docs)
         parsed["site_dir"] = str(absolute_site)
         if site_url is not None:
