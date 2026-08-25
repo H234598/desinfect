@@ -108,7 +108,7 @@
       return table;
     }
 
-    for (const [column, header] of headers.entries()) {
+    for (const header of headers) {
       const button = documentObject.createElement("button");
       button.type = "button";
       button.textContent = header.textContent;
@@ -122,7 +122,7 @@
         tbody.replaceChildren(
           ...stableSortRows(
             tbody.rows,
-            column,
+            header.cellIndex,
             header.getAttribute("data-sort-type"),
             direction,
           ),
@@ -132,9 +132,10 @@
     }
 
     const rows = Array.from(tbody.rows);
-    const applicationAreaColumn = headers.findIndex(
+    const applicationAreaHeader = headers.find(
       (header) => header.getAttribute("data-column") === "application_area",
     );
+    const applicationAreaColumn = applicationAreaHeader?.cellIndex ?? -1;
     const rowViews = rows.map((row) => ({
       applicationArea:
         applicationAreaColumn === -1 ? "" : cellText(row.cells[applicationAreaColumn]),

@@ -138,10 +138,13 @@ function element(tagName, text = "") {
 }
 
 function makeTable({ kind = "corpus", headers, rows }) {
-  const headerNodes = headers.map(({ label, column, type }) => {
+  const headerNodes = headers.map(({ label, column, type }, index) => {
     const header = element("th", label);
-    header.setAttribute("data-column", column);
-    header.setAttribute("data-sort-type", type);
+    header.cellIndex = index;
+    if (column !== undefined && type !== undefined) {
+      header.setAttribute("data-column", column);
+      header.setAttribute("data-sort-type", type);
+    }
     return header;
   });
   const headRow = element("tr");
@@ -161,7 +164,9 @@ function makeTable({ kind = "corpus", headers, rows }) {
   table.tBodies = [tbody];
   table.querySelectorAll = (selector) => {
     assert.equal(selector, "thead th[data-column][data-sort-type]");
-    return headerNodes;
+    return headerNodes.filter(
+      (header) => header.hasAttribute("data-column") && header.hasAttribute("data-sort-type"),
+    );
   };
   table.append(thead, tbody);
   const region = element("div");
@@ -286,6 +291,34 @@ test("enhancement adds one native sort button and moves every existing row", () 
   assert.equal(fixture.headerNodes[1].hasAttribute("aria-sort"), false);
   buttons[0][0].dispatch("click");
   assert.equal(fixture.headerNodes[0].getAttribute("aria-sort"), "descending");
+});
+
+test("enhancement uses physical indices around non-sortable headers", () => {
+  const fixture = makeTable({
+    kind: "instructions",
+    headers: [
+      { label: "Auswahl" },
+      { label: "Anwendung", column: "application_area", type: "text" },
+      { label: "Titel", column: "title", type: "text" },
+    ],
+    rows: [
+      ["✓", "Hände", "Zeta"],
+      ["", "Flächen", "Alpha"],
+    ],
+  });
+  const document = new FakeDocument([fixture.table]);
+
+  enhanceTable(fixture.table, document);
+
+  descendants(fixture.headerNodes[1], "button")[0].dispatch("click");
+  assert.deepEqual(rowTexts(fixture.tbody.rows), [
+    ["", "Flächen", "Alpha"],
+    ["✓", "Hände", "Zeta"],
+  ]);
+  assert.deepEqual(
+    descendants(fixture.region, "option").map((option) => option.value),
+    ["", "Flächen", "Hände"],
+  );
 });
 
 test("instruction controls are accessible, combined, live, and idempotent", () => {
