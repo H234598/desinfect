@@ -631,8 +631,15 @@ def test_dry_run_never_publishes_docs_or_site(repo: Path, monkeypatch: pytest.Mo
     _mkdocs_source(repo)
     seen: dict[str, Path] = {}
 
-    def fake_runner(repo_root: Path, config_path: Path, *, strict: bool, epoch: int) -> int:
-        del repo_root, epoch
+    def fake_runner(
+        repo_root: Path,
+        config_path: Path,
+        *,
+        strict: bool,
+        epoch: int,
+        pass_fds: tuple[int, ...],
+    ) -> int:
+        del repo_root, epoch, pass_fds
         assert strict is True
         parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         docs_dir = Path(parsed["docs_dir"])
@@ -672,8 +679,15 @@ def test_site_build_uses_live_docs_and_staged_site_config(
     _mkdocs_source(repo)
     captured: dict[str, object] = {}
 
-    def fake_runner(repo_root: Path, config_path: Path, *, strict: bool, epoch: int) -> int:
-        del repo_root, epoch
+    def fake_runner(
+        repo_root: Path,
+        config_path: Path,
+        *,
+        strict: bool,
+        epoch: int,
+        pass_fds: tuple[int, ...],
+    ) -> int:
+        del repo_root, epoch, pass_fds
         assert strict is True
         parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         captured["config_path"] = config_path
@@ -714,8 +728,15 @@ def test_strict_site_failure_preserves_old_complete_site(
     mark_generated_root(old, allowed_root=repo)
     (old / "keep.txt").write_text("old complete tree", encoding="utf-8")
 
-    def failing_runner(repo_root: Path, config_path: Path, *, strict: bool, epoch: int) -> int:
-        del repo_root, epoch
+    def failing_runner(
+        repo_root: Path,
+        config_path: Path,
+        *,
+        strict: bool,
+        epoch: int,
+        pass_fds: tuple[int, ...],
+    ) -> int:
+        del repo_root, epoch, pass_fds
         assert strict is True
         parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         (Path(parsed["site_dir"]) / "incomplete.txt").write_text("incomplete", encoding="utf-8")
@@ -746,8 +767,15 @@ def test_site_build_rejects_unmarked_existing_site(
     site.mkdir()
     (site / "private.txt").write_text("private", encoding="utf-8")
 
-    def valid_runner(repo_root: Path, config_path: Path, *, strict: bool, epoch: int) -> int:
-        del repo_root, strict, epoch
+    def valid_runner(
+        repo_root: Path,
+        config_path: Path,
+        *,
+        strict: bool,
+        epoch: int,
+        pass_fds: tuple[int, ...],
+    ) -> int:
+        del repo_root, strict, epoch, pass_fds
         parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         output = Path(parsed["site_dir"])
         (output / "index.html").write_text("index", encoding="utf-8")
@@ -786,8 +814,15 @@ def test_fd_site_stage_survives_ancestor_swap(
         fd_stage = io_utils.fd_directory_path(descriptor)
         swapped = tmp_path / "held-parent-old"
 
-        def runner(repo_root: Path, config_path: Path, *, strict: bool, epoch: int) -> int:
-            del repo_root, strict, epoch
+        def runner(
+            repo_root: Path,
+            config_path: Path,
+            *,
+            strict: bool,
+            epoch: int,
+            pass_fds: tuple[int, ...],
+        ) -> int:
+            del repo_root, strict, epoch, pass_fds
             parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             configured_stage = Path(parsed["site_dir"])
             parent.rename(swapped)
@@ -876,9 +911,11 @@ def test_mkdocs_runner_receives_default_source_date_epoch(
         capture_output: bool,
         text: bool,
         env: dict[str, str],
+        pass_fds: tuple[int, ...],
     ) -> SimpleNamespace:
         del cwd, check, capture_output, text
         captured.update(env)
+        assert len(pass_fds) == 2
         config_path = Path(command[command.index("--config-file") + 1])
         parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         output = Path(parsed["site_dir"])
@@ -908,3 +945,49 @@ def test_cli_catches_invalid_source_date_epoch(repo: Path, monkeypatch: pytest.M
     assert main(["--repo-root", str(repo), "--check", "--strict"]) == 2
     assert not (repo / "site").exists()
     assert not (repo / "build/docs").exists()
+
+
+def test_real_mkdocs_child_can_use_held_fd_stages(repo: Path) -> None:
+    """A real MkDocs child can open both inherited FD-backed stage paths."""
+
+    _mkdocs_source(repo)
+    result = build_site(
+        repo,
+        check=True,
+        dry_run=True,
+        strict=True,
+        force=False,
+        site_url=None,
+    )
+
+    assert result.published is False
+    assert not (repo / "site").exists()
+    assert not (repo / "build/docs").exists()
+
+
+def test_invalid_site_url_is_classified_as_site_build_error(repo: Path) -> None:
+    """Malformed bracketed URL must not leak urllib ValueError through API or CLI."""
+
+    with pytest.raises(SiteBuildError):
+        build_site(
+            repo,
+            check=True,
+            dry_run=True,
+            strict=True,
+            force=False,
+            site_url="https://[invalid",
+        )
+    assert (
+        main(
+            [
+                "--repo-root",
+                str(repo),
+                "--check",
+                "--dry-run",
+                "--strict",
+                "--site-url",
+                "https://[invalid",
+            ]
+        )
+        == 2
+    )

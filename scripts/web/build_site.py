@@ -65,10 +65,15 @@ def _repo_root(repo_root: Path) -> Path:
 def _validated_site_url(site_url: str | None) -> str | None:
     if site_url is None:
         return None
-    parsed = urlsplit(site_url)
+    try:
+        parsed = urlsplit(site_url)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError as exc:
+        raise SiteBuildError("site_url is not a valid HTTPS URL") from exc
     if (
         parsed.scheme.lower() != "https"
-        or not parsed.netloc
+        or not hostname
         or parsed.username is not None
         or parsed.password is not None
         or parsed.query
@@ -182,7 +187,24 @@ def write_temp_mkdocs_config(
         raise SiteBuildError(f"cannot create temporary MkDocs config: {source}") from exc
 
 
-def run_mkdocs_build(repo_root: Path, config_path: Path, *, strict: bool, epoch: int) -> int:
+def _fd_descriptor(path: Path) -> int | None:
+    match = _FD_DIRECTORY_PATH.fullmatch(path.as_posix())
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError as exc:
+        raise SiteBuildError(f"invalid FD-backed stage path: {path}") from exc
+
+
+def run_mkdocs_build(
+    repo_root: Path,
+    config_path: Path,
+    *,
+    strict: bool,
+    epoch: int,
+    pass_fds: tuple[int, ...] = (),
+) -> int:
     """Run MkDocs through the current interpreter without shell parsing."""
 
     command = [
@@ -197,14 +219,16 @@ def run_mkdocs_build(repo_root: Path, config_path: Path, *, strict: bool, epoch:
         command.append("--strict")
     environment = os.environ.copy()
     environment["SOURCE_DATE_EPOCH"] = str(epoch)
-    completed = subprocess.run(
-        command,
-        cwd=repo_root,
-        check=False,
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
+    options: dict[str, object] = {
+        "cwd": repo_root,
+        "check": False,
+        "capture_output": True,
+        "text": True,
+        "env": environment,
+    }
+    if pass_fds:
+        options["pass_fds"] = pass_fds
+    completed = subprocess.run(command, **options)
     return completed.returncode
 
 
@@ -225,7 +249,25 @@ def _run_site_build(
             site_url=site_url,
             source_date_epoch=epoch,
         )
-        if run_mkdocs_build(repo_root, config_path, strict=True, epoch=epoch) != 0:
+        descriptors = tuple(
+            sorted(
+                {
+                    descriptor
+                    for descriptor in (_fd_descriptor(docs_dir), _fd_descriptor(site_dir))
+                    if descriptor is not None
+                }
+            )
+        )
+        if (
+            run_mkdocs_build(
+                repo_root,
+                config_path,
+                strict=True,
+                epoch=epoch,
+                pass_fds=descriptors,
+            )
+            != 0
+        ):
             raise SiteBuildError("MkDocs strict build failed")
         result = _validate_site_tree(site_dir)
     except BaseException as primary:
