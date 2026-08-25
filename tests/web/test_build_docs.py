@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from pathlib import Path
+import os
 import shutil
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -629,8 +631,8 @@ def test_dry_run_never_publishes_docs_or_site(repo: Path, monkeypatch: pytest.Mo
     _mkdocs_source(repo)
     seen: dict[str, Path] = {}
 
-    def fake_runner(repo_root: Path, config_path: Path, *, strict: bool) -> int:
-        del repo_root
+    def fake_runner(repo_root: Path, config_path: Path, *, strict: bool, epoch: int) -> int:
+        del repo_root, epoch
         assert strict is True
         parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         docs_dir = Path(parsed["docs_dir"])
@@ -670,8 +672,8 @@ def test_site_build_uses_live_docs_and_staged_site_config(
     _mkdocs_source(repo)
     captured: dict[str, object] = {}
 
-    def fake_runner(repo_root: Path, config_path: Path, *, strict: bool) -> int:
-        del repo_root
+    def fake_runner(repo_root: Path, config_path: Path, *, strict: bool, epoch: int) -> int:
+        del repo_root, epoch
         assert strict is True
         parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         captured["config_path"] = config_path
@@ -695,8 +697,7 @@ def test_site_build_uses_live_docs_and_staged_site_config(
     assert isinstance(parsed, dict)
     assert parsed["docs_dir"] == str((repo / "build/docs").resolve())
     site_dir = Path(parsed["site_dir"])
-    assert site_dir.parent == (repo / "site").parent
-    assert site_dir.name.startswith(".site.staging-")
+    assert site_dir.as_posix().startswith(("/proc/self/fd/", "/dev/fd/"))
     assert not Path(captured["config_path"]).exists()
     assert result.published is True
     assert (repo / "site/index.html").is_file()
@@ -713,8 +714,8 @@ def test_strict_site_failure_preserves_old_complete_site(
     mark_generated_root(old, allowed_root=repo)
     (old / "keep.txt").write_text("old complete tree", encoding="utf-8")
 
-    def failing_runner(repo_root: Path, config_path: Path, *, strict: bool) -> int:
-        del repo_root
+    def failing_runner(repo_root: Path, config_path: Path, *, strict: bool, epoch: int) -> int:
+        del repo_root, epoch
         assert strict is True
         parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         (Path(parsed["site_dir"]) / "incomplete.txt").write_text("incomplete", encoding="utf-8")
@@ -744,7 +745,16 @@ def test_site_build_rejects_unmarked_existing_site(
     site = repo / "site"
     site.mkdir()
     (site / "private.txt").write_text("private", encoding="utf-8")
-    monkeypatch.setattr(build_site_module, "run_mkdocs_build", lambda *args, **kwargs: 0)
+
+    def valid_runner(repo_root: Path, config_path: Path, *, strict: bool, epoch: int) -> int:
+        del repo_root, strict, epoch
+        parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        output = Path(parsed["site_dir"])
+        (output / "index.html").write_text("index", encoding="utf-8")
+        (output / "404.html").write_text("404", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(build_site_module, "run_mkdocs_build", valid_runner)
 
     with pytest.raises(SiteBuildError):
         build_site(
@@ -757,3 +767,144 @@ def test_site_build_rejects_unmarked_existing_site(
         )
 
     assert (site / "private.txt").read_text(encoding="utf-8") == "private"
+
+
+def test_fd_site_stage_survives_ancestor_swap(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MkDocs must keep writing through held FD stage after ancestor replacement."""
+
+    _mkdocs_source(repo)
+    parent = tmp_path / "held-parent"
+    parent.mkdir()
+    stage = parent / "stage"
+    stage.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    descriptor = os.open(stage, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        fd_stage = io_utils.fd_directory_path(descriptor)
+        swapped = tmp_path / "held-parent-old"
+
+        def runner(repo_root: Path, config_path: Path, *, strict: bool, epoch: int) -> int:
+            del repo_root, strict, epoch
+            parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            configured_stage = Path(parsed["site_dir"])
+            parent.rename(swapped)
+            parent.symlink_to(outside, target_is_directory=True)
+            (configured_stage / "index.html").write_text("index", encoding="utf-8")
+            (configured_stage / "404.html").write_text("404", encoding="utf-8")
+            return 0
+
+        monkeypatch.setattr(build_site_module, "run_mkdocs_build", runner)
+        hashes = build_site_module._run_site_build(
+            repo_root=repo,
+            docs_dir=repo / "content",
+            site_dir=fd_stage,
+            site_url=None,
+            epoch=0,
+        )
+
+        assert "index.html" in hashes
+        assert (swapped / "stage/index.html").read_text(encoding="utf-8") == "index"
+        assert not (outside / "stage/index.html").exists()
+    finally:
+        os.close(descriptor)
+
+
+def test_site_build_cleanup_error_does_not_replace_runner_error(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Temporary-config cleanup failure is only an annotation on primary failure."""
+
+    _mkdocs_source(repo)
+    config_path = repo / "build/config.yml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("site_name: Test\n", encoding="utf-8")
+    monkeypatch.setattr(
+        build_site_module,
+        "write_temp_mkdocs_config",
+        lambda **kwargs: config_path,
+    )
+
+    def fail_unlink(self: Path, missing_ok: bool = False) -> None:
+        del self, missing_ok
+        raise OSError("unlink boom")
+
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+
+    def fail_runner(*args: object, **kwargs: object) -> int:
+        del args, kwargs
+        raise SiteBuildError("runner boom")
+
+    monkeypatch.setattr(build_site_module, "run_mkdocs_build", fail_runner)
+    with pytest.raises(SiteBuildError, match="runner boom") as raised:
+        build_site_module._run_site_build(
+            repo_root=repo,
+            docs_dir=repo / "content",
+            site_dir=repo / "site-stage",
+            site_url=None,
+            epoch=0,
+        )
+
+    assert any("unlink boom" in note for note in raised.value.__notes__)
+
+
+@pytest.mark.parametrize("raw", ("./index.md", "a//b.md", "index.md/"))
+def test_cli_rejects_noncanonical_only_syntax(repo: Path, raw: str) -> None:
+    """CLI validates raw --only spelling before PurePosixPath normalization."""
+
+    assert main(["--repo-root", str(repo), "--dry-run", "--strict", "--only", raw]) == 2
+    assert not (repo / "site").exists()
+    assert not (repo / "build/docs").exists()
+
+
+def test_mkdocs_runner_receives_default_source_date_epoch(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Subprocess receives copied environment with deterministic default epoch."""
+
+    _mkdocs_source(repo)
+    monkeypatch.delenv("SOURCE_DATE_EPOCH", raising=False)
+    captured: dict[str, str] = {}
+
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path,
+        check: bool,
+        capture_output: bool,
+        text: bool,
+        env: dict[str, str],
+    ) -> SimpleNamespace:
+        del cwd, check, capture_output, text
+        captured.update(env)
+        config_path = Path(command[command.index("--config-file") + 1])
+        parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        output = Path(parsed["site_dir"])
+        (output / "index.html").write_text("index", encoding="utf-8")
+        (output / "404.html").write_text("404", encoding="utf-8")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setenv("KEEP_ENV", "yes")
+    monkeypatch.setattr(build_site_module.subprocess, "run", fake_run)
+    build_site(
+        repo,
+        check=True,
+        dry_run=True,
+        strict=True,
+        force=False,
+        site_url=None,
+    )
+
+    assert captured["SOURCE_DATE_EPOCH"] == "0"
+    assert captured["KEEP_ENV"] == "yes"
+
+
+def test_cli_catches_invalid_source_date_epoch(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Invalid reproducibility input returns CLI failure before publication."""
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "not-an-integer")
+    assert main(["--repo-root", str(repo), "--check", "--strict"]) == 2
+    assert not (repo / "site").exists()
+    assert not (repo / "build/docs").exists()

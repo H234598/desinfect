@@ -9,6 +9,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 import os
 from pathlib import Path, PurePosixPath
+import re
 import stat
 import subprocess
 import sys
@@ -49,6 +50,9 @@ class SiteBuildResult:
     docs: DocsBuildResult
     site_hashes: Mapping[str, str]
     published: bool
+
+
+_FD_DIRECTORY_PATH = re.compile(r"^(?:/proc/self/fd|/dev/fd)/(0|[1-9][0-9]*)$")
 
 
 def _repo_root(repo_root: Path) -> Path:
@@ -138,8 +142,18 @@ def write_temp_mkdocs_config(
         parsed = yaml.safe_load(source.read_text(encoding="utf-8"))
         if not isinstance(parsed, dict):
             raise SiteBuildError("mkdocs configuration must be a mapping")
-        absolute_docs = docs_dir.resolve(strict=True)
-        absolute_site = site_dir.resolve(strict=True)
+        if not docs_dir.is_absolute() or not site_dir.is_absolute():
+            raise SiteBuildError("mkdocs docs_dir and site_dir must be absolute directories")
+        absolute_docs = (
+            docs_dir
+            if _FD_DIRECTORY_PATH.fullmatch(docs_dir.as_posix())
+            else docs_dir.resolve(strict=True)
+        )
+        absolute_site = (
+            site_dir
+            if _FD_DIRECTORY_PATH.fullmatch(site_dir.as_posix())
+            else site_dir.resolve(strict=True)
+        )
         if not absolute_docs.is_dir() or not absolute_site.is_dir():
             raise SiteBuildError("mkdocs docs_dir and site_dir must be existing directories")
         parsed["docs_dir"] = str(absolute_docs)
@@ -168,7 +182,7 @@ def write_temp_mkdocs_config(
         raise SiteBuildError(f"cannot create temporary MkDocs config: {source}") from exc
 
 
-def run_mkdocs_build(repo_root: Path, config_path: Path, *, strict: bool) -> int:
+def run_mkdocs_build(repo_root: Path, config_path: Path, *, strict: bool, epoch: int) -> int:
     """Run MkDocs through the current interpreter without shell parsing."""
 
     command = [
@@ -181,12 +195,15 @@ def run_mkdocs_build(repo_root: Path, config_path: Path, *, strict: bool) -> int
     ]
     if strict:
         command.append("--strict")
+    environment = os.environ.copy()
+    environment["SOURCE_DATE_EPOCH"] = str(epoch)
     completed = subprocess.run(
         command,
         cwd=repo_root,
         check=False,
         capture_output=True,
         text=True,
+        env=environment,
     )
     return completed.returncode
 
@@ -208,12 +225,22 @@ def _run_site_build(
             site_url=site_url,
             source_date_epoch=epoch,
         )
-        if run_mkdocs_build(repo_root, config_path, strict=True) != 0:
+        if run_mkdocs_build(repo_root, config_path, strict=True, epoch=epoch) != 0:
             raise SiteBuildError("MkDocs strict build failed")
-        return _validate_site_tree(site_dir)
-    finally:
+        result = _validate_site_tree(site_dir)
+    except BaseException as primary:
         if config_path is not None:
+            try:
+                config_path.unlink(missing_ok=True)
+            except BaseException as cleanup_error:
+                primary.add_note(f"Temporary MkDocs config cleanup failed: {cleanup_error}")
+        raise
+    if config_path is not None:
+        try:
             config_path.unlink(missing_ok=True)
+        except BaseException as cleanup_error:
+            raise SiteBuildError("Temporary MkDocs config cleanup failed") from cleanup_error
+    return result
 
 
 @contextmanager
@@ -321,7 +348,16 @@ def build_site(
 
 
 def _parse_only(values: Sequence[str]) -> tuple[PurePosixPath, ...]:
-    return tuple(PurePosixPath(value) for value in values)
+    parsed: list[PurePosixPath] = []
+    for value in values:
+        try:
+            normalized = normalize_posix_path(value)
+        except UnsafePathError as exc:
+            raise SiteBuildError(f"unsafe --only path: {value!r}") from exc
+        if normalized != value:
+            raise SiteBuildError(f"--only must use canonical Markdown syntax: {value!r}")
+        parsed.append(PurePosixPath(value))
+    return tuple(parsed)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -344,7 +380,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             site_url=args.site_url,
             only=_parse_only(args.only),
         )
-    except SiteBuildError as exc:
+    except (SiteBuildError, ValueError) as exc:
         print(f"site build failed: {exc}", file=sys.stderr)
         return 2
     return 0
