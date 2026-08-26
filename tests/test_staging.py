@@ -213,6 +213,177 @@ def test_single_rollback_preserves_primary_and_exact_quarantine_diagnostics(
     assert quarantines[0].is_dir()
 
 
+def test_claim_fsync_failure_verifies_exact_safe_quarantine_rest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Failure after claim rename rebinds exact owned rest before reporting it."""
+
+    site = tmp_path / "site"
+    docs = tmp_path / "build/docs"
+    _generated(site, "old site")
+    _generated(docs, "old docs")
+    real_rename = staging_module._rename_noreplace
+    real_fsync = staging_module.fsync_directory_fd
+    claim_renamed = False
+
+    def fail_after_site(relative: object) -> None:
+        if str(relative) == "site":
+            raise RuntimeError("PRIMARY after site")
+
+    def track_claim(parent_fd: int, source: str, target: str) -> None:
+        nonlocal claim_renamed
+        real_rename(parent_fd, source, target)
+        if target.startswith(".site.quarantine-"):
+            claim_renamed = True
+
+    def fail_claim_fsync(parent_fd: int) -> None:
+        nonlocal claim_renamed
+        if claim_renamed:
+            claim_renamed = False
+            raise OSError("SECONDARY claim fsync")
+        real_fsync(parent_fd)
+
+    monkeypatch.setattr(staging_module, "_coordinated_publication_checkpoint", fail_after_site)
+    monkeypatch.setattr(staging_module, "_rename_noreplace", track_claim)
+    monkeypatch.setattr(staging_module, "fsync_directory_fd", fail_claim_fsync)
+
+    with pytest.raises(StagingError) as raised:
+        with coordinated_staged_directories(
+            (site, docs), allowed_root=tmp_path, force=True
+        ) as stages:
+            for stage in stages:
+                (stage / "value.txt").write_text("new", encoding="utf-8")
+
+    quarantines = list(tmp_path.glob(".site.quarantine-*"))
+    assert len(quarantines) == 1
+    evidence = _exception_evidence(raised.value)
+    assert "PRIMARY after site" in evidence
+    assert "SECONDARY claim fsync" in evidence
+    assert f"sicherer Quarantänerest={quarantines[0].name}" in evidence
+    assert (site / "value.txt").read_text(encoding="utf-8") == "old site"
+    assert (docs / "value.txt").read_text(encoding="utf-8") == "old docs"
+
+
+def test_cleanup_identity_replacement_never_claims_foreign_name_as_safe_rest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Replaced quarantine name is unknown, never reported as exact owned remnant."""
+
+    site = tmp_path / "site"
+    ours_away = tmp_path / "ours-away"
+    _generated(site, "old site")
+
+    def reject(_descriptor: int) -> None:
+        raise RuntimeError("PRIMARY single")
+
+    def replace_then_fail(_descriptor: int) -> None:
+        quarantine = next(tmp_path.glob(".site.quarantine-*"))
+        quarantine.rename(ours_away)
+        _generated(quarantine, "foreign")
+        raise OSError("SECONDARY cleanup after replacement")
+
+    monkeypatch.setattr(staging_module, "clear_generated_tree_fd", replace_then_fail)
+
+    with pytest.raises(StagingError) as raised:
+        with staged_directory(
+            site,
+            allowed_root=tmp_path,
+            publication_validator=reject,
+        ) as stage:
+            (stage / "value.txt").write_text("new", encoding="utf-8")
+
+    evidence = _exception_evidence(raised.value)
+    assert "SECONDARY cleanup after replacement" in evidence
+    assert "sicherer Quarantänerest=" not in evidence
+    assert (site / "value.txt").read_text(encoding="utf-8") == "old site"
+    assert (next(tmp_path.glob(".site.quarantine-*")) / "value.txt").read_text(
+        encoding="utf-8"
+    ) == "foreign"
+    assert ours_away.is_dir()
+
+
+@pytest.mark.parametrize("primary_type", (KeyboardInterrupt, SystemExit))
+def test_single_rollback_keeps_control_flow_type_with_secondary_note(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    primary_type: type[BaseException],
+) -> None:
+    """Single-target rollback annotates control-flow BaseException without wrapping it."""
+
+    site = tmp_path / "site"
+    _generated(site, "old site")
+
+    def reject(_descriptor: int) -> None:
+        raise primary_type("PRIMARY control single")
+
+    def fail_clear(_descriptor: int) -> None:
+        raise OSError("SECONDARY control clear")
+
+    monkeypatch.setattr(staging_module, "clear_generated_tree_fd", fail_clear)
+
+    with pytest.raises(primary_type) as raised:
+        with staged_directory(
+            site,
+            allowed_root=tmp_path,
+            publication_validator=reject,
+        ) as stage:
+            (stage / "value.txt").write_text("new", encoding="utf-8")
+
+    quarantine = next(tmp_path.glob(".site.quarantine-*"))
+    evidence = _exception_evidence(raised.value)
+    assert type(raised.value) is primary_type
+    assert "PRIMARY control single" in evidence
+    assert "SECONDARY control clear" in evidence
+    assert "target=site" in evidence
+    assert "phase=quarantine_cleanup" in evidence
+    assert f"sicherer Quarantänerest={quarantine.name}" in evidence
+    assert (site / "value.txt").read_text(encoding="utf-8") == "old site"
+
+
+@pytest.mark.parametrize("primary_type", (KeyboardInterrupt, SystemExit))
+def test_coordinated_rollback_keeps_control_flow_type_with_secondary_note(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    primary_type: type[BaseException],
+) -> None:
+    """Multi-target rollback annotates control-flow BaseException without wrapping it."""
+
+    site = tmp_path / "site"
+    docs = tmp_path / "build/docs"
+    _generated(site, "old site")
+    _generated(docs, "old docs")
+
+    def fail_after_site(relative: object) -> None:
+        if str(relative) == "site":
+            raise primary_type("PRIMARY control multi")
+
+    def fail_clear(_descriptor: int) -> None:
+        raise OSError("SECONDARY control clear")
+
+    monkeypatch.setattr(staging_module, "_coordinated_publication_checkpoint", fail_after_site)
+    monkeypatch.setattr(staging_module, "clear_generated_tree_fd", fail_clear)
+
+    with pytest.raises(primary_type) as raised:
+        with coordinated_staged_directories(
+            (site, docs), allowed_root=tmp_path, force=True
+        ) as stages:
+            for stage in stages:
+                (stage / "value.txt").write_text("new", encoding="utf-8")
+
+    quarantine = next(tmp_path.glob(".site.quarantine-*"))
+    evidence = _exception_evidence(raised.value)
+    assert type(raised.value) is primary_type
+    assert "PRIMARY control multi" in evidence
+    assert "SECONDARY control clear" in evidence
+    assert "target=site" in evidence
+    assert "phase=quarantine_cleanup" in evidence
+    assert f"sicherer Quarantänerest={quarantine.name}" in evidence
+    assert (site / "value.txt").read_text(encoding="utf-8") == "old site"
+    assert (docs / "value.txt").read_text(encoding="utf-8") == "old docs"
+
+
 def test_coordinated_rollback_reports_missing_backup_without_losing_other_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
