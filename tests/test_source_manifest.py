@@ -21,7 +21,9 @@ from scripts.rki_pipeline.source_manifest import (
     write_manifest,
 )
 from scripts.rki_pipeline.io_utils import UnsafePathError, stable_json_dumps
+from scripts.rki_pipeline.documents import bitstream_identity
 from scripts.rki_pipeline.rights import RightsDecision, RightsState
+from scripts.rki_pipeline import rights
 
 
 def _record(
@@ -68,21 +70,42 @@ def _record(
 def _decision(
     record: ArtifactRecord,
     *,
-    state: RightsState = RightsState.METADATA_ONLY,
+    state: RightsState = RightsState.UNKNOWN,
     basis: str = "rights_register_no_match",
     reviewed_by: str | None = None,
     reviewed_at: str | None = None,
     decision_sha256: str | None = None,
 ) -> RightsDecision:
-    return RightsDecision(
-        source_id=record.source_id,
-        source_sha256=record.sha256 or "0" * 64,
+    identity = bitstream_identity(record.pdf_url or (
+        "https://edoc.rki.de/bitstream/handle/176904/12345.2/missing.pdf"
+    ))
+    mode = (
+        rights.PublicationMode.MATERIALIZED
+        if state is RightsState.APPROVED
+        else rights.PublicationMode.ORIGIN_LINK
+    )
+    draft = RightsDecision(
+        approval_key=rights.ApprovalKey(
+            source_id=record.source_id,
+            canonical_url=identity.canonical_url,
+            version_or_bitstream=identity.bitstream_id,
+            source_sha256=record.sha256 or "0" * 64,
+        ),
         state=state,
+        mode=mode,
+        allowed_actions=(rights.RightsAction.CACHE,) if state is RightsState.APPROVED else (),
+        components_state=rights.ComponentsState.UNKNOWN,
+        attribution=None,
         basis=basis,
         reviewed_by=reviewed_by,
         reviewed_at=reviewed_at,
-        decision_sha256=decision_sha256,
+        decision_sha256=None,
     )
+    if decision_sha256 == "auto":
+        return replace(draft, decision_sha256=rights.decision_sha256(draft))
+    if decision_sha256 is not None:
+        return _unchecked_decision(draft, decision_sha256=decision_sha256)
+    return draft
 
 
 def _unchecked_decision(
@@ -92,14 +115,38 @@ def _unchecked_decision(
     """Forge an invalid instance only to pressure-test downstream guards."""
 
     values: dict[str, object] = {
-        "source_id": decision.source_id,
-        "source_sha256": decision.source_sha256,
+        "approval_key": decision.approval_key,
         "state": decision.state,
+        "mode": decision.mode,
+        "allowed_actions": decision.allowed_actions,
+        "components_state": decision.components_state,
+        "attribution": decision.attribution,
         "basis": decision.basis,
         "reviewed_by": decision.reviewed_by,
         "reviewed_at": decision.reviewed_at,
         "decision_sha256": decision.decision_sha256,
     }
+    source_id = overrides.pop("source_id", None)
+    source_sha256 = overrides.pop("source_sha256", None)
+    if source_id is not None or source_sha256 is not None:
+        key = object.__new__(rights.ApprovalKey)
+        object.__setattr__(
+            key,
+            "source_id",
+            decision.source_id if source_id is None else source_id,
+        )
+        object.__setattr__(key, "canonical_url", decision.approval_key.canonical_url)
+        object.__setattr__(
+            key,
+            "version_or_bitstream",
+            decision.approval_key.version_or_bitstream,
+        )
+        object.__setattr__(
+            key,
+            "source_sha256",
+            decision.source_sha256 if source_sha256 is None else source_sha256,
+        )
+        values["approval_key"] = key
     values.update(overrides)
     forged = object.__new__(RightsDecision)
     for name, value in values.items():
@@ -111,12 +158,9 @@ def _source_manifest(record: ArtifactRecord, **kwargs: object) -> dict[str, obje
     return build_source_manifest(record, rights_decision=_decision(record), **kwargs)
 
 
-def _decision_map(*records: ArtifactRecord) -> dict[tuple[str, str], RightsDecision]:
-    return {
-        (record.source_id, record.sha256): _decision(record)
-        for record in records
-        if record.sha256 is not None
-    }
+def _decision_map(*records: ArtifactRecord) -> dict[rights.ApprovalKey, RightsDecision]:
+    decisions = (_decision(record) for record in records if record.sha256 is not None)
+    return {decision.approval_key: decision for decision in decisions}
 
 
 def test_builders_produce_fail_closed_valid_manifests() -> None:
@@ -131,10 +175,25 @@ def test_builders_produce_fail_closed_valid_manifests() -> None:
         superseded_by="rki-176904-12345-v3",
     )
 
-    assert source["schema_version"] == "1.2.0"
+    assert source["schema_version"] == "1.3.0"
     assert source["bitstream_version"] == 2
     assert source["rights"] == {
-        "state": "metadata_only",
+        "state": "unknown",
+        "mode": "origin_link",
+        "allowed_actions": [],
+        "components_state": "unknown",
+        "attribution": None,
+        "approval_key": {
+            "source_id": "rki:176904/12345.2",
+            "canonical_url": (
+                "https://edoc.rki.de/bitstream/handle/176904/12345.2/"
+                "issue.pdf?sequence=2"
+            ),
+            "version_or_bitstream": (
+                "rki-bitstream-ca16f3bf368deddef0cc580b31c0105db58edcfd486fa689a8860cb8aea67176"
+            ),
+            "source_sha256": "a" * 64,
+        },
         "basis": "rights_register_no_match",
         "reviewed_at": None,
         "reviewed_by": None,
@@ -166,11 +225,31 @@ def test_builders_produce_fail_closed_valid_manifests() -> None:
     }
 
 
+def test_source_manifest_v1_3_binds_exact_rights_contract() -> None:
+    """Current manifests must embed exact revision, mode, actions, and components."""
+
+    record = _record()
+    source = _source_manifest(record)
+    bitstream = bitstream_identity(record.pdf_url or "")
+
+    assert source["schema_version"] == "1.3.0"
+    assert source["rights"]["approval_key"] == {
+        "source_id": record.source_id,
+        "canonical_url": bitstream.canonical_url,
+        "version_or_bitstream": bitstream.bitstream_id,
+        "source_sha256": record.sha256,
+    }
+    assert source["rights"]["mode"] == "origin_link"
+    assert source["rights"]["allowed_actions"] == []
+    assert source["rights"]["components_state"] == "unknown"
+    assert source["rights"]["attribution"] is None
+
+
 def test_source_manifest_carries_nullable_artifact_record_doi() -> None:
     with_doi = _source_manifest(_record(doi="10.25646/12345.2"))
     without_doi = _source_manifest(_record())
 
-    assert with_doi["schema_version"] == "1.2.0"
+    assert with_doi["schema_version"] == "1.3.0"
     assert with_doi["doi"] == "10.25646/12345.2"
     assert without_doi["doi"] is None
 
@@ -191,22 +270,16 @@ def test_source_manifest_maps_exact_reviewed_rights_decision() -> None:
         basis="Reviewed RKI reuse terms",
         reviewed_by="Legal Reviewer",
         reviewed_at="2026-08-03T08:00:00Z",
-        decision_sha256=(
-            "fb219e48920e18781b8a7f8735fb8fb06bf915d4c1b276c2ea8f5e201c02d982"
-        ),
+        decision_sha256="auto",
     )
 
     source = build_source_manifest(record, rights_decision=decision)
 
-    assert source["rights"] == {
-        "state": "approved",
-        "basis": "Reviewed RKI reuse terms",
-        "reviewed_at": "2026-08-03T08:00:00Z",
-        "reviewed_by": "Legal Reviewer",
-    }
-    assert source["decision_sha256"] == (
-        "fb219e48920e18781b8a7f8735fb8fb06bf915d4c1b276c2ea8f5e201c02d982"
-    )
+    assert source["rights"]["state"] == "approved"
+    assert source["rights"]["mode"] == "materialized"
+    assert source["rights"]["allowed_actions"] == ["cache"]
+    assert source["rights"]["basis"] == "Reviewed RKI reuse terms"
+    assert source["decision_sha256"] == decision.decision_sha256
 
 
 @pytest.mark.parametrize(
@@ -245,7 +318,7 @@ def test_source_manifest_rejects_authorization_without_review_hash() -> None:
 @pytest.mark.parametrize(
     "decision",
     (
-        _unchecked_decision(_decision(_record()), state=RightsState.UNKNOWN),
+        _unchecked_decision(_decision(_record()), mode="invalid"),
         _unchecked_decision(_decision(_record()), basis=""),
         _unchecked_decision(
             _decision(_record()), decision_sha256="not-a-sha256"
@@ -259,6 +332,16 @@ def test_source_manifest_rejects_noncanonical_decision_fields(
 
     with pytest.raises(ManifestBuildError, match="Rechteentscheidung"):
         build_source_manifest(_record(), rights_decision=decision)
+
+
+def test_source_manifest_rejects_foreign_attribution_with_domain_error() -> None:
+    """A forged attribution object must fail before field serialization."""
+
+    record = _record()
+    decision = _unchecked_decision(_decision(record), attribution=object())
+
+    with pytest.raises(ManifestBuildError, match="Rechteentscheidung"):
+        build_source_manifest(record, rights_decision=decision)
 
 
 @pytest.mark.parametrize(
@@ -309,7 +392,7 @@ def test_builders_reject_incomplete_or_unmaterialized_records(record: ArtifactRe
     """Removing required downloaded-record evidence must fail before manifest creation."""
 
     with pytest.raises(ManifestBuildError):
-        build_source_manifest(record, rights_decision=_decision(record))
+        build_source_manifest(record, rights_decision=_decision(_record()))
     with pytest.raises(ManifestBuildError):
         build_document_manifest(record)
 
@@ -412,7 +495,7 @@ def test_builders_reject_urls_for_different_handle(record: ArtifactRecord) -> No
     """URL handle mismatch could attach evidence from a different RKI document."""
 
     with pytest.raises(ManifestBuildError):
-        build_source_manifest(record, rights_decision=_decision(record))
+        build_source_manifest(record, rights_decision=_decision(_record()))
     with pytest.raises(ManifestBuildError):
         build_document_manifest(record)
 

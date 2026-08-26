@@ -610,7 +610,6 @@ def _materialize_conversion(
             limits.generated_file_bytes,
             max(1, limits.total_output_bytes - len(output)),
         )
-        _authorize(authorizer, intent, operation="convert_existing_read")
         existing = _existing_result(
             root,
             expected_conversion_id=identity,
@@ -624,7 +623,6 @@ def _materialize_conversion(
             maximum_total=limits.total_output_bytes,
         )
         if existing is not None:
-            _authorize(authorizer, intent, operation="convert_skip")
             return existing
 
         manifest = _manifest(
@@ -679,7 +677,6 @@ def _materialize_conversion(
                 _authorize(authorizer, intent, operation="convert_publish")
         except StagingConflictError as exc:
             del ledger.events[event_count:]
-            _authorize(authorizer, intent, operation="convert_peer_skip")
             peer = _existing_result(
                 root,
                 expected_conversion_id=identity,

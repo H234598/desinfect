@@ -17,21 +17,54 @@ def _write_rights_register(
     path: Path,
     *decisions: tuple[str, str, str],
 ) -> None:
+    entries: list[dict[str, object]] = []
+    for source_id, source_sha256, state in decisions:
+        handle = source_id.removeprefix("rki:")
+        canonical_url = f"https://edoc.rki.de/bitstream/handle/{handle}/source.pdf?sequence=1"
+        approved = state == "approved"
+        entries.append(
+            {
+                "source_id": source_id,
+                "canonical_url": canonical_url,
+                "version_or_bitstream": rights.bitstream_identity(canonical_url).bitstream_id,
+                "source_sha256": source_sha256,
+                "state": state,
+                "mode": (
+                    "materialized"
+                    if approved
+                    else "remove_all"
+                    if state == "takedown"
+                    else "origin_link"
+                ),
+                "allowed_actions": (
+                    sorted(action.value for action in rights.RightsAction) if approved else []
+                ),
+                "components_state": (
+                    "cleared" if approved else "blocked" if state == "takedown" else "unknown"
+                ),
+                "attribution": {
+                    "creators": ["Synthetic Creator"],
+                    "attribution_parties": ["Synthetic Rights Holder"],
+                    "copyright_notice": "Synthetic copyright notice",
+                    "license_notice": "CC BY 4.0",
+                    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+                    "disclaimer_notice": "Synthetic fixture only",
+                    "origin_url": f"https://edoc.rki.de/handle/{handle}",
+                    "prior_change_history": [],
+                    "current_change_notice": "Unchanged synthetic fixture",
+                }
+                if approved
+                else None,
+                "basis": "Synthetic fixture; no external publication rights claim",
+                "reviewed_by": "Test Fixture",
+                "reviewed_at": "2026-08-03T08:00:00Z",
+            }
+        )
     path.write_text(
         yaml.safe_dump(
             {
-                "schema_version": 1,
-                "decisions": [
-                    {
-                        "source_id": source_id,
-                        "source_sha256": source_sha256,
-                        "state": state,
-                        "basis": "Reviewed RKI reuse terms",
-                        "reviewed_by": "Legal Reviewer",
-                        "reviewed_at": "2026-08-03T08:00:00Z",
-                    }
-                    for source_id, source_sha256, state in decisions
-                ],
+                "schema_version": 2,
+                "decisions": entries,
             },
             sort_keys=False,
         ),

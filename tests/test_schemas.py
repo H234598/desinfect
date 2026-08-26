@@ -350,6 +350,7 @@ def test_schema_validator_checks_every_p06_predecessor(
             "status-v2.json",
             "source-manifest-v1.0.json",
             "source-manifest-v1.1.json",
+            "source-manifest-v1.2.json",
             "document-manifest-v1.0.json",
         "storage-reference-v1.0.json",
         "conversion-manifest-v1.0.json",

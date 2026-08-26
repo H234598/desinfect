@@ -12,11 +12,12 @@ from typing import Protocol, runtime_checkable
 
 from scripts.rki_pipeline.io_utils import normalize_posix_path
 from scripts.rki_pipeline.rights import (
+    RightsAction,
     RightsAuthority,
     RightsPolicy,
     RightsPolicyError,
-    RightsState,
-    resolve_rights,
+    load_authority_register,
+    resolve_action,
 )
 from scripts.rki_pipeline.run_modes import EffectLedger
 
@@ -51,6 +52,43 @@ class StorageBackend(StrEnum):
     LFS = "lfs"
     RELEASE = "release"
     OBJECT = "object"
+
+
+def rights_actions_for_storage_operation(
+    operation: str,
+    *,
+    backend: StorageBackend | None,
+    visibility: str,
+) -> tuple[RightsAction, ...]:
+    """Map every real effect literal to a closed nonempty action tuple."""
+
+    if visibility not in _VISIBILITY:
+        raise StorageAuthorizationError("Unbekannte Sichtbarkeit für Storageoperation")
+    fixed = {
+        "materialize": (RightsAction.CACHE,),
+        "export": (RightsAction.FETCH,),
+        "verify": (RightsAction.HASH,),
+        "convert": (RightsAction.EXTRACT_TEXT,),
+        "convert_ocr": (RightsAction.OCR,),
+        "convert_output": (RightsAction.CACHE,),
+        "convert_manifest": (RightsAction.CACHE,),
+        "convert_publish": (RightsAction.CACHE,),
+        "archive": (RightsAction.CACHE,),
+    }
+    if operation == "apply":
+        if type(backend) is not StorageBackend:
+            raise StorageAuthorizationError(
+                "Storage-apply benötigt ein exaktes Backend"
+            )
+        if backend is StorageBackend.LFS or visibility != "public":
+            return (RightsAction.CACHE,)
+        return (RightsAction.CACHE, RightsAction.PUBLISH)
+    actions = fixed.get(operation)
+    if actions is None:
+        raise StorageAuthorizationError(
+            f"Unbekannte oder wirkungslose Storageoperation: {operation!r}"
+        )
+    return actions
 
 
 def _valid_sha256(value: str) -> bool:
@@ -362,39 +400,51 @@ class RightsStorageAuthorizer:
         subject: StorageIntent | PreparedObject | StorageReference,
         *,
         operation: str,
+        backend: StorageBackend | None = None,
     ) -> None:
         if getattr(subject, "provenance_state", "current") != "current":
             raise StorageAuthorizationError(
                 f"Legacy-Provenienz blockiert Storage-{operation}"
             )
         try:
-            decision = resolve_rights(
-                subject.source_id,
-                subject.source_sha256,
-                authority=self.authority,
-                policy=self.policy,
+            register = load_authority_register(self.authority)
+            matches = tuple(
+                entry
+                for entry in register.entries
+                if entry.source_id == subject.source_id
+                and entry.source_sha256 == subject.source_sha256
+                and entry.decision_sha256 == subject.decision_sha256
+            )
+            if len(matches) != 1:
+                raise RightsPolicyError(
+                    "Storageprovenienz besitzt keine eindeutige exakte Rechteentscheidung"
+                )
+            expected = matches[0]
+            actions = rights_actions_for_storage_operation(
+                operation,
+                backend=backend,
+                visibility=subject.visibility,
+            )
+            decisions = tuple(
+                resolve_action(
+                    expected.approval_key,
+                    action=action,
+                    register=register,
+                    policy=self.policy,
+                )
+                for action in actions
             )
         except (AttributeError, RightsPolicyError) as exc:
             raise StorageAuthorizationError(
                 f"Rechteentscheidung für Storage-{operation} ist ungültig"
             ) from exc
-        if (
+        if any(
             decision.decision_sha256 != subject.decision_sha256
             or decision.state.value != subject.rights_state
+            for decision in decisions
         ):
             raise StorageAuthorizationError(
                 f"Rechteentscheidung für Storage-{operation} ist veraltet oder falsch"
-            )
-        allowed = (
-            decision.state is RightsState.APPROVED
-            and subject.visibility in self.policy.approved_visibilities
-        ) or (
-            decision.state is RightsState.INTERNAL_ONLY
-            and subject.visibility in self.policy.internal_only_visibilities
-        )
-        if not allowed:
-            raise StorageAuthorizationError(
-                f"Rechteentscheidung autorisiert Storage-{operation} nicht"
             )
 
 
@@ -403,6 +453,7 @@ def authorize_storage_operation(
     subject: StorageIntent | PreparedObject | StorageReference,
     *,
     operation: str,
+    backend: StorageBackend | None = None,
 ) -> None:
     """Enforce non-bypassable provenance floor before injected policy."""
 
@@ -414,7 +465,7 @@ def authorize_storage_operation(
         raise StorageAuthorizationError(
             f"Legacy-Provenienz blockiert Storage-{operation}"
         )
-    authorizer.authorize(subject, operation=operation)
+    authorizer.authorize(subject, operation=operation, backend=backend)
 
 
 @runtime_checkable

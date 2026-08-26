@@ -5,10 +5,12 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
+from tempfile import TemporaryDirectory
 from typing import NoReturn
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scripts.rki_grabber.download import PdfDownloadError
 from scripts.rki_pipeline.reconciliation import (
@@ -40,9 +42,11 @@ from scripts.rki_pipeline.rights import (
     RightsDecision,
     RightsPolicyError,
     RightsState,
+    load_authority_register,
+    load_fixture_rights_authority,
+    load_rights_register,
     load_rights_authority,
     load_rights_policy,
-    resolve_rights,
 )
 from scripts.rki_pipeline.schema_registry import validate_document
 from scripts.rki_pipeline.source_manifest import build_document_manifest, build_source_manifests
@@ -75,7 +79,12 @@ def finding(code: FindingCode, subject_id: str) -> ReconciliationFinding:
 
 _RECONCILIATION_SOURCE_ID = "rki:176904/900000001"
 _RECONCILIATION_SOURCE_SHA256 = "a" * 64
-_RECONCILIATION_BITSTREAM_ID = "rki-bitstream-" + "b" * 64
+_RECONCILIATION_BITSTREAM_URL = (
+    "https://edoc.rki.de/bitstream/handle/176904/900000001/source.pdf?sequence=1"
+)
+_RECONCILIATION_BITSTREAM_ID = bitstream_identity(
+    _RECONCILIATION_BITSTREAM_URL
+).bitstream_id
 _RECONCILIATION_DOCUMENT_ID = "rki-176904-900000001-v1"
 
 
@@ -164,6 +173,7 @@ def storage_graph(
                 "source_id": _RECONCILIATION_SOURCE_ID,
                 "sha256": _RECONCILIATION_SOURCE_SHA256,
                 "bitstream_id": _RECONCILIATION_BITSTREAM_ID,
+                "bitstream_url": _RECONCILIATION_BITSTREAM_URL,
                 "decision_sha256": decision_sha256,
                 "rights": {"state": rights_state},
             },
@@ -774,14 +784,41 @@ def _rights_authority(
     from scripts.rki_pipeline import rights
 
     register = tmp_path / "rights-register.yml"
+    approved = state is RightsState.APPROVED
+    mode = "materialized" if approved else (
+        "remove_all" if state is RightsState.TAKEDOWN else "origin_link"
+    )
+    actions = (
+        "[cache, extract_text, fetch, hash, index_text, ocr, publish, thumbnail]"
+        if approved else "[]"
+    )
+    attribution = (
+        "    attribution:\n"
+        "      creators: [Synthetic Creator]\n"
+        "      attribution_parties: [Synthetic Rights Holder]\n"
+        "      copyright_notice: Synthetic copyright notice\n"
+        "      license_notice: CC BY 4.0\n"
+        "      license_url: https://creativecommons.org/licenses/by/4.0/\n"
+        "      disclaimer_notice: Synthetic fixture only\n"
+        "      origin_url: https://edoc.rki.de/handle/176904/900000001\n"
+        "      prior_change_history: []\n"
+        "      current_change_notice: Unchanged synthetic fixture\n"
+        if approved else "    attribution: null\n"
+    )
     register.write_text(
-        "schema_version: 1\n"
+        "schema_version: 2\n"
         "decisions:\n"
         f'  - source_id: "{_RECONCILIATION_SOURCE_ID}"\n'
+        f'    canonical_url: "{_RECONCILIATION_BITSTREAM_URL}"\n'
+        f'    version_or_bitstream: "{_RECONCILIATION_BITSTREAM_ID}"\n'
         f'    source_sha256: "{_RECONCILIATION_SOURCE_SHA256}"\n'
         f'    state: "{state.value}"\n'
-        '    basis: "Synthetic reconciliation test"\n'
-        '    reviewed_by: "Test Reviewer"\n'
+        f'    mode: "{mode}"\n'
+        f"    allowed_actions: {actions}\n"
+        f'    components_state: "{"cleared" if approved else "unknown"}"\n'
+        + attribution
+        + '    basis: "Synthetic fixture; no external publication rights claim"\n'
+        '    reviewed_by: "Test Fixture"\n'
         '    reviewed_at: "2026-08-04T04:00:00Z"\n',
         encoding="utf-8",
     )
@@ -791,12 +828,7 @@ def _rights_authority(
     return (
         authority,
         policy,
-        resolve_rights(
-            _RECONCILIATION_SOURCE_ID,
-            _RECONCILIATION_SOURCE_SHA256,
-            authority=authority,
-            policy=policy,
-        ),
+        load_authority_register(authority).entries[0],
     )
 
 
@@ -871,6 +903,53 @@ def test_rights_unchanged_approved_decision_has_no_finding(
     ) == ()
 
 
+def test_rights_removed_current_decision_marks_source_and_storage_changed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Removing exact current authority is a finding, not an integrity crash."""
+
+    authority, policy, decision = _rights_authority(
+        tmp_path, monkeypatch, state=RightsState.APPROVED
+    )
+    assert decision.decision_sha256 is not None
+    graph = storage_graph(
+        storage_reference(decision_sha256=decision.decision_sha256),
+        decision_sha256=decision.decision_sha256,
+    )
+    authority._register_source.write_text(
+        "schema_version: 2\ndecisions: []\n",
+        encoding="utf-8",
+    )
+
+    findings = reconcile_rights(graph, authority=authority, policy=policy)
+
+    assert [(item.code, item.subject_kind) for item in findings] == [
+        (FindingCode.RIGHTS_CHANGED, SubjectKind.SOURCE),
+        (FindingCode.RIGHTS_CHANGED, SubjectKind.STORAGE),
+    ]
+
+
+def test_rights_malformed_current_register_remains_integrity_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a valid empty register is a removal; malformed authority stays fatal."""
+
+    authority, policy, decision = _rights_authority(
+        tmp_path, monkeypatch, state=RightsState.APPROVED
+    )
+    assert decision.decision_sha256 is not None
+    graph = storage_graph(
+        storage_reference(decision_sha256=decision.decision_sha256),
+        decision_sha256=decision.decision_sha256,
+    )
+    authority._register_source.write_text("schema_version: [", encoding="utf-8")
+
+    with pytest.raises(ReconciliationIntegrityError, match="nicht prüfbar"):
+        reconcile_rights(graph, authority=authority, policy=policy)
+
+
 def test_rights_ignores_historical_superseded_sources(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -918,7 +997,7 @@ def test_rights_contract_error_is_path_free_integrity_error(
     def reject(*_args, **_kwargs) -> NoReturn:
         raise RightsPolicyError("/private/secret payload")
 
-    monkeypatch.setattr(reconciliation, "resolve_rights", reject)
+    monkeypatch.setattr(reconciliation, "load_authority_register", reject)
 
     with pytest.raises(ReconciliationIntegrityError) as error:
         reconcile_rights(
@@ -1546,50 +1625,72 @@ def remote_record(
 
 
 def remote_catalog(*records: ArtifactRecord) -> LoadedManifestCatalog:
-    decisions = tuple(
-        RightsDecision(
-            source_id=record.source_id,
-            source_sha256=record.sha256 or "0" * 64,
-            state=RightsState.METADATA_ONLY,
-            basis="rights_register_no_match",
-            reviewed_by=None,
-            reviewed_at=None,
-            decision_sha256=None,
-        )
-        for record in records
-    )
-    sources = build_source_manifests(
-        records,
-        rights_decisions={
-            (record.source_id, record.sha256): decision
-            for record, decision in zip(records, decisions, strict=True)
-        },
-    )
-    documents = tuple(
-        build_document_manifest(
-            record,
-            superseded_by=next(
-                (
-                    newer.document_id
-                    for newer in records
-                    if newer.document_id.rsplit("-v", 1)[0]
-                    == record.document_id.rsplit("-v", 1)[0]
-                    and newer.version > record.version
-                ),
-                None,
+    entries: list[dict[str, object]] = []
+    for record in records:
+        if record.pdf_url is None or record.sha256 is None:
+            raise ValueError("remote_catalog erfordert pdf_url und sha256")
+        identity = bitstream_identity(record.pdf_url)
+        entries.append({
+            "source_id": record.source_id,
+            "canonical_url": identity.canonical_url,
+            "version_or_bitstream": identity.bitstream_id,
+            "source_sha256": record.sha256,
+            "state": "unknown",
+            "mode": "origin_link",
+            "allowed_actions": [],
+            "components_state": "unknown",
+            "attribution": None,
+            "basis": "Synthetic fixture; no external publication rights claim",
+            "reviewed_by": None,
+            "reviewed_at": None,
+        })
+    with TemporaryDirectory(prefix="reconciliation-rights-") as temporary:
+        register_path = Path(temporary) / "rights.yml"
+        register_path.write_text(
+            yaml.safe_dump(
+                {"schema_version": 2, "decisions": entries},
+                sort_keys=False,
             ),
+            encoding="utf-8",
         )
-        for record in records
-    )
-    authorizer = RightsStorageAuthorizer(load_rights_authority(), load_rights_policy())
-    graph = build_manifest_graph(
-        sources=sources,
-        documents=documents,
-        conversions=(),
-        storage_references=(),
-        authorizer=authorizer,
-    )
+        register = load_rights_register(register_path)
+        decisions = {decision.approval_key: decision for decision in register.entries}
+        sources = build_source_manifests(records, rights_decisions=decisions)
+        documents = tuple(
+            build_document_manifest(
+                record,
+                superseded_by=next(
+                    (
+                        newer.document_id
+                        for newer in records
+                        if newer.document_id.rsplit("-v", 1)[0]
+                        == record.document_id.rsplit("-v", 1)[0]
+                        and newer.version > record.version
+                    ),
+                    None,
+                ),
+            )
+            for record in records
+        )
+        authorizer = RightsStorageAuthorizer(
+            load_fixture_rights_authority(register_path),
+            load_rights_policy(),
+        )
+        graph = build_manifest_graph(
+            sources=sources,
+            documents=documents,
+            conversions=(),
+            storage_references=(),
+            authorizer=authorizer,
+        )
     return LoadedManifestCatalog(graph=graph, rendered=render_manifest_catalog(graph))
+
+
+def test_remote_catalog_rejects_missing_pdf_identity_clearly() -> None:
+    """Test catalog helper must reject incomplete records before key derivation."""
+
+    with pytest.raises(ValueError, match="pdf_url und sha256"):
+        remote_catalog(remote_record(pdf_url=None, sha256=None))
 
 
 def candidate_prepared_object(

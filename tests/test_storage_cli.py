@@ -309,14 +309,34 @@ def test_cli_reports_corrupt_plan_without_traceback(tmp_path: Path, capsys: pyte
 
 def write_rights_register(tmp_path: Path, state: str) -> tuple[Path, str]:
     path = tmp_path / "rights-register.yml"
+    approved = state == "approved"
+    attribution = (
+        "    attribution:\n"
+        "      creators: [Synthetic Creator]\n"
+        "      attribution_parties: [Synthetic Rights Holder]\n"
+        "      copyright_notice: Synthetic copyright notice\n"
+        "      license_notice: CC BY 4.0\n"
+        "      license_url: https://creativecommons.org/licenses/by/4.0/\n"
+        "      disclaimer_notice: Synthetic fixture only\n"
+        "      origin_url: https://edoc.rki.de/handle/176904/12345.2\n"
+        "      prior_change_history: []\n"
+        "      current_change_notice: Unchanged synthetic fixture\n"
+        if approved else "    attribution: null\n"
+    )
     path.write_text(
-        "schema_version: 1\n"
+        "schema_version: 2\n"
         "decisions:\n"
         f'  - source_id: "{SOURCE_ID}"\n'
+        '    canonical_url: "https://edoc.rki.de/bitstream/handle/176904/12345.2/source.pdf?sequence=1"\n'
+        f'    version_or_bitstream: "{rights.bitstream_identity("https://edoc.rki.de/bitstream/handle/176904/12345.2/source.pdf?sequence=1").bitstream_id}"\n'
         f'    source_sha256: "{SOURCE_SHA256}"\n'
         f'    state: "{state}"\n'
-        '    basis: "Reviewed RKI reuse terms"\n'
-        '    reviewed_by: "Legal Reviewer"\n'
+        f'    mode: "{"materialized" if approved else "remove_all"}"\n'
+        f'    allowed_actions: {"[cache, extract_text, fetch, hash, index_text, ocr, publish, thumbnail]" if approved else "[]"}\n'
+        f'    components_state: "{"cleared" if approved else "blocked"}"\n'
+        + attribution
+        + '    basis: "Synthetic fixture; no external publication rights claim"\n'
+        '    reviewed_by: "Test Fixture"\n'
         '    reviewed_at: "2026-08-03T08:00:00Z"\n',
         encoding="utf-8",
     )

@@ -45,6 +45,7 @@ def validate() -> None:
         ("status", "status-v2.json"),
         ("source-manifest", "source-manifest-v1.0.json"),
         ("source-manifest", "source-manifest-v1.1.json"),
+        ("source-manifest", "source-manifest-v1.2.json"),
         ("document-manifest", "document-manifest-v1.0.json"),
         ("conversion-manifest", "conversion-manifest-v1.0.json"),
         ("storage-reference", "storage-reference-v1.0.json"),
@@ -75,7 +76,7 @@ if __name__ == "__main__":
     validate()
     print(
         "schema family: ok; 13 contracts; Draft 2020-12; "
-        "status 2.0.0 -> 3.0.0; source-manifest 1.0.0/1.1.0 -> 1.2.0; "
+        "status 2.0.0 -> 3.0.0; source-manifest 1.0.0/1.1.0/1.2.0 -> 1.3.0; "
         "document-manifest 1.0.0 -> 1.1.0; conversion-manifest 1.0.0 -> 1.1.0; "
         "storage-reference 1.0.0 -> 1.1.0"
     )

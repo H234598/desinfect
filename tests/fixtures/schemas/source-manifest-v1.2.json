@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.2.0",
+  "source_id": "rki:176904/12345.2",
+  "handle": "176904/12345.2",
+  "version": 2,
+  "source_url": "https://edoc.rki.de/handle/176904/12345.2",
+  "title": "Synthetic bulletin",
+  "publication_date": "1996-03-22",
+  "etag": null,
+  "last_modified": null,
+  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "rights": {
+    "state": "approved",
+    "basis": "Legacy synthetic fixture; no external publication rights claim",
+    "reviewed_at": "2026-08-03T08:00:00Z",
+    "reviewed_by": "Synthetic Reviewer"
+  },
+  "provenance_state": "current",
+  "bitstream_id": "rki-bitstream-ca16f3bf368deddef0cc580b31c0105db58edcfd486fa689a8860cb8aea67176",
+  "bitstream_url": "https://edoc.rki.de/bitstream/handle/176904/12345.2/issue.pdf?sequence=2",
+  "bitstream_version": 2,
+  "rights_evidence": {
+    "label": "Synthetic fixture only",
+    "license_url": null,
+    "copyright_notice": null,
+    "open_access": true
+  },
+  "decision_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "doi": null,
+  "same_content_as": []
+}

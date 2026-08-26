@@ -10,11 +10,13 @@ import re
 import warnings
 
 from scripts.rki_pipeline.io_utils import atomic_write_bytes, normalize_posix_path
+from scripts.rki_pipeline.rights import RightsPolicyError, RightsState, load_authority_register
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 from scripts.rki_pipeline.storage.base import (
     PreparedObject,
     RightsStorageAuthorizer,
     StorageBackend,
+    StorageAuthorizationError,
     StorageError,
     StorageIntent,
     StorageReference,
@@ -271,6 +273,7 @@ class LfsStorageAdapter:
             self.authorizer,
             subject,
             operation=operation,
+            backend=self.backend,
         )
 
     def _relative_path(self, logical_key: str) -> str:
@@ -321,13 +324,69 @@ class LfsStorageAdapter:
         )
 
     def exists(self, intent: StorageIntent) -> StorageReference | None:
-        self.authorize(intent, operation="exists")
         target = self._target(intent.logical_key)
         if not target.exists() and not target.is_symlink():
             return None
-        reference = self.reference_for_path(
-            target,
+        try:
+            self.authorize(intent, operation="verify")
+        except StorageAuthorizationError as authorization_error:
+            try:
+                register = load_authority_register(self.authorizer.authority)
+            except RightsPolicyError:
+                raise authorization_error
+            current = tuple(
+                decision
+                for decision in register.entries
+                if decision.source_id == intent.source_id
+                and decision.source_sha256 == intent.source_sha256
+                and decision.decision_sha256 == intent.decision_sha256
+            )
+            if (
+                len(current) != 1
+                or current[0].state is not RightsState.TAKEDOWN
+                or intent.rights_state != current[0].state.value
+            ):
+                return None
+        else:
+            reference = self.reference_for_path(
+                target,
+                artifact_id=intent.artifact_id,
+                source_id=intent.source_id,
+                source_sha256=intent.source_sha256,
+                document_id=intent.document_id,
+                conversion_id=intent.conversion_id,
+                decision_sha256=intent.decision_sha256,
+                provenance_state="current",
+                visibility=intent.visibility,
+                rights_state=intent.rights_state,
+            )
+            if (reference.sha256, reference.size) != (intent.sha256, intent.size):
+                raise LfsIntegrityError("Vorhandenes LFS-Ziel besitzt anderen Inhalt")
+            return reference
+
+        validated, relative = self._validated_source(target)
+        target_size = validated.stat().st_size
+        object_path = lfs_object_path(self.repository_root, intent.sha256)
+        object_matches = (
+            not object_path.is_symlink()
+            and object_path.is_file()
+            and object_path.stat().st_size == intent.size
+        )
+        pointer_size = len(LfsPointer(intent.sha256, intent.size).to_text().encode("utf-8"))
+        pointer_sized = target_size in {pointer_size - 1, pointer_size}
+        if pointer_sized and not object_matches:
+            return None
+        if not pointer_sized and target_size != intent.size:
+            return None
+        # ponytail: Takedown lookup intentionally projects trusted stat metadata;
+        # full byte integrity resumes through the authorized branch above.
+        return StorageReference(
             artifact_id=intent.artifact_id,
+            relative_path=relative,
+            storage_backend=StorageBackend.LFS,
+            storage_object_id=f"sha256:{intent.sha256}",
+            sha256=intent.sha256,
+            size=intent.size,
             source_id=intent.source_id,
             source_sha256=intent.source_sha256,
             document_id=intent.document_id,
@@ -335,11 +394,9 @@ class LfsStorageAdapter:
             decision_sha256=intent.decision_sha256,
             provenance_state="current",
             visibility=intent.visibility,
-            rights_state=intent.rights_state,
+            rights_state=current[0].state.value,
+            public_reference=None,
         )
-        if (reference.sha256, reference.size) != (intent.sha256, intent.size):
-            raise LfsIntegrityError("Vorhandenes LFS-Ziel besitzt anderen Inhalt")
-        return reference
 
     def materialize(self, intent: StorageIntent, *, temp_root: Path, ledger: EffectLedger) -> PreparedObject:
         if ledger.mode is not RunMode.MATERIALIZE:

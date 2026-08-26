@@ -18,12 +18,16 @@ from scripts.rki_pipeline.conversion.service import (
     materialize_conversion,
 )
 from scripts.rki_pipeline.io_utils import stable_json_dumps
+from scripts.rki_pipeline.documents import bitstream_identity
 from scripts.rki_pipeline.paths import DocumentType
 from scripts.rki_pipeline.rights import (
+    ApprovalKey,
+    RightsAction,
     RightsPolicyError,
+    load_authority_register,
     load_rights_authority,
     load_rights_policy,
-    resolve_rights,
+    resolve_action,
 )
 from scripts.rki_pipeline.run_modes import EffectLedger, RunMode
 from scripts.rki_pipeline.storage.base import (
@@ -40,7 +44,10 @@ FIXTURE_SHA256 = "4665c3b8cfa6de8d9792a8defb977bfd200465b513575419e0a88541000f5b
 FIXTURE_BYTES = 979
 SOURCE_ID = "rki:176904/900000001"
 DOCUMENT_ID = "rki-176904-900000001-v1"
-BITSTREAM_ID = f"rki-bitstream-{FIXTURE_SHA256}"
+BITSTREAM_URL = (
+    "https://edoc.rki.de/bitstream/handle/176904/900000001/source.pdf?sequence=1"
+)
+BITSTREAM_ID = bitstream_identity(BITSTREAM_URL).bitstream_id
 LOGICAL_KEY = (
     "Jahre/2026/Markdown/2026-08-03_gesamtausgabe_"
     f"{DOCUMENT_ID}_{BITSTREAM_ID}.md"
@@ -77,10 +84,15 @@ def _fixture_intent(
         raise ValueError("P06-Konvertierungsfixture driftet vom Register")
     authority = load_rights_authority()
     policy = load_rights_policy()
-    decision = resolve_rights(
-        SOURCE_ID,
-        FIXTURE_SHA256,
-        authority=authority,
+    decision = resolve_action(
+        ApprovalKey(
+            source_id=SOURCE_ID,
+            canonical_url=BITSTREAM_URL,
+            version_or_bitstream=BITSTREAM_ID,
+            source_sha256=FIXTURE_SHA256,
+        ),
+        action=RightsAction.EXTRACT_TEXT,
+        register=load_authority_register(authority),
         policy=policy,
     )
     if decision.decision_sha256 is None:

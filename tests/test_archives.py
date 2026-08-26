@@ -33,7 +33,6 @@ from scripts.rki_pipeline.archive import (
     validate_archive,
 )
 from scripts.rki_pipeline.io_utils import stable_json_dumps
-from scripts.rki_pipeline.rights import resolve_rights
 from scripts.rki_pipeline.run_modes import (
     capture_repository_snapshot,
     EffectKind,
@@ -54,13 +53,28 @@ def _authorizer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> RightsStorag
     register.write_text(
         "\n".join(
             (
-                "schema_version: 1",
+                "schema_version: 2",
                 "decisions:",
                 f"  - source_id: {SOURCE_ID}",
+                "    canonical_url: https://edoc.rki.de/bitstream/handle/176904/900000001/source.pdf?sequence=1",
+                "    version_or_bitstream: rki-bitstream-d1a348dc6e1b0b17036ae59a761fc7b3ff19a96201ad44de0ae93fe099945c00",
                 f"    source_sha256: {SOURCE_SHA256}",
                 "    state: approved",
-                "    basis: Reviewed RKI reuse terms",
-                "    reviewed_by: Legal Reviewer",
+                "    mode: materialized",
+                "    allowed_actions: [cache, extract_text, fetch, hash, index_text, ocr, publish, thumbnail]",
+                "    components_state: cleared",
+                "    attribution:",
+                "      creators: [Synthetic Creator]",
+                "      attribution_parties: [Synthetic Rights Holder]",
+                "      copyright_notice: Synthetic copyright notice",
+                "      license_notice: CC BY 4.0",
+                "      license_url: https://creativecommons.org/licenses/by/4.0/",
+                "      disclaimer_notice: Synthetic fixture only",
+                "      origin_url: https://edoc.rki.de/handle/176904/900000001",
+                "      prior_change_history: []",
+                "      current_change_notice: Unchanged synthetic fixture",
+                "    basis: Synthetic fixture; no external publication rights claim",
+                "    reviewed_by: Test Fixture",
                 '    reviewed_at: "2026-08-03T08:00:00Z"',
                 "",
             )
@@ -74,6 +88,26 @@ def _authorizer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> RightsStorag
     )
 
 
+def test_archive_pilot_rejects_stale_authority_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pilot fixture must validate its minted authority before loading register bytes."""
+
+    stale_authority = rights.load_rights_authority()
+    replacement = tmp_path / "replacement-rights.yml"
+    replacement.write_text("schema_version: 2\ndecisions: []\n", encoding="utf-8")
+
+    def drift_source() -> rights.RightsAuthority:
+        monkeypatch.setattr(rights, "DEFAULT_REGISTER_PATH", replacement)
+        return stale_authority
+
+    monkeypatch.setattr(archive_module, "load_rights_authority", drift_source)
+
+    with pytest.raises(rights.RightsPolicyError, match="kanonische Register-Source"):
+        archive_module._pilot_spec(tmp_path)
+
+
 def _prepared_entries(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -81,12 +115,7 @@ def _prepared_entries(
     visibility: str = "public",
 ) -> tuple[ArchiveEntry, ArchiveEntry]:
     authorizer = _authorizer(tmp_path, monkeypatch)
-    decision = resolve_rights(
-        SOURCE_ID,
-        SOURCE_SHA256,
-        authority=authorizer.authority,
-        policy=authorizer.policy,
-    )
+    decision = rights.load_authority_register(authorizer.authority).entries[0]
     root = tmp_path / "prepared"
     root.mkdir(exist_ok=True)
 

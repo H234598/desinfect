@@ -11,7 +11,16 @@ from scripts.rki_grabber.models import ArtifactRecord, RecordState, Scope
 from scripts.rki_pipeline.documents import DocumentIdentityError, bitstream_identity, document_identity
 from scripts.rki_pipeline.io_utils import atomic_write_text, stable_json_dumps
 from scripts.rki_pipeline.paths import DocumentPathError, DocumentType, repository_document_paths
-from scripts.rki_pipeline.rights import RightsDecision, RightsState
+from scripts.rki_pipeline.rights import (
+    ApprovalKey,
+    ComponentsState,
+    PublicationMode,
+    RightsAction,
+    RightsAttribution,
+    RightsDecision,
+    RightsState,
+    decision_sha256,
+)
 from scripts.rki_pipeline.schema_registry import SchemaContractError, validate_document
 
 
@@ -96,13 +105,30 @@ def build_source_manifest(
     """Build one validated, rights-fail-closed source manifest."""
 
     document, bitstream = _record_identities(record)
+    expected_key = ApprovalKey(
+        source_id=record.source_id,
+        canonical_url=bitstream.canonical_url,
+        version_or_bitstream=bitstream.bitstream_id,
+        source_sha256=record.sha256,
+    )
+    if rights_decision.approval_key != expected_key:
+        raise ManifestBuildError(
+            "Rechteentscheidung gehört zu anderer Revision oder anderen Bytes"
+        )
     if (
-        rights_decision.source_id != record.source_id
-        or rights_decision.source_sha256 != record.sha256
-    ):
-        raise ManifestBuildError("Rechteentscheidung gehört zu anderer Quelle oder anderen Bytes")
-    if (
-        rights_decision.state is RightsState.UNKNOWN
+        type(rights_decision) is not RightsDecision
+        or type(rights_decision.state) is not RightsState
+        or type(rights_decision.mode) is not PublicationMode
+        or type(rights_decision.allowed_actions) is not tuple
+        or any(
+            type(action) is not RightsAction
+            for action in rights_decision.allowed_actions
+        )
+        or type(rights_decision.components_state) is not ComponentsState
+        or (
+            rights_decision.attribution is not None
+            and type(rights_decision.attribution) is not RightsAttribution
+        )
         or not rights_decision.basis
         or (
             rights_decision.state
@@ -117,10 +143,14 @@ def build_source_manifest(
             rights_decision.decision_sha256 is not None
             and _SHA256.fullmatch(rights_decision.decision_sha256) is None
         )
+        or (
+            rights_decision.decision_sha256 is not None
+            and rights_decision.decision_sha256 != decision_sha256(rights_decision)
+        )
     ):
         raise ManifestBuildError("Rechteentscheidung ist nicht kanonisch")
     payload: dict[str, object] = {
-        "schema_version": "1.2.0",
+        "schema_version": "1.3.0",
         "source_id": document.source_id,
         "handle": document.handle,
         "version": document.version,
@@ -132,6 +162,40 @@ def build_source_manifest(
         "sha256": record.sha256,
         "rights": {
             "state": rights_decision.state.value,
+            "mode": rights_decision.mode.value,
+            "allowed_actions": [
+                action.value for action in rights_decision.allowed_actions
+            ],
+            "components_state": rights_decision.components_state.value,
+            "attribution": (
+                None
+                if rights_decision.attribution is None
+                else {
+                    "creators": list(rights_decision.attribution.creators),
+                    "attribution_parties": list(
+                        rights_decision.attribution.attribution_parties
+                    ),
+                    "copyright_notice": rights_decision.attribution.copyright_notice,
+                    "license_notice": rights_decision.attribution.license_notice,
+                    "license_url": rights_decision.attribution.license_url,
+                    "disclaimer_notice": rights_decision.attribution.disclaimer_notice,
+                    "origin_url": rights_decision.attribution.origin_url,
+                    "prior_change_history": list(
+                        rights_decision.attribution.prior_change_history
+                    ),
+                    "current_change_notice": (
+                        rights_decision.attribution.current_change_notice
+                    ),
+                }
+            ),
+            "approval_key": {
+                "source_id": rights_decision.approval_key.source_id,
+                "canonical_url": rights_decision.approval_key.canonical_url,
+                "version_or_bitstream": (
+                    rights_decision.approval_key.version_or_bitstream
+                ),
+                "source_sha256": rights_decision.approval_key.source_sha256,
+            },
             "basis": rights_decision.basis,
             "reviewed_at": rights_decision.reviewed_at,
             "reviewed_by": rights_decision.reviewed_by,
@@ -211,7 +275,7 @@ def build_document_manifest(
 def build_source_manifests(
     records: Iterable[ArtifactRecord],
     *,
-    rights_decisions: Mapping[tuple[str, str], RightsDecision],
+    rights_decisions: Mapping[ApprovalKey, RightsDecision],
 ) -> tuple[dict[str, object], ...]:
     """Build sorted source manifests with explicit same-content aliases."""
 
@@ -219,7 +283,13 @@ def build_source_manifests(
     hashes: dict[str, list[str]] = {}
     for record in records:
         _, bitstream = _record_identities(record)
-        decision = rights_decisions.get((record.source_id, record.sha256))
+        key = ApprovalKey(
+            source_id=record.source_id,
+            canonical_url=bitstream.canonical_url,
+            version_or_bitstream=bitstream.bitstream_id,
+            source_sha256=record.sha256,
+        )
+        decision = rights_decisions.get(key)
         if decision is None:
             raise ManifestBuildError("Rechteentscheidung für Source-ID und SHA-256 fehlt")
         payload = build_source_manifest(record, rights_decision=decision)
@@ -240,7 +310,14 @@ def build_source_manifests(
         build_source_manifest(
             by_id[bitstream_id][0],
             rights_decision=rights_decisions[
-                (by_id[bitstream_id][0].source_id, by_id[bitstream_id][0].sha256)
+                ApprovalKey(
+                    source_id=by_id[bitstream_id][0].source_id,
+                    canonical_url=bitstream_identity(
+                        by_id[bitstream_id][0].pdf_url or ""
+                    ).canonical_url,
+                    version_or_bitstream=bitstream_id,
+                    source_sha256=by_id[bitstream_id][0].sha256 or "",
+                )
             ],
             same_content_as=aliases[bitstream_id],
         )

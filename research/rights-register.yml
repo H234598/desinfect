@@ -1,8 +1,21 @@
-schema_version: 1
+schema_version: 2
 decisions:
   - source_id: "rki:176904/900000001"
+    canonical_url: "https://edoc.rki.de/bitstream/handle/176904/900000001/source.pdf?sequence=1"
+    version_or_bitstream: "rki-bitstream-d1a348dc6e1b0b17036ae59a761fc7b3ff19a96201ad44de0ae93fe099945c00"
     source_sha256: "4665c3b8cfa6de8d9792a8defb977bfd200465b513575419e0a88541000f5b2a"
     state: "approved"
+    mode: "materialized"
+    allowed_actions:
+      - "cache"
+      - "extract_text"
+      - "fetch"
+      - "hash"
+      - "index_text"
+      - "ocr"
+      - "thumbnail"
+    components_state: "cleared"
+    attribution: null
     basis: "Synthetic P06 conversion fixture; no external publication rights claim"
     reviewed_by: "Desinfect maintainers"
     reviewed_at: "2026-08-03T14:00:00Z"

@@ -31,10 +31,13 @@ from scripts.rki_pipeline.io_utils import (
 )
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 from scripts.rki_pipeline.rights import (
+    ApprovalKey,
+    RightsAction,
     RightsPolicyError,
+    load_authority_register,
     load_rights_authority,
     load_rights_policy,
-    resolve_rights,
+    resolve_action,
 )
 from scripts.rki_pipeline.schema_registry import SchemaContractError, validate_document
 from scripts.rki_pipeline.staging import StagingState, staged_directory
@@ -523,10 +526,20 @@ def materialize_archive(
 def _pilot_spec(temp_root: Path) -> tuple[ArchiveSpec, RightsStorageAuthorizer]:
     authority = load_rights_authority()
     policy = load_rights_policy()
-    decision = resolve_rights(
-        _PILOT_SOURCE_ID,
-        _PILOT_SOURCE_SHA256,
-        authority=authority,
+    decision = resolve_action(
+        ApprovalKey(
+            source_id=_PILOT_SOURCE_ID,
+            canonical_url=(
+                "https://edoc.rki.de/bitstream/handle/176904/900000001/"
+                "source.pdf?sequence=1"
+            ),
+            version_or_bitstream=(
+                "rki-bitstream-d1a348dc6e1b0b17036ae59a761fc7b3ff19a96201ad44de0ae93fe099945c00"
+            ),
+            source_sha256=_PILOT_SOURCE_SHA256,
+        ),
+        action=RightsAction.CACHE,
+        register=load_authority_register(authority),
         policy=policy,
     )
     if decision.decision_sha256 is None or decision.state.value != "approved":

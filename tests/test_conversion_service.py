@@ -22,12 +22,13 @@ from scripts.rki_pipeline.conversion.base import (
 )
 from scripts.rki_pipeline.conversion.ocr import OcrExtraction, OcrUnavailableError
 from scripts.rki_pipeline.conversion.frontmatter import MarkdownMetadata
+from scripts.rki_pipeline.documents import bitstream_identity
 from scripts.rki_pipeline.paths import DocumentType
 from scripts.rki_pipeline.pdf_validation import PdfLimits, ProcessResult
 from scripts.rki_pipeline.rights import (
+    load_authority_register,
     load_rights_authority,
     load_rights_policy,
-    resolve_rights,
 )
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 from scripts.rki_pipeline.staging import StagingError
@@ -37,7 +38,10 @@ from scripts.rki_pipeline.storage.base import RightsStorageAuthorizer, StorageIn
 PDF = (Path(__file__).parent / "fixtures" / "pdf" / "minimal.pdf").read_bytes()
 SOURCE_ID = "rki:176904/12345.2"
 DOCUMENT_ID = "rki-176904-12345-v2"
-BITSTREAM_ID = "rki-bitstream-" + "1" * 64
+BITSTREAM_URL = (
+    "https://edoc.rki.de/bitstream/handle/176904/12345.2/source.pdf?sequence=1"
+)
+BITSTREAM_ID = bitstream_identity(BITSTREAM_URL).bitstream_id
 
 
 class _ConversionRunner:
@@ -125,13 +129,38 @@ def _authorizer_and_intent(
     authorized_sha256 = rights_source_sha256 or source_sha256
     register = tmp_path / "rights-register.yml"
     register.write_text(
-        f'''schema_version: 1
+        f'''schema_version: 2
 decisions:
   - source_id: "{SOURCE_ID}"
+    canonical_url: "{BITSTREAM_URL}"
+    version_or_bitstream: "{BITSTREAM_ID}"
     source_sha256: "{authorized_sha256}"
     state: "approved"
-    basis: "Reviewed synthetic conversion fixture"
-    reviewed_by: "Test Reviewer"
+    mode: "materialized"
+    allowed_actions:
+      - "cache"
+      - "extract_text"
+      - "fetch"
+      - "hash"
+      - "index_text"
+      - "ocr"
+      - "publish"
+      - "thumbnail"
+    components_state: "cleared"
+    attribution:
+      creators:
+        - "Synthetic Creator"
+      attribution_parties:
+        - "Synthetic Rights Holder"
+      copyright_notice: "Synthetic copyright notice"
+      license_notice: "CC BY 4.0"
+      license_url: "https://creativecommons.org/licenses/by/4.0/"
+      disclaimer_notice: "Synthetic fixture only"
+      origin_url: "https://edoc.rki.de/handle/176904/12345.2"
+      prior_change_history: []
+      current_change_notice: "Unchanged synthetic fixture"
+    basis: "Synthetic fixture; no external publication rights claim"
+    reviewed_by: "Test Fixture"
     reviewed_at: "2026-08-03T08:00:00Z"
 ''',
         encoding="utf-8",
@@ -139,12 +168,7 @@ decisions:
     monkeypatch.setattr(rights, "DEFAULT_REGISTER_PATH", register)
     authority = load_rights_authority()
     policy = load_rights_policy()
-    decision = resolve_rights(
-        SOURCE_ID,
-        authorized_sha256,
-        authority=authority,
-        policy=policy,
-    )
+    decision = load_authority_register(authority).entries[0]
     assert decision.decision_sha256 is not None
     intent = StorageIntent.from_path(
         source,

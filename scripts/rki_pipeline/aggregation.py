@@ -55,7 +55,14 @@ from scripts.rki_pipeline.storage.base import (
     StorageAuthorizationError,
     authorize_storage_operation,
 )
-from scripts.rki_pipeline.rights import load_rights_authority, load_rights_policy, resolve_rights
+from scripts.rki_pipeline.rights import (
+    ApprovalKey,
+    RightsAction,
+    load_authority_register,
+    load_rights_authority,
+    load_rights_policy,
+    resolve_action,
+)
 
 _BERLIN = ZoneInfo("Europe/Berlin")
 _WEEK = re.compile(r"^(?P<year>[0-9]{4})-W(?P<week>0[1-9]|[1-4][0-9]|5[0-3])$")
@@ -1374,7 +1381,7 @@ def _authorize_plan(plan: AggregationPlan, authorizer: RightsStorageAuthorizer) 
                     authorize_storage_operation(
                         authorizer,
                         payload,
-                        operation="period-archive-materialize",
+                        operation="archive",
                     )
                 except StorageAuthorizationError as exc:
                     raise AggregationError("Rechteentscheidung autorisiert Archivaggregation nicht") from exc
@@ -1386,7 +1393,7 @@ def _authorize_plan(plan: AggregationPlan, authorizer: RightsStorageAuthorizer) 
                     authorize_storage_operation(
                         authorizer,
                         entry.prepared,
-                        operation="period-archive-materialize",
+                        operation="archive",
                     )
                 except StorageAuthorizationError as exc:
                     raise AggregationError("Rechteentscheidung autorisiert Archivaggregation nicht") from exc
@@ -1993,7 +2000,22 @@ def _cli_fixture(temp_root: Path, as_of: datetime) -> tuple[AggregationPlan, Rig
 
     authority = load_rights_authority()
     policy = load_rights_policy()
-    decision = resolve_rights(_CLI_SOURCE_ID, _CLI_SOURCE_SHA256, authority=authority, policy=policy)
+    decision = resolve_action(
+        ApprovalKey(
+            source_id=_CLI_SOURCE_ID,
+            canonical_url=(
+                "https://edoc.rki.de/bitstream/handle/176904/900000001/"
+                "source.pdf?sequence=1"
+            ),
+            version_or_bitstream=(
+                "rki-bitstream-d1a348dc6e1b0b17036ae59a761fc7b3ff19a96201ad44de0ae93fe099945c00"
+            ),
+            source_sha256=_CLI_SOURCE_SHA256,
+        ),
+        action=RightsAction.CACHE,
+        register=load_authority_register(authority),
+        policy=policy,
+    )
     if decision.decision_sha256 is None or decision.state.value != "approved":
         raise AggregationError("Synthetische Aggregationsfixture besitzt keine Freigabe")
     prepared_root = temp_root / "prepared"
