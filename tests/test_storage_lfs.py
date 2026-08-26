@@ -26,7 +26,7 @@ from scripts.rki_pipeline.storage.lfs import (
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ID = "rki:176904/12345.2"
 SOURCE_SHA256 = "b" * 64
-DECISION_SHA256 = "86209a043bf3571d183ea7c65e24bcc45f5e0f4db15042773b282273c96c264a"
+DECISION_SHA256 = "5dffc189ce91946e9036d7517e0fdade5c04cfa70d150b099027e53a00d45e71"
 DOCUMENT_ID = "rki-176904-12345-v2"
 _TRACKING = (
     "rki/Bulletins/**/*.pdf filter=lfs diff=lfs merge=lfs -text\n"

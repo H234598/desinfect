@@ -78,6 +78,47 @@ def validate_document(name: str, payload: dict[str, Any]) -> None:
         raise SchemaContractError(f"{name}: {rendered}")
     if name == "source-manifest" and payload["same_content_as"] != sorted(payload["same_content_as"]):
         raise SchemaContractError("source-manifest: same_content_as muss lexikalisch sortiert sein")
+    if name == "source-manifest":
+        rights = payload["rights"]
+        actions = rights["allowed_actions"]
+        if actions != sorted(actions) or len(actions) != len(set(actions)):
+            raise SchemaContractError(
+                "source-manifest: rights.allowed_actions muss sortiert und eindeutig sein"
+            )
+        if rights["mode"] != "materialized" and (
+            actions or rights["attribution"] is not None
+        ):
+            raise SchemaContractError(
+                "source-manifest: nicht-materialized darf keine Aktionen/Attribution tragen"
+            )
+        if rights["mode"] == "materialized" and rights["state"] != "approved":
+            raise SchemaContractError(
+                "source-manifest: materialized erfordert approved"
+            )
+        if "publish" in actions and rights["attribution"] is None:
+            raise SchemaContractError(
+                "source-manifest: publish erfordert Attribution"
+            )
+        if "publish" in actions and rights["components_state"] != "cleared":
+            raise SchemaContractError(
+                "source-manifest: publish erfordert components_state cleared"
+            )
+        approval = rights["approval_key"]
+        if approval is not None:
+            expected = {
+                "source_id": payload["source_id"],
+                "canonical_url": payload["bitstream_url"],
+                "version_or_bitstream": payload["bitstream_id"],
+                "source_sha256": payload["sha256"],
+            }
+            if approval != expected:
+                raise SchemaContractError(
+                    "source-manifest: ApprovalKey driftet von Source-/Bitstreamfeldern"
+                )
+        if payload["provenance_state"] == "current" and approval is None:
+            raise SchemaContractError(
+                "source-manifest: current-Provenienz erfordert ApprovalKey"
+            )
     if name == "conversion-manifest" and payload["provenance_state"] == "current":
         try:
             toolchain = tuple(ToolEvidence.from_dict(item) for item in payload["toolchain"])
@@ -203,7 +244,6 @@ def migrate_source_manifest_v1_0_to_v1_2(payload: dict[str, Any]) -> dict[str, A
             "same_content_as": [],
         }
     )
-    validate_document("source-manifest", result)
     return result
 
 
@@ -216,7 +256,6 @@ def migrate_source_manifest_v1_1_to_v1_2(payload: dict[str, Any]) -> dict[str, A
         )
     result = deepcopy(payload)
     result.update({"schema_version": "1.2.0", "doi": None})
-    validate_document("source-manifest", result)
     return result
 
 
@@ -229,6 +268,69 @@ def migrate_source_manifest_to_v1_2(payload: dict[str, Any]) -> dict[str, Any]:
     if version == "1.1.0":
         return migrate_source_manifest_v1_1_to_v1_2(payload)
     raise SchemaContractError(f"Nicht unterstützte Source-Manifest-Migration: {version!r}")
+
+
+def migrate_source_manifest_v1_2_to_v1_3(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Add exact rights fields without inheriting any publication authority."""
+
+    if payload.get("schema_version") != "1.2.0":
+        raise SchemaContractError(
+            "Nicht unterstützte Source-Manifest-Migration: "
+            f"{payload.get('schema_version')!r}"
+        )
+    result = deepcopy(payload)
+    bitstream_url = result.get("bitstream_url")
+    bitstream_id = result.get("bitstream_id")
+    approval_key = None
+    if bitstream_url is not None and bitstream_id is not None:
+        approval_key = {
+            "source_id": result["source_id"],
+            "canonical_url": bitstream_url,
+            "version_or_bitstream": bitstream_id,
+            "source_sha256": result["sha256"],
+        }
+    legacy_rights = result["rights"]
+    result.update(
+        {
+            "schema_version": "1.3.0",
+            "provenance_state": "legacy_needs_review",
+            "rights": {
+                "state": legacy_rights["state"],
+                "mode": "origin_link",
+                "allowed_actions": [],
+                "components_state": "unknown",
+                "attribution": None,
+                "approval_key": approval_key,
+                "basis": legacy_rights["basis"],
+                "reviewed_at": legacy_rights["reviewed_at"],
+                "reviewed_by": legacy_rights["reviewed_by"],
+            },
+            "decision_sha256": None,
+        }
+    )
+    validate_document("source-manifest", result)
+    return result
+
+
+def migrate_source_manifest_to_v1_3(payload: dict[str, Any]) -> dict[str, Any]:
+    """Dispatch each direct predecessor to the current fail-closed contract."""
+
+    version = payload.get("schema_version")
+    if version == "1.0.0":
+        return migrate_source_manifest_v1_2_to_v1_3(
+            migrate_source_manifest_v1_0_to_v1_2(payload)
+        )
+    if version == "1.1.0":
+        return migrate_source_manifest_v1_2_to_v1_3(
+            migrate_source_manifest_v1_1_to_v1_2(payload)
+        )
+    if version == "1.2.0":
+        return migrate_source_manifest_v1_2_to_v1_3(payload)
+    raise SchemaContractError(
+        f"Nicht unterstützte Source-Manifest-Migration: {version!r}"
+    )
 
 
 def migrate_document_manifest_v1_0_to_v1_1(payload: dict[str, Any]) -> dict[str, Any]:
@@ -311,8 +413,9 @@ def migrate_storage_reference_v1_0_to_v1_1(payload: dict[str, Any]) -> dict[str,
 
 MIGRATIONS: dict[tuple[str, str, str], Callable[[dict[str, Any]], dict[str, Any]]] = {
     ("status", "2.0.0", "3.0.0"): migrate_status_v2_to_v3,
-    ("source-manifest", "1.0.0", "1.2.0"): migrate_source_manifest_to_v1_2,
-    ("source-manifest", "1.1.0", "1.2.0"): migrate_source_manifest_to_v1_2,
+    ("source-manifest", "1.0.0", "1.3.0"): migrate_source_manifest_to_v1_3,
+    ("source-manifest", "1.1.0", "1.3.0"): migrate_source_manifest_to_v1_3,
+    ("source-manifest", "1.2.0", "1.3.0"): migrate_source_manifest_to_v1_3,
     ("document-manifest", "1.0.0", "1.1.0"): migrate_document_manifest_v1_0_to_v1_1,
     ("conversion-manifest", "1.0.0", "1.1.0"): migrate_conversion_manifest_v1_0_to_v1_1,
     ("storage-reference", "1.0.0", "1.1.0"): migrate_storage_reference_v1_0_to_v1_1,

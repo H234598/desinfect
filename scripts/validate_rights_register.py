@@ -24,7 +24,15 @@ def validate() -> None:
     register = load_rights_register()
     if policy.default_state is not RightsState.METADATA_ONLY:
         raise ValueError("Rechtepolicy ist nicht fail-closed")
-    keys = [(entry.source_id, entry.source_sha256) for entry in register.entries]
+    keys = [
+        (
+            entry.approval_key.source_id,
+            entry.approval_key.canonical_url,
+            entry.approval_key.version_or_bitstream,
+            entry.approval_key.source_sha256,
+        )
+        for entry in register.entries
+    ]
     if keys != sorted(keys) or len(keys) != len(set(keys)):
         raise ValueError("Rights-Register ist nicht kanonisch und eindeutig")
 
@@ -33,7 +41,7 @@ def main() -> None:
     """Run validation and emit one stable summary line."""
 
     validate()
-    print("rights register: ok; exact source+sha authority; default metadata_only")
+    print("rights register: ok; exact revision+action authority; default metadata_only")
 
 
 if __name__ == "__main__":

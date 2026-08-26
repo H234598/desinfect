@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scripts.rki_pipeline.conversion.base import (
     EnvironmentVariable,
@@ -28,7 +29,7 @@ BITSTREAM_URL = "https://edoc.rki.de/bitstream/handle/176904/900000001/source.pd
 BITSTREAM_ID = bitstream_identity(BITSTREAM_URL).bitstream_id
 SOURCE_SHA256 = "4665c3b8cfa6de8d9792a8defb977bfd200465b513575419e0a88541000f5b2a"
 OUTPUT_SHA256 = "c" * 64
-DECISION_SHA256 = "e36c7613fc7b87bf1c6a6b497355ab63a317a24d3d590ef0e255a3098f9ff926"
+DECISION_SHA256 = "300b00e2394eeafe1045a064187fb88da1f8e0b06e11aa4f1e6f8e9ac659072f"
 
 
 def _authorizer():
@@ -38,9 +39,48 @@ def _authorizer():
     return RightsStorageAuthorizer(load_rights_authority(), load_rights_policy())
 
 
+def _authorizer_for_sources(tmp_path: Path, *sources: dict[str, object]):
+    """Create isolated authority only for synthetic multi-bitstream tests."""
+
+    from scripts.rki_pipeline.rights import (
+        load_fixture_rights_authority,
+        load_rights_policy,
+    )
+    from scripts.rki_pipeline.storage.base import RightsStorageAuthorizer
+
+    decisions = []
+    for source in sources:
+        embedded = source["rights"]
+        decisions.append(
+            {
+                **embedded["approval_key"],
+                "state": embedded["state"],
+                "mode": embedded["mode"],
+                "allowed_actions": embedded["allowed_actions"],
+                "components_state": embedded["components_state"],
+                "attribution": embedded["attribution"],
+                "basis": embedded["basis"],
+                "reviewed_by": embedded["reviewed_by"],
+                "reviewed_at": embedded["reviewed_at"],
+            }
+        )
+    register_path = tmp_path / "synthetic-rights-register.yml"
+    register_path.write_text(
+        yaml.safe_dump(
+            {"schema_version": 2, "decisions": decisions},
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    return RightsStorageAuthorizer(
+        load_fixture_rights_authority(register_path),
+        load_rights_policy(),
+    )
+
+
 def _source() -> dict[str, object]:
     return {
-        "schema_version": "1.2.0",
+        "schema_version": "1.3.0",
         "source_id": SOURCE_ID,
         "handle": "176904/900000001",
         "version": 1,
@@ -52,6 +92,37 @@ def _source() -> dict[str, object]:
         "sha256": SOURCE_SHA256,
         "rights": {
             "state": "approved",
+            "mode": "materialized",
+            "allowed_actions": [
+                "cache",
+                "extract_text",
+                "fetch",
+                "hash",
+                "index_text",
+                "ocr",
+                "publish",
+                "thumbnail",
+            ],
+            "components_state": "cleared",
+            "attribution": {
+                "creators": ["Synthetic Fixture Creator"],
+                "attribution_parties": ["Synthetic Fixture Rights Holder"],
+                "copyright_notice": "Synthetic fixture copyright notice",
+                "license_notice": "CC BY 4.0",
+                "license_url": "https://creativecommons.org/licenses/by/4.0/",
+                "disclaimer_notice": (
+                    "Synthetic fixture only; no external publication rights claim"
+                ),
+                "origin_url": "https://edoc.rki.de/handle/176904/900000001",
+                "prior_change_history": [],
+                "current_change_notice": "Unchanged synthetic fixture",
+            },
+            "approval_key": {
+                "source_id": SOURCE_ID,
+                "canonical_url": BITSTREAM_URL,
+                "version_or_bitstream": BITSTREAM_ID,
+                "source_sha256": SOURCE_SHA256,
+            },
             "basis": "Synthetic P06 conversion fixture; no external publication rights claim",
             "reviewed_at": "2026-08-03T14:00:00Z",
             "reviewed_by": "Desinfect maintainers",
@@ -192,6 +263,7 @@ def _build(
     documents: tuple[dict[str, object], ...] | None = None,
     conversions: tuple[dict[str, object], ...] | None = None,
     storage: tuple[dict[str, object], ...] | None = None,
+    authorizer=None,
 ):
     from scripts.rki_pipeline.manifests import build_manifest_graph
 
@@ -200,7 +272,7 @@ def _build(
         documents=(_document(),) if documents is None else documents,
         conversions=(_conversion(),) if conversions is None else conversions,
         storage_references=_storage() if storage is None else storage,
-        authorizer=_authorizer(),
+        authorizer=_authorizer() if authorizer is None else authorizer,
     )
 
 
@@ -252,7 +324,7 @@ def test_graph_rejects_invalid_storage_reference_schema(
     (
         ("documents", "bitstream_id", "rki-bitstream-" + "2" * 64, "Bitstream"),
         ("documents", "source_id", "rki:176904/54321", "verknüpfter Source"),
-        ("sources", "sha256", "2" * 64, "Rechteentscheidung"),
+        ("sources", "sha256", "2" * 64, "ApprovalKey"),
         ("storage", "sha256", "2" * 64, "Artefakt-SHA"),
         ("storage", "storage_object_id", "sha256:" + "2" * 64, "LFS-Objekt"),
         ("storage", "decision_sha256", "2" * 64, "Rechteentscheidung"),
@@ -294,7 +366,7 @@ def test_graph_rejects_source_and_bitstream_cross_handle_drift() -> None:
         "https://edoc.rki.de/bitstream/handle/176904/999999999/source.pdf?sequence=1"
     )
     source["bitstream_id"] = bitstream_identity(source["bitstream_url"]).bitstream_id
-    with pytest.raises(ValueError, match="Source-Bitstream"):
+    with pytest.raises(ValueError, match="ApprovalKey"):
         _build(sources=(source,), documents=(), conversions=(), storage=())
 
 
@@ -314,8 +386,17 @@ def _second_bitstream() -> tuple[dict[str, object], dict[str, object], dict[str,
         bitstream_id=bitstream.bitstream_id,
         bitstream_url=url,
         bitstream_version=3,
+        decision_sha256=(
+            "5e3f8f988bbec59b8a0f56c2980d5b8ae95340468ffc9e54b8a01021c94c44c7"
+        ),
         same_content_as=[BITSTREAM_ID],
     )
+    source["rights"]["approval_key"] = {
+        "source_id": SOURCE_ID,
+        "canonical_url": url,
+        "version_or_bitstream": bitstream.bitstream_id,
+        "source_sha256": SOURCE_SHA256,
+    }
     document = deepcopy(_document())
     paths = repository_document_paths(
         document_id=DOCUMENT_ID,
@@ -331,17 +412,20 @@ def _second_bitstream() -> tuple[dict[str, object], dict[str, object], dict[str,
     storage = deepcopy(_storage()[0])
     storage.update(
         artifact_id=bitstream.bitstream_id,
+        decision_sha256=source["decision_sha256"],
         relative_path=paths.pdf,
     )
     return source, document, storage
 
 
-def test_graph_accepts_same_document_with_two_sorted_bitstreams() -> None:
+def test_graph_accepts_same_document_with_two_sorted_bitstreams(tmp_path: Path) -> None:
     second_source, second_document, second_storage = _second_bitstream()
+    first_source = _source()
     graph = _build(
-        sources=(second_source, _source()),
+        sources=(second_source, first_source),
         documents=(second_document, _document()),
         storage=(second_storage, *_storage()),
+        authorizer=_authorizer_for_sources(tmp_path, first_source, second_source),
     )
 
     assert [item["bitstream_id"] for item in graph.sources] == sorted(
@@ -350,7 +434,7 @@ def test_graph_accepts_same_document_with_two_sorted_bitstreams() -> None:
     assert [item["document_id"] for item in graph.documents] == [DOCUMENT_ID, DOCUMENT_ID]
 
 
-def test_graph_rejects_alias_cycle() -> None:
+def test_graph_rejects_alias_cycle(tmp_path: Path) -> None:
     second_source, second_document, second_storage = _second_bitstream()
     first_source = _source()
     first_source["same_content_as"] = [second_source["bitstream_id"]]
@@ -360,6 +444,7 @@ def test_graph_rejects_alias_cycle() -> None:
             sources=(first_source, second_source),
             documents=(_document(), second_document),
             storage=(*_storage(), second_storage),
+            authorizer=_authorizer_for_sources(tmp_path, first_source, second_source),
         )
 
 
@@ -427,7 +512,7 @@ def test_graph_rejects_public_reference_without_public_visibility() -> None:
         _build(storage=(pdf_reference, markdown_reference))
 
 
-def test_graph_enforces_rights_visibility_matrix(
+def test_graph_catalog_validation_does_not_authorize_visibility_effects(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -435,11 +520,17 @@ def test_graph_enforces_rights_visibility_matrix(
 
     register = tmp_path / "rights-register.yml"
     register.write_text(
-        "schema_version: 1\n"
+        "schema_version: 2\n"
         "decisions:\n"
         f'  - source_id: "{SOURCE_ID}"\n'
+        f'    canonical_url: "{BITSTREAM_URL}"\n'
+        f'    version_or_bitstream: "{BITSTREAM_ID}"\n'
         f'    source_sha256: "{SOURCE_SHA256}"\n'
         '    state: "internal_only"\n'
+        '    mode: "origin_link"\n'
+        '    allowed_actions: []\n'
+        '    components_state: "unknown"\n'
+        '    attribution: null\n'
         '    basis: "Synthetic internal-only manifest test"\n'
         '    reviewed_by: "Test Reviewer"\n'
         '    reviewed_at: "2026-08-03T16:00:00Z"\n',
@@ -456,7 +547,17 @@ def test_graph_enforces_rights_visibility_matrix(
     source = _source()
     source["decision_sha256"] = decision.decision_sha256
     source["rights"] = {
+        "allowed_actions": [],
+        "approval_key": {
+            "source_id": decision.approval_key.source_id,
+            "canonical_url": decision.approval_key.canonical_url,
+            "version_or_bitstream": decision.approval_key.version_or_bitstream,
+            "source_sha256": decision.approval_key.source_sha256,
+        },
+        "attribution": None,
         "basis": decision.basis,
+        "components_state": decision.components_state.value,
+        "mode": decision.mode.value,
         "reviewed_at": decision.reviewed_at,
         "reviewed_by": decision.reviewed_by,
         "state": decision.state.value,
@@ -473,8 +574,11 @@ def test_graph_enforces_rights_visibility_matrix(
     for reference in (pdf_reference, markdown_reference):
         reference["visibility"] = "public"
 
-    with pytest.raises(ValueError, match="Storage-Referenz verletzt aktuelle Rechtepolicy"):
-        _build(sources=(source,), storage=(pdf_reference, markdown_reference))
+    public_graph = _build(
+        sources=(source,),
+        storage=(pdf_reference, markdown_reference),
+    )
+    assert len(public_graph.storage_references) == 2
 
 
 def test_stage_writer_rejects_symlinked_collection_directory(tmp_path: Path) -> None:
@@ -514,22 +618,26 @@ def _rewrite_catalog_descriptor(root: Path, relative: str) -> None:
     catalog_path.write_text(stable_json_dumps(catalog), encoding="utf-8")
 
 
-def test_catalog_rendering_is_canonical_and_order_independent() -> None:
+def test_catalog_rendering_is_canonical_and_order_independent(tmp_path: Path) -> None:
     from scripts.rki_pipeline.manifests import render_manifest_catalog
 
     second_source, second_document, second_storage = _second_bitstream()
+    first_source = _source()
+    authorizer = _authorizer_for_sources(tmp_path, first_source, second_source)
     first = render_manifest_catalog(
         _build(
-            sources=(_source(), second_source),
+            sources=(first_source, second_source),
             documents=(_document(), second_document),
             storage=(*_storage(), second_storage),
+            authorizer=authorizer,
         )
     )
     second = render_manifest_catalog(
         _build(
-            sources=(second_source, _source()),
+            sources=(second_source, first_source),
             documents=(second_document, _document()),
             storage=(second_storage, *_storage()),
+            authorizer=authorizer,
         )
     )
 

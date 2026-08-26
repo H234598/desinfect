@@ -271,6 +271,7 @@ class LfsStorageAdapter:
             self.authorizer,
             subject,
             operation=operation,
+            backend=self.backend,
         )
 
     def _relative_path(self, logical_key: str) -> str:
@@ -321,7 +322,6 @@ class LfsStorageAdapter:
         )
 
     def exists(self, intent: StorageIntent) -> StorageReference | None:
-        self.authorize(intent, operation="exists")
         target = self._target(intent.logical_key)
         if not target.exists() and not target.is_symlink():
             return None

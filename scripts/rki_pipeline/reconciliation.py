@@ -59,14 +59,17 @@ from scripts.rki_pipeline.manifests import (
     storage_reference_from_manifest,
 )
 from scripts.rki_pipeline.rights import (
+    ApprovalKey,
+    RightsAction,
     RightsAuthority,
     RightsDecision,
     RightsPolicy,
     RightsPolicyError,
     RightsState,
+    load_authority_register,
     load_fixture_rights_authority,
     load_rights_policy,
-    resolve_rights,
+    resolve_action,
 )
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 from scripts.rki_pipeline.schema_registry import SchemaContractError, validate_document
@@ -398,8 +401,8 @@ def reconcile_rights(
     _require_graph(graph)
     references = _manifest_storage_references(graph)
     findings: list[ReconciliationFinding] = []
-    decisions: dict[tuple[str, str], RightsDecision] = {}
-    source_changed: dict[tuple[str, str], bool] = {}
+    decisions: dict[str, RightsDecision | None] = {}
+    source_changed: dict[str, bool] = {}
 
     current_sources = _current_source_projection_from_graph(graph)
     for owner_key, source in sorted(current_sources.items()):
@@ -419,32 +422,40 @@ def reconcile_rights(
             persisted_state,
         )):
             raise ReconciliationIntegrityError("Source-Rechteverknüpfung ist ungültig")
-        key = (source_id, source_sha256)
-        decision = decisions.get(key)
-        if decision is None:
-            try:
-                decision = resolve_rights(
-                    source_id,
-                    source_sha256,
-                    authority=authority,
-                    policy=policy,
-                )
-            except RightsPolicyError as exc:
-                raise ReconciliationIntegrityError("Rechteentscheidung ist nicht prüfbar") from exc
-            if type(decision) is not RightsDecision:
-                raise ReconciliationIntegrityError("Rechteentscheidung ist ungültig")
-            decisions[key] = decision
+        subject_id = source_subject_id(*owner_key)
+        try:
+            approval_key = ApprovalKey(
+                source_id=source_id,
+                canonical_url=source["bitstream_url"],
+                version_or_bitstream=bitstream_id,
+                source_sha256=source_sha256,
+            )
+            register = load_authority_register(authority)
+            decision = next(
+                (
+                    entry
+                    for entry in register.entries
+                    if entry.approval_key == approval_key
+                ),
+                None,
+            )
+        except (AttributeError, RightsPolicyError) as exc:
+            raise ReconciliationIntegrityError("Rechteentscheidung ist nicht prüfbar") from exc
+        if decision is not None and type(decision) is not RightsDecision:
+            raise ReconciliationIntegrityError("Rechteentscheidung ist ungültig")
+        decisions[subject_id] = decision
         changed = (
-            decision.decision_sha256 != persisted_hash
+            decision is None
+            or decision.decision_sha256 != persisted_hash
             or decision.state.value != persisted_state
             or decision.state is not RightsState.APPROVED
         )
-        source_changed[key] = source_changed.get(key, False) or changed
+        source_changed[subject_id] = changed
         if changed:
             findings.append(
                 _source_finding(
                     FindingCode.RIGHTS_CHANGED,
-                    source_subject_id(*owner_key),
+                    subject_id,
                     "Aktuelle Rechteentscheidung weicht ab",
                 )
             )
@@ -455,12 +466,12 @@ def reconcile_rights(
             continue
         if reference.source_id is None or reference.source_sha256 is None:
             raise ReconciliationIntegrityError("Storage-Rechteverknüpfung ist ungültig")
-        key = (reference.source_id, reference.source_sha256)
-        decision = decisions.get(key)
-        if decision is None:
+        if owner not in decisions:
             raise ReconciliationIntegrityError("Storage-Source-Rechteverknüpfung fehlt")
+        decision = decisions[owner]
         if (
-            source_changed[key]
+            source_changed[owner]
+            or decision is None
             or decision.decision_sha256 != reference.decision_sha256
             or decision.state.value != reference.rights_state
         ):
@@ -1709,20 +1720,40 @@ def _fixture_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return value
 
 
-def _fixture_authorizer(root: Path, source_id: str, source_sha256: str) -> tuple[
+def _fixture_authorizer(
+    root: Path,
+    source_id: str,
+    source_sha256: str,
+    canonical_url: str,
+) -> tuple[
     RightsStorageAuthorizer, RightsAuthority, RightsPolicy, RightsDecision
 ]:
     register = root / "rights.yml"
     register.write_text(
         "\n".join(
             (
-                "schema_version: 1",
+                "schema_version: 2",
                 "decisions:",
                 f"  - source_id: {source_id}",
+                f"    canonical_url: {canonical_url}",
+                f"    version_or_bitstream: {bitstream_identity(canonical_url).bitstream_id}",
                 f"    source_sha256: {source_sha256}",
                 "    state: approved",
-                "    basis: Synthetic reviewed fixture",
-                "    reviewed_by: Fixture",
+                "    mode: materialized",
+                "    allowed_actions: [cache, extract_text, fetch, hash, index_text, ocr, publish, thumbnail]",
+                "    components_state: cleared",
+                "    attribution:",
+                "      creators: [Synthetic Creator]",
+                "      attribution_parties: [Synthetic Rights Holder]",
+                "      copyright_notice: Synthetic copyright notice",
+                "      license_notice: CC BY 4.0",
+                "      license_url: https://creativecommons.org/licenses/by/4.0/",
+                "      disclaimer_notice: Synthetic fixture only",
+                f"      origin_url: https://edoc.rki.de/handle/{source_id.removeprefix('rki:')}",
+                "      prior_change_history: []",
+                "      current_change_notice: Unchanged synthetic fixture",
+                "    basis: Synthetic fixture; no external publication rights claim",
+                "    reviewed_by: Test Fixture",
                 '    reviewed_at: "2026-08-04T04:00:00Z"',
                 "",
             )
@@ -1731,7 +1762,18 @@ def _fixture_authorizer(root: Path, source_id: str, source_sha256: str) -> tuple
     )
     authority = load_fixture_rights_authority(register)
     policy = load_rights_policy()
-    decision = resolve_rights(source_id, source_sha256, authority=authority, policy=policy)
+    approval_key = ApprovalKey(
+        source_id=source_id,
+        canonical_url=canonical_url,
+        version_or_bitstream=bitstream_identity(canonical_url).bitstream_id,
+        source_sha256=source_sha256,
+    )
+    decision = resolve_action(
+        approval_key,
+        action=RightsAction.CACHE,
+        register=load_authority_register(authority),
+        policy=policy,
+    )
     return RightsStorageAuthorizer(authority, policy), authority, policy, decision
 
 
@@ -1774,10 +1816,10 @@ def _reconcile_fixture_once(value: dict[str, object], *, mode: str) -> dict[str,
     with TemporaryDirectory(prefix="desinfect-reconcile-") as temporary:
         root = Path(temporary)
         authorizer, authority, policy, decision = _fixture_authorizer(
-            root, record.source_id, source_sha256
+            root, record.source_id, source_sha256, record.pdf_url
         )
         sources = build_source_manifests(
-            (record,), rights_decisions={(record.source_id, source_sha256): decision}
+            (record,), rights_decisions={decision.approval_key: decision}
         )
         documents = (build_document_manifest(record),)
         logical_key = documents[0]["paths"]["pdf"]

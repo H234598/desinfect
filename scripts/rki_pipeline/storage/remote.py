@@ -97,6 +97,7 @@ class RemoteStorageAdapter:
             self.authorizer,
             subject,
             operation=operation,
+            backend=self.backend,
         )
 
     def _key(self, logical_key: str) -> str:
@@ -212,7 +213,6 @@ class RemoteStorageAdapter:
         )
 
     def exists(self, intent: StorageIntent) -> StorageReference | None:
-        self.authorize(intent, operation="exists")
         key = self._key(intent.logical_key)
         metadata = self.client.head(key)
         if metadata is None:

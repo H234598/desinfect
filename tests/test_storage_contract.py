@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import hashlib
+import ast
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scripts.rki_pipeline import rights
 from scripts.rki_pipeline.schema_registry import validate_document
@@ -13,10 +15,12 @@ from scripts.rki_pipeline.storage import base as storage_base
 from scripts.rki_pipeline.storage.base import (
     PreparedObject,
     StorageBackend,
+    StorageAuthorizationError,
     StorageConfigurationError,
     StorageError,
     StorageIntent,
     StorageReference,
+    rights_actions_for_storage_operation,
 )
 from scripts.rki_pipeline.storage.config import load_storage_config
 from scripts.rki_pipeline.storage.factory import build_storage_adapter
@@ -442,15 +446,53 @@ def test_rights_storage_authorizer_reloads_and_compares_exact_decision(
     register_path = tmp_path / "rights-register.yml"
 
     def write_decision(state: str) -> str:
+        canonical_url = (
+            "https://edoc.rki.de/bitstream/handle/176904/12345.2/"
+            "source.pdf?sequence=1"
+        )
+        approved = state == "approved"
         register_path.write_text(
-            "schema_version: 1\n"
-            "decisions:\n"
-            f'  - source_id: "{SOURCE_ID}"\n'
-            f'    source_sha256: "{SOURCE_SHA256}"\n'
-            f'    state: "{state}"\n'
-            '    basis: "Reviewed RKI reuse terms"\n'
-            '    reviewed_by: "Legal Reviewer"\n'
-            '    reviewed_at: "2026-08-03T08:00:00Z"\n',
+            yaml.safe_dump(
+                {
+                    "schema_version": 2,
+                    "decisions": [{
+                        "source_id": SOURCE_ID,
+                        "canonical_url": canonical_url,
+                        "version_or_bitstream": rights.bitstream_identity(
+                            canonical_url
+                        ).bitstream_id,
+                        "source_sha256": SOURCE_SHA256,
+                        "state": state,
+                        "mode": "materialized" if approved else "remove_all",
+                        "allowed_actions": (
+                            sorted(action.value for action in rights.RightsAction)
+                            if approved else []
+                        ),
+                        "components_state": "cleared" if approved else "blocked",
+                        "attribution": {
+                            "creators": ["Synthetic Creator"],
+                            "attribution_parties": ["Synthetic Rights Holder"],
+                            "copyright_notice": "Synthetic copyright notice",
+                            "license_notice": "CC BY 4.0",
+                            "license_url": (
+                                "https://creativecommons.org/licenses/by/4.0/"
+                            ),
+                            "disclaimer_notice": "Synthetic fixture only",
+                            "origin_url": (
+                                "https://edoc.rki.de/handle/176904/12345.2"
+                            ),
+                            "prior_change_history": [],
+                            "current_change_notice": "Unchanged synthetic fixture",
+                        } if approved else None,
+                        "basis": (
+                            "Synthetic fixture; no external publication rights claim"
+                        ),
+                        "reviewed_by": "Test Fixture",
+                        "reviewed_at": "2026-08-03T08:00:00Z",
+                    }],
+                },
+                sort_keys=False,
+            ),
             encoding="utf-8",
         )
         decision = rights.load_rights_register(register_path).entries[0]
@@ -491,3 +533,183 @@ def test_rights_storage_authorizer_reloads_and_compares_exact_decision(
     write_decision("takedown")
     with pytest.raises(StorageError, match=r"Rechte|autorisiert|Entscheidung"):
         authorizer.authorize(intent, operation="apply")
+
+
+def test_rights_storage_authorizer_rejects_forged_authority_seal(
+    tmp_path: Path,
+    storage_rights,
+) -> None:
+    """Direct field forgery must not turn an arbitrary register into authority."""
+
+    storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "approved"))
+    decision = rights.load_rights_register(storage_rights.register_path).entries[0]
+    forged = object.__new__(rights.RightsAuthority)
+    object.__setattr__(forged, "_register_source", storage_rights.register_path)
+    object.__setattr__(forged, "_token", object())
+    object.__setattr__(forged, "_isolated", True)
+    authorizer = storage_base.RightsStorageAuthorizer(
+        forged,
+        storage_rights.authorizer.policy,
+    )
+    source = tmp_path / "forged-source.bin"
+    source.write_bytes(b"payload")
+    intent = StorageIntent.from_path(
+        source,
+        artifact_id="forged-artifact",
+        logical_key="Jahre/1994/forged.pdf",
+        source_id=SOURCE_ID,
+        source_sha256=SOURCE_SHA256,
+        decision_sha256=decision.decision_sha256 or "0" * 64,
+        document_id=DOCUMENT_ID,
+        visibility="repository_authorized",
+        rights_state="approved",
+    )
+
+    with pytest.raises(StorageAuthorizationError, match="Rechteentscheidung"):
+        authorizer.authorize(intent, operation="materialize")
+
+
+def test_rights_storage_authorizer_rejects_canonical_source_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    storage_rights,
+) -> None:
+    """A minted authority must stop working when canonical source binding changes."""
+
+    storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "approved"))
+    decision = rights.load_rights_register(storage_rights.register_path).entries[0]
+    source = tmp_path / "source-drift.bin"
+    source.write_bytes(b"payload")
+    intent = StorageIntent.from_path(
+        source,
+        artifact_id="source-drift-artifact",
+        logical_key="Jahre/1994/source-drift.pdf",
+        source_id=SOURCE_ID,
+        source_sha256=SOURCE_SHA256,
+        decision_sha256=decision.decision_sha256 or "0" * 64,
+        document_id=DOCUMENT_ID,
+        visibility="repository_authorized",
+        rights_state="approved",
+    )
+    replacement = tmp_path / "replacement-rights.yml"
+    replacement.write_text("schema_version: 2\ndecisions: []\n", encoding="utf-8")
+    monkeypatch.setattr(rights, "DEFAULT_REGISTER_PATH", replacement)
+
+    with pytest.raises(StorageAuthorizationError, match="Rechteentscheidung"):
+        storage_rights.authorizer.authorize(intent, operation="materialize")
+
+
+@pytest.mark.parametrize(
+    ("operation", "backend", "visibility", "expected"),
+    (
+        ("materialize", None, "internal", (rights.RightsAction.CACHE,)),
+        ("export", None, "internal", (rights.RightsAction.FETCH,)),
+        ("verify", None, "internal", (rights.RightsAction.HASH,)),
+        ("apply", StorageBackend.LFS, "public", (rights.RightsAction.CACHE,)),
+        ("apply", StorageBackend.OBJECT, "internal", (rights.RightsAction.CACHE,)),
+        (
+            "apply",
+            StorageBackend.OBJECT,
+            "public",
+            (rights.RightsAction.CACHE, rights.RightsAction.PUBLISH),
+        ),
+        ("convert", None, "internal", (rights.RightsAction.EXTRACT_TEXT,)),
+        ("convert_ocr", None, "internal", (rights.RightsAction.OCR,)),
+        ("convert_output", None, "internal", (rights.RightsAction.CACHE,)),
+        ("convert_manifest", None, "internal", (rights.RightsAction.CACHE,)),
+        ("convert_publish", None, "internal", (rights.RightsAction.CACHE,)),
+        ("archive", None, "internal", (rights.RightsAction.CACHE,)),
+    ),
+)
+def test_storage_operation_mapping_is_total_and_effect_specific(
+    operation: str,
+    backend: StorageBackend | None,
+    visibility: str,
+    expected: tuple[object, ...],
+) -> None:
+    """Wrong operation mapping must block before payload effects."""
+
+    assert rights_actions_for_storage_operation(
+        operation,
+        backend=backend,
+        visibility=visibility,
+    ) == expected
+
+
+@pytest.mark.parametrize(
+    ("operation", "backend"),
+    (("exists", None), ("period-archive-materialize", None), ("apply", None)),
+)
+def test_unknown_or_underspecified_storage_operation_is_rejected(
+    operation: str,
+    backend: StorageBackend | None,
+) -> None:
+    """Lookup aliases and backend-ambiguous apply must never become effects."""
+
+    with pytest.raises(storage_base.StorageAuthorizationError):
+        rights_actions_for_storage_operation(
+            operation,
+            backend=backend,
+            visibility="public",
+        )
+
+
+def test_effect_operation_source_inventory_is_closed() -> None:
+    """New effect literals must add an explicit action mapping and contract test."""
+
+    relatives = (
+        "storage/lfs.py",
+        "storage/remote.py",
+        "storage/migrate.py",
+        "conversion/service.py",
+        "archive.py",
+        "manifests.py",
+        "aggregation.py",
+    )
+    observed: set[str] = set()
+    for relative in relatives:
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "scripts"
+            / "rki_pipeline"
+            / relative
+        ).read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.Call):
+                continue
+            for keyword in node.keywords:
+                if (
+                    keyword.arg == "operation"
+                    and isinstance(keyword.value, ast.Constant)
+                    and isinstance(keyword.value.value, str)
+                ):
+                    observed.add(keyword.value.value)
+
+    assert observed == {
+        "apply",
+        "archive",
+        "convert",
+        "convert_manifest",
+        "convert_ocr",
+        "convert_output",
+        "convert_publish",
+        "export",
+        "materialize",
+        "verify",
+    }
+
+
+def test_authority_register_source_access_is_sealed_in_production() -> None:
+    """Only rights.py may read the opaque authority register source field."""
+
+    pipeline_root = Path(__file__).resolve().parents[1] / "scripts" / "rki_pipeline"
+    offenders: list[str] = []
+    for path in sorted(pipeline_root.rglob("*.py")):
+        if path.name == "rights.py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Attribute) and node.attr == "_register_source":
+                offenders.append(f"{path.relative_to(pipeline_root)}:{node.lineno}")
+
+    assert offenders == []

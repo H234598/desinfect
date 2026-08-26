@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.rki_pipeline import conversion_cli
+from scripts.rki_pipeline import conversion_cli, rights
 from scripts.rki_pipeline.conversion import runtime as conversion_runtime
 from scripts.rki_pipeline.conversion.service import (
     ConversionError,
@@ -108,6 +108,26 @@ def _conversion_args(temp_root: Path) -> list[str]:
         "--temp-root",
         temp_root.as_posix(),
     ]
+
+
+def test_conversion_fixture_rejects_stale_authority_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Conversion fixture must validate minted authority before register use."""
+
+    stale_authority = rights.load_rights_authority()
+    replacement = tmp_path / "replacement-rights.yml"
+    replacement.write_text("schema_version: 2\ndecisions: []\n", encoding="utf-8")
+
+    def drift_source() -> rights.RightsAuthority:
+        monkeypatch.setattr(rights, "DEFAULT_REGISTER_PATH", replacement)
+        return stale_authority
+
+    monkeypatch.setattr(conversion_cli, "load_rights_authority", drift_source)
+
+    with pytest.raises(rights.RightsPolicyError, match="kanonische Register-Source"):
+        conversion_cli._fixture_intent(conversion_cli.TEXT_FIXTURE)
 
 
 def test_conversion_cli_rejects_repository_temp_root(

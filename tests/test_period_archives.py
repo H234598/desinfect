@@ -33,10 +33,15 @@ from scripts.rki_pipeline.archive import ArchiveBuild, ArchiveError, build_archi
 from scripts.rki_pipeline.due_tasks import DueTask, TaskKind
 from scripts.rki_pipeline.io_utils import mark_generated_root, stable_json_dumps
 from scripts.rki_pipeline.manifests import ManifestGraph
-from scripts.rki_pipeline.rights import resolve_rights
 from scripts.rki_pipeline.run_modes import EffectLedger, RunMode, capture_repository_snapshot
-from scripts.rki_pipeline.storage.base import PreparedObject, RightsStorageAuthorizer
+from scripts.rki_pipeline.storage.base import (
+    PreparedObject,
+    RightsStorageAuthorizer,
+    StorageAuthorizationError,
+    rights_actions_for_storage_operation,
+)
 from tests.test_manifests import _build as build_p06_graph
+from tests.test_manifests import _authorizer_for_sources as p06_authorizer_for_sources
 from tests.test_manifests import _document as p06_document
 from tests.test_manifests import _second_bitstream as p06_second_bitstream
 from tests.test_manifests import _source as p06_source
@@ -156,6 +161,36 @@ def test_berlin_dst_month_endpoints_are_stable(
 _SOURCE_ID = "rki:176904/900000001.2"
 _DOCUMENT_ID = "rki-176904-900000001-v2"
 _DECISION_SHA256 = "d" * 64
+
+
+def _rights_entry_lines(source_id: str, source_sha256: str) -> tuple[str, ...]:
+    handle = source_id.removeprefix("rki:")
+    canonical_url = (
+        f"https://edoc.rki.de/bitstream/handle/{handle}/source.pdf?sequence=1"
+    )
+    return (
+        f"  - source_id: {source_id}",
+        f"    canonical_url: {canonical_url}",
+        f"    version_or_bitstream: {rights.bitstream_identity(canonical_url).bitstream_id}",
+        f"    source_sha256: {source_sha256}",
+        "    state: approved",
+        "    mode: materialized",
+        "    allowed_actions: [cache, extract_text, fetch, hash, index_text, ocr, publish, thumbnail]",
+        "    components_state: cleared",
+        "    attribution:",
+        "      creators: [Synthetic Creator]",
+        "      attribution_parties: [Synthetic Rights Holder]",
+        "      copyright_notice: Synthetic copyright notice",
+        "      license_notice: CC BY 4.0",
+        "      license_url: https://creativecommons.org/licenses/by/4.0/",
+        "      disclaimer_notice: Synthetic fixture only",
+        f"      origin_url: https://edoc.rki.de/handle/{handle}",
+        "      prior_change_history: []",
+        "      current_change_notice: Unchanged synthetic fixture",
+        "    basis: Synthetic fixture; no external publication rights claim",
+        "    reviewed_by: Test Fixture",
+        '    reviewed_at: "2026-08-03T08:00:00Z"',
+    )
 
 
 def _prepared(
@@ -541,6 +576,7 @@ def test_p06_aliases_flow_through_plan_index_manifest_and_materialize(
         sources=(source, alias_source),
         documents=(p06_document(), alias_document),
         storage=(p06_storage()[0], p06_storage()[1], alias_storage),
+        authorizer=p06_authorizer_for_sources(tmp_path, source, alias_source),
     )
     plan = plan_period_archives(
         as_of=datetime(2026, 8, 4, tzinfo=timezone.utc),
@@ -700,21 +736,14 @@ def _period_builds(
     register.write_text(
         "\n".join(
             (
-                "schema_version: 1",
+                "schema_version: 2",
                 "decisions:",
                 *(
                     line
                     for item in {
                         (entry.source_id, entry.source_sha256) for entry in prepared
                     }
-                    for line in (
-                        f"  - source_id: {item[0]}",
-                        f"    source_sha256: {item[1]}",
-                        "    state: approved",
-                        "    basis: Reviewed RKI reuse terms",
-                        "    reviewed_by: Legal Reviewer",
-                        '    reviewed_at: "2026-08-03T08:00:00Z"',
-                    )
+                    for line in _rights_entry_lines(*item)
                 ),
                 "",
             )
@@ -726,6 +755,10 @@ def _period_builds(
         authority=rights.load_rights_authority(),
         policy=rights.load_rights_policy(),
     )
+    decisions = {
+        (decision.source_id, decision.source_sha256): decision
+        for decision in rights.load_authority_register(authorizer.authority).entries
+    }
     builds: dict[str, ArchiveBuild] = {}
     for archive in period.archives:
         entries = tuple(
@@ -733,12 +766,9 @@ def _period_builds(
                 entry,
                 prepared=replace(
                     entry.prepared,
-                    decision_sha256=resolve_rights(
-                        entry.prepared.source_id,
-                        entry.prepared.source_sha256,
-                        authority=authorizer.authority,
-                        policy=authorizer.policy,
-                    ).decision_sha256,
+                    decision_sha256=decisions[
+                        (entry.prepared.source_id, entry.prepared.source_sha256)
+                    ].decision_sha256,
                 ),
             )
             for entry in archive.spec.entries
@@ -1166,21 +1196,14 @@ def _materialize_authorizer(
     register.write_text(
         "\n".join(
             (
-                "schema_version: 1",
+                "schema_version: 2",
                 "decisions:",
                 *(
                     line
                     for source_id, source_sha256 in sorted(
                         {(item.source_id, item.source_sha256) for item in prepared}
                     )
-                    for line in (
-                        f"  - source_id: {source_id}",
-                        f"    source_sha256: {source_sha256}",
-                        "    state: approved",
-                        "    basis: Reviewed RKI reuse terms",
-                        "    reviewed_by: Legal Reviewer",
-                        '    reviewed_at: "2026-08-03T08:00:00Z"',
-                    )
+                    for line in _rights_entry_lines(source_id, source_sha256)
                 ),
                 "",
             )
@@ -1189,16 +1212,17 @@ def _materialize_authorizer(
     )
     monkeypatch.setattr(rights, "DEFAULT_REGISTER_PATH", register)
     authorizer = RightsStorageAuthorizer(rights.load_rights_authority(), rights.load_rights_policy())
+    decisions = {
+        (decision.source_id, decision.source_sha256): decision
+        for decision in rights.load_authority_register(authorizer.authority).entries
+    }
     prepared_by_id: dict[str, PreparedObject] = {}
     for item in prepared:
         prepared_by_id[item.artifact_id] = replace(
             item,
-            decision_sha256=resolve_rights(
-                item.source_id,
-                item.source_sha256,
-                authority=authorizer.authority,
-                policy=authorizer.policy,
-            ).decision_sha256,
+            decision_sha256=decisions[
+                (item.source_id, item.source_sha256)
+            ].decision_sha256,
         )
     periods = []
     for period in plan.periods:
@@ -1256,6 +1280,108 @@ def _materialize_fixture(
         authorizer=authorizer,
     )
     return plan, authorizer, result, ledger
+
+
+def test_period_archive_authorizes_archive_cache_before_first_effect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Denied archive cache must leave no file and no ledger event."""
+
+    plan, authorizer = _materialize_authorizer(
+        tmp_path,
+        plan_period_archives(**_plan_inputs(tmp_path)),
+        monkeypatch,
+    )
+    operations: list[str] = []
+
+    def deny_cache(
+        self: RightsStorageAuthorizer,
+        subject: object,
+        *,
+        operation: str,
+        backend: object = None,
+    ) -> None:
+        del self, subject, backend
+        operations.append(operation)
+        raise StorageAuthorizationError("cache denied")
+
+    monkeypatch.setattr(RightsStorageAuthorizer, "authorize", deny_cache)
+    ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
+    target = tmp_path / "denied-period-products"
+
+    with pytest.raises(AggregationError, match="Rechteentscheidung") as caught:
+        materialize_period_archives(
+            plan,
+            target,
+            temp_root=tmp_path,
+            ledger=ledger,
+            authorizer=authorizer,
+        )
+
+    assert operations == ["archive"]
+    assert isinstance(caught.value.__cause__, StorageAuthorizationError)
+    assert not target.exists()
+    assert ledger.events == []
+
+
+def test_period_archive_positive_authorization_precedes_first_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every positive archive check resolves only CACHE before any file write."""
+
+    plan, authorizer = _materialize_authorizer(
+        tmp_path,
+        plan_period_archives(**_plan_inputs(tmp_path)),
+        monkeypatch,
+    )
+    events: list[tuple[str, object]] = []
+    real_write = aggregation_module.atomic_write_bytes
+
+    def allow_cache(
+        self: RightsStorageAuthorizer,
+        subject: object,
+        *,
+        operation: str,
+        backend: object = None,
+    ) -> None:
+        del self
+        events.append((
+            "authorize",
+            (
+                operation,
+                rights_actions_for_storage_operation(
+                    operation,
+                    backend=backend,
+                    visibility=subject.visibility,
+                ),
+            ),
+        ))
+
+    def track_write(*args: object, **kwargs: object):
+        events.append(("write", None))
+        return real_write(*args, **kwargs)
+
+    monkeypatch.setattr(RightsStorageAuthorizer, "authorize", allow_cache)
+    monkeypatch.setattr(aggregation_module, "atomic_write_bytes", track_write)
+
+    result = materialize_period_archives(
+        plan,
+        tmp_path / "positive-period-products",
+        temp_root=tmp_path,
+        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
+        authorizer=authorizer,
+    )
+
+    first_write = next(index for index, event in enumerate(events) if event[0] == "write")
+    authorizations = events[:first_write]
+    assert authorizations
+    assert all(
+        event == ("authorize", ("archive", (rights.RightsAction.CACHE,)))
+        for event in authorizations
+    )
+    assert result.changed is True
 
 
 def _materialize_complete_publication(
@@ -1944,6 +2070,29 @@ def test_aggregate_cli_plan_is_deterministic_and_read_only(
     ]
     assert first == second
     assert capture_repository_snapshot(ROOT, protected_paths=("status.json",), temp_root=None) == before
+
+
+def test_aggregate_cli_fixture_rejects_stale_authority_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Aggregate fixture must validate its minted authority before register use."""
+
+    stale_authority = rights.load_rights_authority()
+    replacement = tmp_path / "replacement-rights.yml"
+    replacement.write_text("schema_version: 2\ndecisions: []\n", encoding="utf-8")
+
+    def drift_source() -> rights.RightsAuthority:
+        monkeypatch.setattr(rights, "DEFAULT_REGISTER_PATH", replacement)
+        return stale_authority
+
+    monkeypatch.setattr(aggregation_module, "load_rights_authority", drift_source)
+
+    with pytest.raises(rights.RightsPolicyError, match="kanonische Register-Source"):
+        aggregation_module._cli_fixture(
+            tmp_path,
+            datetime(2026, 1, 1, 5, tzinfo=timezone.utc),
+        )
 
 
 def test_aggregate_cli_materialize_has_stable_isolated_evidence(

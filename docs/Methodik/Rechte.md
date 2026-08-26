@@ -5,16 +5,21 @@
 RKI-Metadaten, Dokumenttext und erreichbare Download-URLs sind Belege, aber
 keine Autorität. Die einzige payloadautorisierende Aussage entsteht durch
 manuelle rechtliche Prüfung und einen gültigen Eintrag im gepinnten
-`research/rights-register.yml`. Aufgelöst wird immer das exakte Paar
-`(source_id, source_sha256)`; Wildcards und source-only-Freigaben sind verboten.
+`research/rights-register.yml`. Aufgelöst wird immer der exakte Schlüssel
+`(source_id, canonical_url, version_or_bitstream, source_sha256)`.
+`canonical_url` ist die kanonische `source-manifest.bitstream_url`,
+`version_or_bitstream` die kanonische `bitstream_id`; `source_url` bleibt der
+Originallink. Wildcards und source-only-Freigaben sind verboten.
 
 ## Reviewverfahren
 
 1. Kanonische `source_id`, RKI-Originallink und sämtliche Rohmetadaten sichern.
-2. Quellbytes laden, SHA-256 berechnen und als `source_sha256` festhalten.
-3. Lizenzhinweis, Dokumentbedingungen, Rechte Dritter und geplante
-   Sichtbarkeit durch einen Menschen prüfen.
-4. Zustand, nachvollziehbare Grundlage, `reviewed_by` und UTC-Zeitpunkt in
+2. Kanonische Bitstream-URL und Bitstream-ID ableiten, Quellbytes laden,
+   SHA-256 berechnen und den vollständigen Vierfachschlüssel festhalten.
+3. Jede benötigte Aktion, Lizenzhinweis, Dokumentbedingungen, Komponenten,
+   Rechte Dritter und vollständige Attribution durch einen Menschen prüfen.
+4. Zustand, Modus, sortierte Aktionen, Komponentenstatus, Attribution,
+   nachvollziehbare Grundlage, `reviewed_by` und UTC-Zeitpunkt in
    einem PR eintragen. `CODEOWNERS` weist menschliche Reviewverantwortung zu;
    verpflichtend wird sie erst durch passende Repository-Regeln. Automatische
    Schreibpfade dürfen das Register nicht ändern.
@@ -22,28 +27,36 @@ manuelle rechtliche Prüfung und einen gültigen Eintrag im gepinnten
    CI-Gate mergen.
 
 Rohmetadaten dürfen die Entscheidung begründen, ersetzen sie aber nie. Ein
-fehlender exakter Treffer wird deterministisch zu `metadata_only`.
+fehlender exakter Treffer wird deterministisch zu `unknown`/`origin_link`
+ohne Aktion, Attribution oder Entscheidungs-SHA.
 
 ## Deterministische Provenienz
 
 `decision_sha256` ist der SHA-256 des kanonischen Entscheidungsdokuments aus
-Policyversion, `source_id`, `source_sha256`, Zustand, Grundlage, Reviewer und
-Reviewzeitpunkt. Er bindet Storage-Referenzen an das Review und deckt Änderung
-oder falsche Zuordnung auf. Er ist keine Signatur und kein kryptografischer
-Nachweis der Revieweridentität.
+Policyversion, Vierfachschlüssel, Zustand, Modus, Aktionen,
+`components_state`, Attribution, Grundlage, Reviewer und Reviewzeitpunkt. Er
+bindet Storage-Referenzen an das Review und deckt Änderung oder falsche
+Zuordnung auf. Er ist keine Signatur und kein kryptografischer Nachweis der
+Revieweridentität.
 
-## Publikationsableitung
+## Publikationsableitung und Effektgrenze
 
-Die feste Zustands-/Sichtbarkeitsmatrix lautet:
+Die feste Modusfolge lautet `remove_all`, `origin_link`, `source_only`,
+`materialized`. Nur `materialized` darf Aktionen tragen und erfordert
+`approved`. Jede Wirkung wird separat als `fetch`, `cache`, `hash`, `ocr`,
+`extract_text`, `thumbnail`, `index_text` oder `publish` geprüft. `publish`
+verlangt freigegebene Komponenten und vollständige Attribution.
 
-- `approved`: `public`, `repository_authorized`, `internal`, `restricted`;
-- `internal_only`: nur `internal` und `restricted`;
-- `metadata_only`, `unknown`, `takedown`: keine Payload-Sichtbarkeit.
+Storage ordnet reale Effekte total zu: Materialisierung/Archiv/Outputs zu
+`cache`, Export zu `fetch`, Verifikation zu `hash`, Konvertierung zu
+`extract_text` beziehungsweise `ocr`. Öffentlicher Remote-Apply benötigt
+`cache` und `publish`; LFS- und nichtöffentlicher Apply nur `cache`.
 
 Vor Temp-Write, Remote-`get`, Backend-`put` und LFS-Write wird der gepinnte
 Registerstand erneut geladen. Eine Revocation oder geänderte Entscheidung
-blockiert den nächsten Byteeffekt. Metadaten und RKI-Originallink bleiben für
-Inventar und Reconciliation erhalten.
+blockiert den nächsten Byteeffekt. `exists`, Conversion-Skips und
+Manifestkatalogprüfung bleiben reine Lookup-/Validierungspfade. Takedown nutzt
+`remove_all`; ein fehlender oder unbekannter Treffer bleibt `origin_link`.
 
 ## Verifikation und Korrektur
 

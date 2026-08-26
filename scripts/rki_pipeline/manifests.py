@@ -26,20 +26,19 @@ from scripts.rki_pipeline.io_utils import (
 )
 from scripts.rki_pipeline.paths import DocumentType, repository_document_paths
 from scripts.rki_pipeline.rights import (
+    ApprovalKey,
     RightsPolicyError,
     load_rights_authority,
     load_rights_policy,
-    resolve_rights,
+    load_authority_register,
 )
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 from scripts.rki_pipeline.schema_registry import validate_document
 from scripts.rki_pipeline.staging import StagingState, staged_directory
 from scripts.rki_pipeline.storage.base import (
     RightsStorageAuthorizer,
-    StorageAuthorizationError,
     StorageBackend,
     StorageReference,
-    authorize_storage_operation,
 )
 
 Manifest = dict[str, object]
@@ -179,16 +178,47 @@ def _validate_sources(
         if source["source_url"] != f"https://edoc.rki.de/handle/{identity.handle}":
             raise ManifestGraphError("Source-URL widerspricht RKI-Handle")
         try:
-            decision = resolve_rights(
-                source["source_id"],
-                source["sha256"],
-                authority=authorizer.authority,
-                policy=authorizer.policy,
+            key = ApprovalKey(
+                source_id=source["source_id"],
+                canonical_url=source["bitstream_url"],
+                version_or_bitstream=source["bitstream_id"],
+                source_sha256=source["sha256"],
             )
-        except RightsPolicyError as exc:
+            register = load_authority_register(authorizer.authority)
+            decision = next(
+                (entry for entry in register.entries if entry.approval_key == key),
+                None,
+            )
+            if decision is None:
+                raise RightsPolicyError("ApprovalKey fehlt im Register")
+        except (AttributeError, RightsPolicyError) as exc:
             raise ManifestGraphError("Source-Rechteentscheidung ist ungültig") from exc
         if source["decision_sha256"] != decision.decision_sha256 or source["rights"] != {
+            "allowed_actions": [action.value for action in decision.allowed_actions],
+            "approval_key": {
+                "source_id": decision.approval_key.source_id,
+                "canonical_url": decision.approval_key.canonical_url,
+                "version_or_bitstream": decision.approval_key.version_or_bitstream,
+                "source_sha256": decision.approval_key.source_sha256,
+            },
+            "attribution": (
+                None
+                if decision.attribution is None
+                else {
+                    "creators": list(decision.attribution.creators),
+                    "attribution_parties": list(decision.attribution.attribution_parties),
+                    "copyright_notice": decision.attribution.copyright_notice,
+                    "license_notice": decision.attribution.license_notice,
+                    "license_url": decision.attribution.license_url,
+                    "disclaimer_notice": decision.attribution.disclaimer_notice,
+                    "origin_url": decision.attribution.origin_url,
+                    "prior_change_history": list(decision.attribution.prior_change_history),
+                    "current_change_notice": decision.attribution.current_change_notice,
+                }
+            ),
             "basis": decision.basis,
+            "components_state": decision.components_state.value,
+            "mode": decision.mode.value,
             "reviewed_at": decision.reviewed_at,
             "reviewed_by": decision.reviewed_by,
             "state": decision.state.value,
@@ -386,14 +416,6 @@ def _validate_storage(
             raise ManifestGraphError("LFS-Objekt-SHA entspricht nicht Artefakt-SHA")
         if reference["public_reference"] is not None and reference["visibility"] != "public":
             raise ManifestGraphError("Öffentliche Storage-Referenz benötigt public visibility")
-        try:
-            authorize_storage_operation(
-                authorizer,
-                storage_reference_from_manifest(reference),
-                operation="manifest_catalog",
-            )
-        except (StorageAuthorizationError, ValueError) as exc:
-            raise ManifestGraphError("Storage-Referenz verletzt aktuelle Rechtepolicy") from exc
     for conversion_id, conversion in conversions.items():
         storage_reference = conversion["storage_reference"]
         if storage_reference is not None:

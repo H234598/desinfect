@@ -46,7 +46,7 @@ def test_source_manifest_v1_to_current_is_deterministic_and_preserves_unknowns()
 
     assert source == original
     assert first == second
-    assert first["schema_version"] == "1.2.0"
+    assert first["schema_version"] == "1.3.0"
     assert first["doi"] is None
     assert first["provenance_state"] == "legacy_needs_review"
     assert first["bitstream_id"] is None
@@ -69,9 +69,89 @@ def test_source_manifest_v1_1_to_current_adds_nullable_doi() -> None:
     migrated = migrate_document("source-manifest", source)
 
     assert source == original
-    assert migrated["schema_version"] == "1.2.0"
+    assert migrated["schema_version"] == "1.3.0"
     assert migrated["doi"] is None
     validate_document("source-manifest", migrated)
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    (
+        "source-manifest-v1.0.json",
+        "source-manifest-v1.1.json",
+        "source-manifest-v1.2.json",
+    ),
+)
+def test_every_source_manifest_predecessor_migrates_directly_to_1_3_fail_closed(
+    fixture_name: str,
+) -> None:
+    """No predecessor may inherit publication authority during migration."""
+
+    migrated = migrate_document("source-manifest", _fixture(fixture_name))
+
+    assert migrated["schema_version"] == "1.3.0"
+    assert migrated["rights"]["mode"] == "origin_link"
+    assert migrated["rights"]["allowed_actions"] == []
+    assert migrated["rights"]["components_state"] == "unknown"
+    assert migrated["rights"]["attribution"] is None
+    assert migrated["decision_sha256"] is None
+    assert migrated["provenance_state"] == "legacy_needs_review"
+    validate_document("source-manifest", migrated)
+
+
+@pytest.mark.parametrize("field", ("bitstream_url", "bitstream_id"))
+def test_nullable_legacy_bitstream_never_creates_approval_authority(field: str) -> None:
+    """A partial legacy bitstream identity must not become an ApprovalKey."""
+
+    source = _fixture("source-manifest-v1.2.json")
+    source[field] = None
+
+    migrated = migrate_document("source-manifest", source)
+
+    assert migrated["rights"]["approval_key"] is None
+    assert migrated["rights"]["allowed_actions"] == []
+    assert migrated["rights"]["attribution"] is None
+    assert migrated["decision_sha256"] is None
+
+
+def test_source_manifest_v1_2_migration_derives_exact_source_not_artifact_hash() -> None:
+    """Approval key binds source bytes and bitstream, never an artifact hash."""
+
+    migrated = migrate_document(
+        "source-manifest",
+        _fixture("source-manifest-v1.2.json"),
+    )
+
+    assert migrated["rights"]["approval_key"] == {
+        "source_id": "rki:176904/12345.2",
+        "canonical_url": (
+            "https://edoc.rki.de/bitstream/handle/176904/12345.2/"
+            "issue.pdf?sequence=2"
+        ),
+        "version_or_bitstream": (
+            "rki-bitstream-ca16f3bf368deddef0cc580b31c0105db58edcfd486fa689a8860cb8aea67176"
+        ),
+        "source_sha256": "a" * 64,
+    }
+
+
+def test_source_manifest_publish_requires_cleared_components() -> None:
+    """Persisted publish authority must retain the component-review gate."""
+
+    payload = json.loads(
+        (
+            ROOT
+            / "tests"
+            / "fixtures"
+            / "manifests"
+            / "Quellen"
+            / "manifest.jsonl"
+        ).read_text(encoding="utf-8")
+    )
+    payload["rights"]["components_state"] = "unknown"
+
+    with pytest.raises(SchemaContractError, match="components_state"):
+        validate_document("source-manifest", payload)
 
 
 @pytest.mark.parametrize("doi", ("10/no-prefix", "10.1/short-prefix", "10.1234/white space"))

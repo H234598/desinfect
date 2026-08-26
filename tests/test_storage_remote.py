@@ -19,7 +19,7 @@ from scripts.rki_pipeline.storage.remote import RemoteStorageAdapter
 
 SOURCE_ID = "rki:176904/12345.2"
 SOURCE_SHA256 = "b" * 64
-DECISION_SHA256 = "86209a043bf3571d183ea7c65e24bcc45f5e0f4db15042773b282273c96c264a"
+DECISION_SHA256 = "5dffc189ce91946e9036d7517e0fdade5c04cfa70d150b099027e53a00d45e71"
 DOCUMENT_ID = "rki-176904-12345-v2"
 CONVERSION_ID = "conv-" + "d" * 64
 
@@ -571,16 +571,14 @@ def test_remote_constructors_reject_structural_authorizer(
     assert object_adapter(client, storage_rights).authorizer is storage_rights.authorizer
 
 
-def test_remote_exists_authorizes_before_head(tmp_path: Path, storage_rights) -> None:
+def test_remote_exists_is_pure_and_does_not_require_action(tmp_path: Path, storage_rights) -> None:
     client = MemoryClient()
     adapter = object_adapter(client, storage_rights)
     source_intent = intent(tmp_path)
     storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))
 
-    with pytest.raises(StorageError, match=r"Rechte|autorisiert"):
-        adapter.exists(source_intent)
-
-    assert client.calls == []
+    assert adapter.exists(source_intent) is None
+    assert client.calls == [("head", "rki/Bulletins/Jahre/1994/archive.zip")]
 
 
 @pytest.mark.parametrize("replacement", (b"changed", None))
