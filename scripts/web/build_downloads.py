@@ -36,6 +36,13 @@ _STATUS_LABELS = {
     "blocked": "Blockiert",
     "unknown": "Unbekannt",
 }
+_RIGHTS_LABELS = {
+    RightsState.APPROVED: "Freigegeben",
+    RightsState.METADATA_ONLY: "Nur Metadaten",
+    RightsState.INTERNAL_ONLY: "Nur intern",
+    RightsState.UNKNOWN: "Ungeklärt",
+    RightsState.TAKEDOWN: "Entfernt",
+}
 
 
 class DownloadProjectionError(ValueError):
@@ -50,6 +57,7 @@ class DownloadRow:
     title: str
     publication_date: str
     approval_key: ApprovalKey
+    rights_state: RightsState
     mode: PublicationMode
     origin_url: str
     artifact_kind: str | None
@@ -261,6 +269,7 @@ def _artifact_rows(
                     source.get("publication_date"), "publication_date"
                 ),
                 approval_key=key,
+                rights_state=RightsState.APPROVED,
                 mode=PublicationMode.MATERIALIZED,
                 origin_url=validate_origin_url(
                     _require_string(source.get("source_url"), "source_url"), source_id=key.source_id
@@ -337,6 +346,7 @@ def project_downloads(
                         source.get("publication_date"), "publication_date"
                     ),
                     approval_key=key,
+                    rights_state=decision.state,
                     mode=decision.mode,
                     origin_url=origin_url,
                     artifact_kind=None,
@@ -418,6 +428,8 @@ def _row_fragment(row: DownloadRow) -> str:
         PublicationMode.ORIGIN_LINK,
     }:
         raise DownloadProjectionError("row besitzt keinen öffentlichen Publikationsmodus")
+    if type(row.rights_state) is not RightsState:
+        raise DownloadProjectionError("row.rights_state ist nicht kanonisch")
     if row.bitstream_id != row.approval_key.version_or_bitstream:
         raise DownloadProjectionError("row.bitstream_id passt nicht zum ApprovalKey")
     title = html.escape(row.title, quote=True)
@@ -446,6 +458,10 @@ def _row_fragment(row: DownloadRow) -> str:
         parts.append(
             f'<p>{html.escape(row.attribution.copyright_notice, quote=True)} · <a href="{html.escape(license_url, quote=True)}" rel="noopener noreferrer">{html.escape(row.attribution.license_notice, quote=True)}</a></p>'
         )
+        if row.rights_state is not RightsState.APPROVED:
+            raise DownloadProjectionError(
+                "materialized Row besitzt keinen freigegebenen Rechtezustand"
+            )
         parts.append(
             "<p>Rechtestatus: Freigegeben. Veröffentlichungsmodus: Materialisiert. Verfügbarkeit: Download verfügbar.</p>"
         )
@@ -465,7 +481,8 @@ def _row_fragment(row: DownloadRow) -> str:
             raise DownloadProjectionError("nicht-materialized Row enthält Artefaktdaten")
         mode = "Nur Quelle" if row.mode is PublicationMode.SOURCE_ONLY else "Origin-Link"
         parts.append(
-            f"<p>Rechtestatus: Nur Metadaten. Veröffentlichungsmodus: {mode}. Verfügbarkeit: Beim RKI verfügbar.</p>"
+            f"<p>Rechtestatus: {_RIGHTS_LABELS[row.rights_state]}. "
+            f"Veröffentlichungsmodus: {mode}. Verfügbarkeit: Beim RKI verfügbar.</p>"
         )
     parts.append(
         f'<p><a href="{html.escape(origin, quote=True)}" rel="noopener noreferrer">Beim RKI öffnen</a></p>'

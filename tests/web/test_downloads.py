@@ -15,6 +15,7 @@ from scripts.rki_pipeline.rights import (
     RightsAction,
     RightsAttribution,
     RightsDecision,
+    RightsRegister,
     RightsState,
     decision_sha256,
     load_authority_register,
@@ -620,6 +621,120 @@ def test_origin_link_has_no_artifact_fields(tmp_path: Path) -> None:
         None,
         None,
     )
+
+
+@pytest.mark.parametrize(
+    ("mode", "state", "rights_label", "mode_label", "availability"),
+    (
+        (
+            PublicationMode.SOURCE_ONLY,
+            RightsState.METADATA_ONLY,
+            "Nur Metadaten",
+            "Nur Quelle",
+            "Beim RKI verfügbar",
+        ),
+        (
+            PublicationMode.ORIGIN_LINK,
+            RightsState.UNKNOWN,
+            "Ungeklärt",
+            "Origin-Link",
+            "Beim RKI verfügbar",
+        ),
+    ),
+)
+def test_nonmaterialized_rows_carry_exact_rights_state_and_text(
+    tmp_path: Path,
+    mode: PublicationMode,
+    state: RightsState,
+    rights_label: str,
+    mode_label: str,
+    availability: str,
+) -> None:
+    decision = _decision(mode=mode, state=state)
+    register, policy, _decisions = _fixture_register(tmp_path, decision)
+    row = project_downloads(_graph(decision), register=register, policy=policy).rows[0]
+    assert row.rights_state is state
+    rendered = render_download_page(
+        f"<main>{DOWNLOAD_MARKER}</main>",
+        DownloadInputs(
+            rows=(row,), tombstones=(), public_status={"status": "operational"}, input_hashes={}
+        ),
+    )
+    assert f"Rechtestatus: {rights_label}." in rendered
+    assert f"Veröffentlichungsmodus: {mode_label}." in rendered
+    assert f"Verfügbarkeit: {availability}." in rendered
+
+
+def test_missing_rights_decision_fails_closed(fixture_register) -> None:
+    _register, policy, decision = fixture_register
+    with pytest.raises(DownloadProjectionError):
+        project_downloads(
+            _graph(decision), register=RightsRegister(schema_version=2, entries=()), policy=policy
+        )
+
+
+def test_blocked_components_fail_closed(tmp_path: Path) -> None:
+    approved = _decision()
+    draft = replace(
+        approved,
+        allowed_actions=(),
+        components_state=ComponentsState.BLOCKED,
+        attribution=None,
+        decision_sha256=None,
+    )
+    blocked = replace(draft, decision_sha256=decision_sha256(draft))
+    register, policy, _decisions = _fixture_register(tmp_path, blocked)
+    with pytest.raises(DownloadProjectionError):
+        project_downloads(_graph(blocked), register=register, policy=policy)
+
+
+@pytest.mark.parametrize(
+    ("mode", "state"),
+    (
+        (PublicationMode.SOURCE_ONLY, RightsState.METADATA_ONLY),
+        (PublicationMode.ORIGIN_LINK, RightsState.UNKNOWN),
+    ),
+)
+def test_nonmaterialized_downgrade_strips_payload_secrets(
+    tmp_path: Path, mode: PublicationMode, state: RightsState
+) -> None:
+    decision = _decision(mode=mode, state=state)
+    register, policy, _decisions = _fixture_register(tmp_path, decision)
+    graph = _graph(decision)
+    source = {
+        **graph.sources[0],
+        "title": "Permitted bibliography title",
+        "body": "BODY_SECRET",
+        "ocr_text": "OCR_SECRET",
+        "snippet": "SNIPPET_SECRET",
+        "bibliography": "BIB_SECRET",
+    }
+    storage = tuple(
+        {
+            **reference,
+            "sha256": "f" * 64,
+            "index_text": "INDEX_SECRET",
+            "payload": "PAYLOAD_SECRET",
+        }
+        for reference in graph.storage_references
+    )
+    rendered = render_download_page(
+        f"<main>{DOWNLOAD_MARKER}</main>",
+        project_downloads(
+            ManifestGraph((source,), graph.documents, (), storage), register=register, policy=policy
+        ),
+    )
+    assert "Permitted bibliography title" in rendered
+    for secret in (
+        "BODY_SECRET",
+        "OCR_SECRET",
+        "SNIPPET_SECRET",
+        "BIB_SECRET",
+        "INDEX_SECRET",
+        "PAYLOAD_SECRET",
+        "f" * 64,
+    ):
+        assert secret not in rendered
 
 
 @pytest.mark.parametrize("page", ("<main></main>", f"{DOWNLOAD_MARKER}{DOWNLOAD_MARKER}"))
