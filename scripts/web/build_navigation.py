@@ -31,7 +31,13 @@ EXPECTED_NAV: tuple[object, ...] = (
         ]
     },
 )
-EXPECTED_NOT_IN_NAV = "/WARTUNG.md\n/Wartung/\n"
+EXPECTED_NOT_IN_NAV = (
+    "/WARTUNG.md\n"
+    "/Wartung/\n"
+    "/Downloads.md\n"
+    "/Methodik/Historische-Einordnung.md\n"
+    "/Methodik/Rechte.md\n"
+)
 
 
 def _nav_targets(value: object) -> tuple[str, ...]:
@@ -83,7 +89,7 @@ def validate_navigation(config: Mapping[object, object], index: ContentIndex) ->
     if nav != list(EXPECTED_NAV):
         raise NavigationError("reader navigation labels, order or targets differ from P10.3")
     if config.get("not_in_nav") != EXPECTED_NOT_IN_NAV:
-        raise NavigationError("maintenance pages must use the exact not_in_nav patterns")
+        raise NavigationError("hidden pages must use the exact not_in_nav patterns")
 
 
 def runtime_navigation_config(

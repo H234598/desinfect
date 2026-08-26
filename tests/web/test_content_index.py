@@ -45,6 +45,8 @@ def test_repository_has_reader_and_hidden_maintenance_pages_without_taxonomy_rol
         "Bulletins/index.md",
         "Methodik/Wirksamkeit.md",
         "Methodik/Bewertung.md",
+        "Methodik/Historische-Einordnung.md",
+        "Methodik/Rechte.md",
         "Methodik/Sicherheit.md",
         "Tabelle.md",
         "Downloads.md",

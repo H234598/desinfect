@@ -9,3 +9,6 @@ aliases:
 
 Bewertungen werden erst aus nachvollziehbaren Quellenmerkmalen abgeleitet und getrennt geprüft.
 Vorschläge sind keine Freigabe; offene Zustände bleiben sichtbar.
+
+[Rechte und Publikationsmodi](Rechte.md) erläutert die getrennte rechtliche und technische
+Freigabegrenze.

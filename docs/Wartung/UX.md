@@ -129,3 +129,37 @@ Animationen deaktiviert.
 P10.3 beweist Struktur, lokale Ressourcen, serverseitige Vollständigkeit und CSS-Verträge
 automatisiert. Echte Browserprüfung mit Axe, visueller Tastaturkontrolle und einer 390-Pixel-
 Ansicht gehört zu P11.4. Dieses Dokument behauptet diese spätere Browserabnahme nicht.
+
+## Downloads, Status und Rechte
+
+Die Downloadseite zeigt den Betriebszustand als sichtbaren Text in einer benannten
+Statusregion: „Noch nicht initialisiert“, „Betriebsbereit“, „Eingeschränkt verfügbar“,
+„Blockiert“ oder „Unbekannt“. Bei eingeschränktem oder blockiertem Zustand nennt sie den
+letzten erfolgreichen Lauf oder ausdrücklich dessen Fehlen und verlinkt die
+Wiederherstellungshinweise. Zustand und Rechte werden nicht nur durch Farbe vermittelt.
+
+Native Links tragen konkrete Namen: „PDF herunterladen“, „Quell-Markdown herunterladen“ und
+„Beim RKI öffnen“. Der umgebende Text nennt zusätzlich Rechtestatus, Publikationsmodus und
+Verfügbarkeit. Lizenzlinks zeigen ihre Lizenzbezeichnung; weder Symbol noch URL allein ist
+zugänglicher Name.
+
+### Tastatur und No-JS
+
+Alle Aktionen sind native Links und damit per Tastatur, Browserstatus und Kontextmenü
+nutzbar. No-JS zeigt denselben Status, dieselben zulässigen Quellen und dieselben
+Downloadlinks. Es gibt keine Dokumentvorschau über `iframe`, `object`, `embed` oder `img`
+und keine remote geladenen Browserressourcen.
+
+### Suchgrenze
+
+Die Seite `Downloads.md` bleibt vollständig außerhalb des Suchindex. Dadurch gelangen auch
+sichtbare `source_only`-Titel und bibliografische Angaben nicht in
+`site/search/search_index.json`. Die HTML-Seite bleibt direkt über die Links der Bulletin-
+und Bewertungsseiten erreichbar. Payloadtext, OCR-Text, interne Hashes, Storagepfade,
+Objekt-IDs und Tokenqueries sind weder HTML- noch Suchinhalt.
+
+### Abnahmegrenze P11.4
+
+P10.4 prüft Strict-HTML, Semantik, lokale Ressourcen, sichtbare Linknamen und Suchgrenzen
+automatisiert. Echte Browser-, Axe-, Tastatur- und 390-Pixel-Abnahme bleibt P11.4. Diese
+Restabnahme wird hier nicht als bereits durchgeführt dargestellt.

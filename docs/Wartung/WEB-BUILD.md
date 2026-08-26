@@ -180,3 +180,69 @@ Identitäts- und Sentinelprüfung wie in Abschnitt 5 verwenden.
 Der Build konfiguriert oder deployt keine GitHub Pages und trifft keine Custom-Domain-
 Entscheidung. Echte Browser-, Axe- und 390-Pixel-Abnahme gehört zu P11.4. P09.4-Live-
 Deployment und dessen separater 301-Blocker werden durch P10.3 nicht verändert.
+
+## 11. Downloadprojektion
+
+### Eingaben und Snapshotbindung
+
+Die Downloadseite verwendet ausschließlich die in einem Build-Snapshot gebundenen Eingaben:
+
+- `status.json` für den sichtbaren Betriebsstatus;
+- `config/rights-policy.toml` für geschlossene Modi und Aktionen;
+- `research/rights-register.yml` für aktuelle, exakte Rechteentscheidungen;
+- den vollständigen Katalog unter `rki/Bulletins/Manifeste/` mit `catalog.json` sowie den
+  Manifesten für Quellen, Dokumente, Konvertierungen und Storage;
+- `content/Downloads.md` mit genau einem Marker `DESINFECT:DOWNLOADS`.
+
+Autoritäts- und Manifestbytes werden begrenzt erfasst, gehasht, geparst und an denselben
+Snapshot gebunden. Projektion, Docs-Rendering und MkDocs-Build lesen keine neueren
+Ersatzbytes nach. Drift vor Publikation bricht fail-closed ab.
+
+### Vollständig-fehlend/teilweise-vorhanden-Matrix
+
+| Manifestzustand | Ergebnis |
+| --- | --- |
+| Manifestwurzel vollständig fehlend | ehrlicher Leerzustand „Noch keine validierten Downloads“ |
+| Manifestwurzel teilweise vorhanden oder eine Pflichtdatei fehlt | Buildfehler; keine Publikation |
+| Katalog vollständig, aber Struktur, Hash oder Reihenfolge weicht ab | Buildfehler; keine Publikation |
+| Katalog vollständig und exakt, Rechteentscheidung restriktiver | sichere Projektion oder Takedown ohne alte Referenz |
+| Katalog vollständig und exakt, Entscheidung lateral/permissiv gedriftet | Buildfehler; keine Publikation |
+
+Ein fehlendes Register, eine unsichere Lizenz-URL oder ein fehlender/mehrfacher Marker ist
+immer ein Fehler. Diese Fälle werden nicht als leerer Korpus umgedeutet.
+
+### Vollbuild und Teilpreview
+
+Der Vollbuild rendert die Downloadprojektion serverseitig und publiziert vollständige Docs
+und anschließend eine vollständige Strict-Site. Die Seite funktioniert ohne JavaScript.
+
+Ein Teilpreview bleibt ein Dry-run und publiziert nichts:
+
+```bash
+python3 scripts/web/build_site.py --dry-run --strict --only Downloads.md
+python3 scripts/web/build_site.py --dry-run --strict --only Methodik/Rechte.md
+```
+
+`Downloads.md` bindet den Download-Snapshot; eine andere ausgewählte Seite erzeugt keine
+zweite Downloadpipeline. Linkziele werden weiterhin gegen den festgehaltenen Contentindex
+geprüft.
+
+### Fehler, Rollback und Takedown
+
+Fehler vor dem atomaren Zieltausch behalten alte vollständige Ziele. Ein fehlgeschlagener
+Site-Build lässt die alte vollständige Site aktiv; ein bereits vollständig veröffentlichter
+neuer Docs-Baum kann daneben bestehen. Diagnose und Rollback folgen den Sentinelregeln aus
+Abschnitt 5 und 6. Keine Backups, Manifeste oder Authority-Dateien manuell löschen.
+
+Bei Downgrade oder Takedown baut der nächste erfolgreiche Lauf die restriktivere Projektion
+und entfernt alte öffentliche Referenzen. Externe Backend- oder Git-Historienbereinigung ist
+ein separater, manuell freizugebender Vorgang; der Site-Build führt sie nicht aus.
+
+### Source-Purity
+
+`content/`, `config/`, `research/`, `rki/`, `status.json`, `mkdocs.yml` und `web/` bleiben
+während Build, Preview und Diagnose unverändert. Nur generierte Staging- und Zielbäume
+werden geschrieben. Payload, OCR-Text, interne Hashes, Storagepfade, Objekt-IDs und
+Tokenqueries dürfen weder in `site/Downloads/index.html` noch in
+`site/search/search_index.json` gelangen. `Downloads.md` ist vollständig aus dem Suchindex
+ausgeschlossen; `source_only` bleibt trotzdem im serverseitigen HTML sichtbar.
