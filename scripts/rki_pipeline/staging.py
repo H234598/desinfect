@@ -390,12 +390,14 @@ def _owned_quarantine_state(
     parent_fd: int,
     quarantine_name: str,
     identity: tuple[int, int, int],
+    *,
+    missing_state: _QuarantineRemnant,
 ) -> _QuarantineRemnant:
     """Classify an exact descriptor-relative quarantine binding."""
 
     try:
         if not entry_exists(parent_fd, quarantine_name):
-            return _QuarantineRemnant.NONE
+            return missing_state
         if _named_identity_matches(parent_fd, quarantine_name, identity):
             return _QuarantineRemnant.VERIFIED
     except Exception:
@@ -440,6 +442,7 @@ def _rollback_published_target(
                     parent_fd,
                     quarantine_name,
                     published_identity,
+                    missing_state=_QuarantineRemnant.NONE,
                 )
                 if quarantine_remnant is _QuarantineRemnant.VERIFIED:
                     staging_published = False
@@ -475,6 +478,7 @@ def _rollback_published_target(
                             parent_fd,
                             quarantine_name,
                             quarantine_identity,
+                            missing_state=_QuarantineRemnant.UNKNOWN,
                         )
                         failures.append(("quarantine_cleanup", exc))
                     finally:

@@ -304,6 +304,62 @@ def test_cleanup_identity_replacement_never_claims_foreign_name_as_safe_rest(
     assert ours_away.is_dir()
 
 
+@pytest.mark.parametrize("coordinated", (False, True), ids=("single", "multi"))
+def test_cleanup_moved_owned_rest_is_unknown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    coordinated: bool,
+) -> None:
+    """A cleanup-lost canonical name cannot prove the held owned rest absent."""
+
+    site = tmp_path / "site"
+    docs = tmp_path / "build/docs"
+    moved_away = tmp_path / "owned-rest-moved-away"
+    _generated(site, "old site")
+    if coordinated:
+        _generated(docs, "old docs")
+
+    def reject(_descriptor: int) -> None:
+        raise RuntimeError("PRIMARY single")
+
+    def fail_after_site(relative: object) -> None:
+        if str(relative) == "site":
+            raise RuntimeError("PRIMARY multi")
+
+    def move_then_fail(_descriptor: int) -> None:
+        quarantine = next(tmp_path.glob(".site.quarantine-*"))
+        quarantine.rename(moved_away)
+        raise OSError("SECONDARY cleanup after owner move")
+
+    monkeypatch.setattr(staging_module, "clear_generated_tree_fd", move_then_fail)
+    monkeypatch.setattr(staging_module, "_coordinated_publication_checkpoint", fail_after_site)
+
+    with pytest.raises(StagingError) as raised:
+        if coordinated:
+            with coordinated_staged_directories(
+                (site, docs), allowed_root=tmp_path, force=True
+            ) as stages:
+                for stage in stages:
+                    (stage / "value.txt").write_text("new", encoding="utf-8")
+        else:
+            with staged_directory(
+                site,
+                allowed_root=tmp_path,
+                publication_validator=reject,
+            ) as stage:
+                (stage / "value.txt").write_text("new", encoding="utf-8")
+
+    evidence = _exception_evidence(raised.value)
+    assert "SECONDARY cleanup after owner move" in evidence
+    assert "Quarantänereststatus=ungeklärt" in evidence
+    assert "sicherer Quarantänerest=" not in evidence
+    assert not list(tmp_path.glob(".site.quarantine-*"))
+    assert moved_away.is_dir()
+    assert (site / "value.txt").read_text(encoding="utf-8") == "old site"
+    if coordinated:
+        assert (docs / "value.txt").read_text(encoding="utf-8") == "old docs"
+
+
 @pytest.mark.parametrize("primary_type", (KeyboardInterrupt, SystemExit))
 def test_single_rollback_keeps_control_flow_type_with_secondary_note(
     tmp_path: Path,
