@@ -15,6 +15,7 @@ from scripts.rki_pipeline.staging import (
     StagingConflictError,
     StagingError,
     StagingUnsupportedError,
+    coordinated_staged_directories,
     staged_directory,
 )
 
@@ -47,6 +48,152 @@ def test_staged_directory_failure_preserves_old_tree(tmp_path: Path) -> None:
             (stage / "value.txt").write_text("new", encoding="utf-8")
             raise RuntimeError("injected")
     assert (target / "value.txt").read_text(encoding="utf-8") == "old"
+
+
+@pytest.mark.parametrize("cleanup_failure", ("clear", "rmdir"))
+def test_coordinated_rollback_restores_site_and_docs_after_quarantine_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cleanup_failure: str,
+) -> None:
+    """Quarantine cleanup failure cannot skip either old-tree restore."""
+
+    site = tmp_path / "site"
+    docs = tmp_path / "build/docs"
+    _generated(site, "old site")
+    _generated(docs, "old docs")
+    real_clear = staging_module.clear_generated_tree_fd
+    real_rmdir = staging_module.os.rmdir
+
+    def fail_after_site(relative: object) -> None:
+        if str(relative) == "site":
+            raise StagingError("publication fault after site")
+
+    def clear(descriptor: int) -> None:
+        if cleanup_failure == "clear":
+            raise OSError("quarantine clear injected")
+        real_clear(descriptor)
+
+    def rmdir(path: object, *, dir_fd: int | None = None) -> None:
+        if cleanup_failure == "rmdir" and str(path).startswith(".site.quarantine-"):
+            raise OSError("quarantine rmdir injected")
+        real_rmdir(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(staging_module, "_coordinated_publication_checkpoint", fail_after_site)
+    monkeypatch.setattr(staging_module, "clear_generated_tree_fd", clear)
+    monkeypatch.setattr(staging_module.os, "rmdir", rmdir)
+
+    with pytest.raises(StagingError, match=f"quarantine {cleanup_failure}"):
+        with coordinated_staged_directories(
+            (site, docs),
+            allowed_root=tmp_path,
+            force=True,
+        ) as (site_stage, docs_stage):
+            (site_stage / "value.txt").write_text("new site", encoding="utf-8")
+            (docs_stage / "value.txt").write_text("new docs", encoding="utf-8")
+
+    assert (site / "value.txt").read_text(encoding="utf-8") == "old site"
+    assert (docs / "value.txt").read_text(encoding="utf-8") == "old docs"
+
+
+def test_coordinated_cleanup_failure_keeps_originally_absent_target_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cleanup failure without backup never invents or retains a live target."""
+
+    site = tmp_path / "site"
+    docs = tmp_path / "build/docs"
+    _generated(docs, "old docs")
+
+    def fail_after_site(relative: object) -> None:
+        if str(relative) == "site":
+            raise StagingError("publication fault after site")
+
+    def fail_clear(_descriptor: int) -> None:
+        raise OSError("quarantine clear injected")
+
+    monkeypatch.setattr(staging_module, "_coordinated_publication_checkpoint", fail_after_site)
+    monkeypatch.setattr(staging_module, "clear_generated_tree_fd", fail_clear)
+
+    with pytest.raises(StagingError, match="quarantine clear injected"):
+        with coordinated_staged_directories((site, docs), allowed_root=tmp_path) as stages:
+            for stage in stages:
+                (stage / "value.txt").write_text("new", encoding="utf-8")
+
+    assert not site.exists()
+    assert (docs / "value.txt").read_text(encoding="utf-8") == "old docs"
+
+
+def test_coordinated_rollback_reports_missing_backup_without_losing_other_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing restore source stays exact while untouched docs remain old."""
+
+    site = tmp_path / "site"
+    docs = tmp_path / "build/docs"
+    lost_backup = tmp_path / "lost-site-backup"
+    _generated(site, "old site")
+    _generated(docs, "old docs")
+
+    def remove_backup_after_site(relative: object) -> None:
+        if str(relative) == "site":
+            (tmp_path / ".site.backup").rename(lost_backup)
+            raise StagingError("publication fault after site")
+
+    monkeypatch.setattr(
+        staging_module,
+        "_coordinated_publication_checkpoint",
+        remove_backup_after_site,
+    )
+
+    with pytest.raises(StagingError, match="Rollback-Backup fehlt"):
+        with coordinated_staged_directories(
+            (site, docs), allowed_root=tmp_path, force=True
+        ) as stages:
+            for stage in stages:
+                (stage / "value.txt").write_text("new", encoding="utf-8")
+
+    assert not site.exists()
+    assert (lost_backup / "value.txt").read_text(encoding="utf-8") == "old site"
+    assert (docs / "value.txt").read_text(encoding="utf-8") == "old docs"
+
+
+def test_coordinated_rollback_reports_restore_rename_failure_and_keeps_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Impossible restore leaves exact marked backup and preserves other live target."""
+
+    site = tmp_path / "site"
+    docs = tmp_path / "build/docs"
+    _generated(site, "old site")
+    _generated(docs, "old docs")
+    real_rename = staging_module._rename_noreplace
+
+    def fail_after_site(relative: object) -> None:
+        if str(relative) == "site":
+            raise StagingError("publication fault after site")
+
+    def fail_restore(parent_fd: int, source: str, target: str) -> None:
+        if source == ".site.backup" and target == "site":
+            raise StagingError("restore rename injected")
+        real_rename(parent_fd, source, target)
+
+    monkeypatch.setattr(staging_module, "_coordinated_publication_checkpoint", fail_after_site)
+    monkeypatch.setattr(staging_module, "_rename_noreplace", fail_restore)
+
+    with pytest.raises(StagingError, match="restore rename injected"):
+        with coordinated_staged_directories(
+            (site, docs), allowed_root=tmp_path, force=True
+        ) as stages:
+            for stage in stages:
+                (stage / "value.txt").write_text("new", encoding="utf-8")
+
+    assert not site.exists()
+    assert (tmp_path / ".site.backup/value.txt").read_text(encoding="utf-8") == "old site"
+    assert (docs / "value.txt").read_text(encoding="utf-8") == "old docs"
 
 
 def test_staged_directory_rejects_unmarked_target(tmp_path: Path) -> None:

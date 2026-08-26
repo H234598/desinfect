@@ -73,6 +73,13 @@ class _CoordinatedTarget:
     published_identity: tuple[int, int, int] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _RollbackOutcome:
+    staging_published: bool
+    target_moved: bool
+    errors: tuple[BaseException, ...]
+
+
 def _coordinated_publication_checkpoint(relative: PurePosixPath) -> None:
     """Fault-injection seam after one coordinated target rename."""
 
@@ -355,6 +362,77 @@ def _claim_owned_target(
     raise StagingConflictError("Target-Name wurde durch eine fremde Generation ersetzt")
 
 
+def _rollback_published_target(
+    *,
+    parent_fd: int,
+    target_name: str,
+    backup_name: str,
+    quarantine_name: str,
+    published_fd: int | None,
+    staging_published: bool,
+    target_moved: bool,
+    remove_quarantine: bool,
+) -> _RollbackOutcome:
+    """Claim own publication, then restore backup regardless of cleanup failures."""
+
+    errors: list[BaseException] = []
+    if staging_published:
+        if published_fd is None:
+            errors.append(StagingConflictError("Publiziertes Ziel besitzt keinen gehaltenen FD"))
+        else:
+            try:
+                quarantine_fd = _claim_owned_target(
+                    parent_fd,
+                    target_name,
+                    quarantine_name,
+                    published_fd,
+                )
+            except BaseException as exc:
+                errors.append(exc)
+            else:
+                staging_published = False
+                if quarantine_fd is not None:
+                    quarantine_identity = _directory_identity(quarantine_fd)
+                    cleanup_succeeded = False
+                    try:
+                        clear_generated_tree_fd(quarantine_fd)
+                        cleanup_succeeded = True
+                    except BaseException as exc:
+                        errors.append(exc)
+                    finally:
+                        os.close(quarantine_fd)
+                    if cleanup_succeeded:
+                        if not _named_identity_matches(
+                            parent_fd,
+                            quarantine_name,
+                            quarantine_identity,
+                        ):
+                            errors.append(
+                                StagingConflictError("Eigene Quarantäne wurde parallel ersetzt")
+                            )
+                        elif remove_quarantine:
+                            try:
+                                os.rmdir(quarantine_name, dir_fd=parent_fd)
+                            except BaseException as exc:
+                                errors.append(exc)
+
+    if target_moved:
+        try:
+            if not entry_exists(parent_fd, backup_name):
+                raise StagingConflictError(f"Rollback-Backup fehlt: {backup_name}")
+            if entry_exists(parent_fd, target_name):
+                raise StagingConflictError(
+                    f"Concurrent Target verhindert sicheren Rollback: {target_name}"
+                )
+            _rename_noreplace(parent_fd, backup_name, target_name)
+            target_moved = False
+            fsync_directory_fd(parent_fd)
+        except BaseException as exc:
+            errors.append(exc)
+
+    return _RollbackOutcome(staging_published, target_moved, tuple(errors))
+
+
 @contextmanager
 def staged_directory(
     target: Path,
@@ -483,47 +561,23 @@ def staged_directory(
                 # target with a potentially partially removed old backup.
                 raise
             try:
-                rollback_error: BaseException | None = None
-                if staging_published and published_fd is not None:
-                    quarantine_fd = _claim_owned_target(
-                        parent_fd,
-                        target_name,
-                        quarantine_name,
-                        published_fd,
+                outcome = _rollback_published_target(
+                    parent_fd=parent_fd,
+                    target_name=target_name,
+                    backup_name=backup_name,
+                    quarantine_name=quarantine_name,
+                    published_fd=published_fd,
+                    staging_published=staging_published,
+                    target_moved=target_moved,
+                    remove_quarantine=False,
+                )
+                staging_published = outcome.staging_published
+                target_moved = outcome.target_moved
+                publication_state.published = staging_published
+                if outcome.errors:
+                    raise StagingError("; ".join(str(error) for error in outcome.errors)) from (
+                        outcome.errors[0]
                     )
-                    if quarantine_fd is None:
-                        staging_published = False
-                        publication_state.published = False
-                    else:
-                        try:
-                            clear_generated_tree_fd(quarantine_fd)
-                            if not _named_identity_matches(
-                                parent_fd,
-                                quarantine_name,
-                                published_identity,
-                            ):
-                                rollback_error = StagingConflictError(
-                                    "Eigene Quarantäne wurde parallel ersetzt"
-                                )
-                            staging_published = False
-                            publication_state.published = False
-                        finally:
-                            os.close(quarantine_fd)
-                if target_moved:
-                    if not entry_exists(parent_fd, backup_name):
-                        rollback_error = rollback_error or StagingConflictError(
-                            f"Rollback-Backup fehlt: {backup_name}"
-                        )
-                    elif entry_exists(parent_fd, target_name):
-                        rollback_error = rollback_error or StagingConflictError(
-                            f"Concurrent Target verhindert sicheren Rollback: {target_name}"
-                        )
-                    else:
-                        _rename_noreplace(parent_fd, backup_name, target_name)
-                        target_moved = False
-                        fsync_directory_fd(parent_fd)
-                if rollback_error is not None:
-                    raise rollback_error
             except BaseException as rollback_failure:
                 raise StagingError(
                     "Staging fehlgeschlagen und Rollback konnte nicht sicher "
@@ -728,45 +782,27 @@ def coordinated_staged_directories(
                     item.target_moved = False
         except BaseException:
             if not committed:
-                rollback_error: BaseException | None = None
+                rollback_errors: list[BaseException] = []
                 for item in reversed(transactions):
-                    try:
-                        if item.staging_published:
-                            quarantine_fd = _claim_owned_target(
-                                item.parent_fd,
-                                item.target_name,
-                                item.quarantine_name,
-                                item.staging_fd,
-                            )
-                            if quarantine_fd is None:
-                                raise StagingConflictError(
-                                    f"Publiziertes Ziel fehlt beim Rollback: {item.target_name}"
-                                )
-                            try:
-                                clear_generated_tree_fd(quarantine_fd)
-                            finally:
-                                os.close(quarantine_fd)
-                            os.rmdir(item.quarantine_name, dir_fd=item.parent_fd)
-                            item.staging_published = False
-                        if item.target_moved:
-                            if entry_exists(item.parent_fd, item.target_name):
-                                raise StagingConflictError(
-                                    f"Concurrent Target verhindert sicheren Rollback: {item.target_name}"
-                                )
-                            _rename_noreplace(
-                                item.parent_fd,
-                                item.backup_name,
-                                item.target_name,
-                            )
-                            item.target_moved = False
-                            fsync_directory_fd(item.parent_fd)
-                    except BaseException as exc:
-                        rollback_error = rollback_error or exc
-                if rollback_error is not None:
+                    outcome = _rollback_published_target(
+                        parent_fd=item.parent_fd,
+                        target_name=item.target_name,
+                        backup_name=item.backup_name,
+                        quarantine_name=item.quarantine_name,
+                        published_fd=item.staging_fd,
+                        staging_published=item.staging_published,
+                        target_moved=item.target_moved,
+                        remove_quarantine=True,
+                    )
+                    item.staging_published = outcome.staging_published
+                    item.target_moved = outcome.target_moved
+                    rollback_errors.extend(outcome.errors)
+                if rollback_errors:
                     raise StagingError(
                         "Koordinierte Publikation fehlgeschlagen und Rollback konnte nicht "
-                        f"sicher abgeschlossen werden: {rollback_error}"
-                    ) from rollback_error
+                        "sicher abgeschlossen werden: "
+                        + "; ".join(str(error) for error in rollback_errors)
+                    ) from rollback_errors[0]
             raise
         finally:
             cleanup_error: BaseException | None = None

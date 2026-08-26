@@ -675,6 +675,31 @@ def _without_sources(graph: ManifestGraph, bitstreams: set[str]) -> ManifestGrap
     )
 
 
+def _storage_reference_bitstreams(graph: ManifestGraph) -> Mapping[str, str]:
+    """Resolve each structurally validated storage owner to one exact bitstream."""
+
+    conversion_owners = {
+        conversion["conversion_id"]: conversion["bitstream_id"] for conversion in graph.conversions
+    }
+    pdf_owners = {
+        (document["document_id"], document["paths"]["pdf"]): document["bitstream_id"]
+        for document in graph.documents
+    }
+    owners: dict[str, str] = {}
+    for reference in graph.storage_references:
+        conversion_id = reference["conversion_id"]
+        try:
+            bitstream_id = (
+                conversion_owners[conversion_id]
+                if conversion_id is not None
+                else pdf_owners[(reference["document_id"], reference["relative_path"])]
+            )
+        except KeyError as exc:
+            raise ManifestCatalogError("Storage-Owner löst nicht exakt auf") from exc
+        owners[reference["artifact_id"]] = bitstream_id
+    return owners
+
+
 def load_publication_manifest_catalog(
     captured: CapturedPublicationInputs,
     *,
@@ -724,27 +749,19 @@ def load_publication_manifest_catalog(
             if effective_by_key[_historical_decision(source).approval_key].mode
             is not PublicationMode.MATERIALIZED
         }
-        tombstone_document_ids = {
-            document["document_id"]
-            for document in graph.documents
-            if document["bitstream_id"] in nonmaterialized_bitstreams | missing_bitstreams
-        }
+        removed_bitstreams = nonmaterialized_bitstreams | missing_bitstreams
+        storage_owners = _storage_reference_bitstreams(graph)
         tombstones = tuple(
             DownloadTombstone(reference["source_id"], reference["artifact_id"])
             for reference in graph.storage_references
-            if reference["document_id"] in tombstone_document_ids
+            if storage_owners[reference["artifact_id"]] in removed_bitstreams
         )
-        nonmaterialized_document_ids = {
-            document["document_id"]
-            for document in effective_graph.documents
-            if document["bitstream_id"] in nonmaterialized_bitstreams
-        }
         effective_graph = replace(
             effective_graph,
             storage_references=tuple(
                 reference
                 for reference in effective_graph.storage_references
-                if reference["document_id"] not in nonmaterialized_document_ids
+                if storage_owners[reference["artifact_id"]] not in removed_bitstreams
             ),
         )
         projected_sources = []

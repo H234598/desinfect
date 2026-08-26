@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from contextlib import contextmanager
 from collections import Counter
+from copy import deepcopy
 from dataclasses import FrozenInstanceError, replace
 import hashlib
 from pathlib import Path, PurePosixPath
@@ -2465,6 +2466,20 @@ def _write_register(repo: Path, decision: RightsDecision) -> None:
     )
 
 
+def _write_register_decisions(repo: Path, decisions: tuple[RightsDecision, ...]) -> None:
+    (repo / "research/rights-register.yml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 2,
+                "decisions": [_decision_payload(decision) for decision in decisions],
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+
 def _write_publication_manifests(repo: Path, decision: RightsDecision) -> None:
     from tests.test_manifests import _conversion, _document, _source, _storage
 
@@ -2506,6 +2521,91 @@ def _write_publication_manifests(repo: Path, decision: RightsDecision) -> None:
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(payload)
+
+
+def _decision_for_manifest_source(
+    source: Mapping[str, object],
+    *,
+    mode: PublicationMode = PublicationMode.MATERIALIZED,
+) -> RightsDecision:
+    base = _publication_decision(mode=mode)
+    draft = replace(
+        base,
+        approval_key=ApprovalKey(
+            source["source_id"],
+            source["bitstream_url"],
+            source["bitstream_id"],
+            source["sha256"],
+        ),
+        decision_sha256=None,
+    )
+    return replace(draft, decision_sha256=decision_sha256(draft))
+
+
+def _embed_decision(source: dict[str, object], decision: RightsDecision) -> None:
+    source["decision_sha256"] = decision.decision_sha256
+    source["rights"] = {
+        key: value
+        for key, value in _decision_payload(decision).items()
+        if key not in {"source_id", "canonical_url", "version_or_bitstream", "source_sha256"}
+    }
+    source["rights"]["approval_key"] = {
+        "source_id": decision.approval_key.source_id,
+        "canonical_url": decision.approval_key.canonical_url,
+        "version_or_bitstream": decision.approval_key.version_or_bitstream,
+        "source_sha256": decision.approval_key.source_sha256,
+    }
+
+
+def _write_two_bitstream_publication_manifests(
+    repo: Path,
+) -> tuple[RightsDecision, RightsDecision, tuple[str, ...], tuple[str, ...]]:
+    from tests.test_manifests import (
+        _conversion,
+        _document,
+        _second_bitstream,
+        _source,
+        _storage,
+    )
+
+    first_source = _source()
+    second_source, second_document, second_storage = _second_bitstream()
+    first_decision = _decision_for_manifest_source(first_source)
+    second_decision = _decision_for_manifest_source(second_source)
+    _embed_decision(first_source, first_decision)
+    _embed_decision(second_source, second_decision)
+    first_storage = tuple(deepcopy(reference) for reference in _storage())
+    storage = (*first_storage, deepcopy(second_storage))
+    first_ids = tuple(reference["artifact_id"] for reference in first_storage)
+    second_ids = (storage[-1]["artifact_id"],)
+    for index, reference in enumerate(storage):
+        owner = first_decision if reference["artifact_id"] in first_ids else second_decision
+        reference.update(
+            storage_backend="object",
+            storage_object_id=f"fixture-two-bitstream-{index}",
+            decision_sha256=owner.decision_sha256,
+            rights_state="approved",
+            visibility="public",
+            public_reference=f"https://downloads.example.test/two-bitstream-{index}",
+        )
+    graph = ManifestGraph(
+        tuple(sorted((first_source, second_source), key=lambda item: item["bitstream_id"])),
+        tuple(
+            sorted(
+                (_document(), second_document),
+                key=lambda item: (item["document_id"], item["bitstream_id"]),
+            )
+        ),
+        (_conversion(),),
+        tuple(sorted(storage, key=lambda item: item["artifact_id"])),
+    )
+    rendered = render_manifest_catalog(graph)
+    root = repo / "rki/Bulletins/Manifeste"
+    for relative, payload in rendered.files:
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+    return first_decision, second_decision, first_ids, second_ids
 
 
 def _install_approved_publication(repo: Path, **changes: str) -> RightsDecision:
@@ -2979,3 +3079,55 @@ def test_attribution_quarantine_removes_graph_storage_and_carries_tombstones(rep
         (item.source_id, item.artifact_id) for item in bound.download_inputs.tombstones
     }
     assert tombstones
+
+
+@pytest.mark.parametrize("first_state", ("source_only", "missing"))
+def test_tombstones_resolve_storage_owner_for_same_document_bitstreams(
+    repo: Path,
+    first_state: str,
+) -> None:
+    """Restricting bitstream A never removes materialized sibling B's exact references."""
+
+    first, second, first_artifacts, second_artifacts = _write_two_bitstream_publication_manifests(
+        repo
+    )
+    current = (
+        (
+            _decision_for_manifest_source(
+                {
+                    "source_id": first.approval_key.source_id,
+                    "bitstream_url": first.approval_key.canonical_url,
+                    "bitstream_id": first.approval_key.version_or_bitstream,
+                    "sha256": first.approval_key.source_sha256,
+                },
+                mode=PublicationMode.SOURCE_ONLY,
+            ),
+            second,
+        )
+        if first_state == "source_only"
+        else (second,)
+    )
+    _write_register_decisions(repo, current)
+    captured = build_docs_module.capture_publication_inputs(repo)
+    register = build_docs_module.parse_rights_register(
+        captured.rights_register_bytes.decode("utf-8")
+    )
+    policy = build_docs_module.parse_rights_policy(captured.rights_policy_bytes.decode("utf-8"))
+
+    _loaded, graph, _effective_register, tombstones = (
+        build_docs_module.load_publication_manifest_catalog(
+            captured,
+            register=register,
+            policy=policy,
+        )
+    )
+    bound = build_docs_module.bind_publication_sources(repo)
+
+    assert {reference["artifact_id"] for reference in graph.storage_references} == set(
+        second_artifacts
+    )
+    assert {item.artifact_id for item in tombstones} == set(first_artifacts)
+    assert {item.artifact_id for item in bound.download_inputs.tombstones} == set(first_artifacts)
+    assert {row.artifact_id for row in bound.download_inputs.rows if row.artifact_id} == set(
+        second_artifacts
+    )
