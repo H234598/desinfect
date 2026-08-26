@@ -44,8 +44,12 @@ def _decision(
     *,
     mode: PublicationMode = PublicationMode.MATERIALIZED,
     state: RightsState = RightsState.APPROVED,
+    source_id: str = SOURCE_ID,
+    source_sha256: str = SOURCE_SHA256,
+    bitstream_url: str = BITSTREAM_URL,
 ) -> RightsDecision:
-    key = ApprovalKey(SOURCE_ID, BITSTREAM_URL, BITSTREAM_ID, SOURCE_SHA256)
+    bitstream_id = bitstream_identity(bitstream_url).bitstream_id
+    key = ApprovalKey(source_id, bitstream_url, bitstream_id, source_sha256)
     attribution = RightsAttribution(
         creators=("RKI",),
         attribution_parties=("Robert Koch-Institut",),
@@ -53,7 +57,7 @@ def _decision(
         license_notice="CC BY 4.0",
         license_url="https://creativecommons.org/licenses/by/4.0/",
         disclaimer_notice="Keine Gewähr.",
-        origin_url="https://edoc.rki.de/handle/176904/7",
+        origin_url="https://edoc.rki.de/handle/" + source_id.removeprefix("rki:"),
         prior_change_history=(),
         current_change_notice="Originalgetreue Bereitstellung.",
     )
@@ -78,15 +82,15 @@ def _decision(
     return replace(draft, decision_sha256=decision_sha256(draft))
 
 
-def _fixture_register(tmp_path: Path, decision: RightsDecision):
+def _fixture_register(tmp_path: Path, *decisions: RightsDecision):
     payload = {
         "schema_version": 2,
         "decisions": [
             {
-                "source_id": SOURCE_ID,
-                "canonical_url": BITSTREAM_URL,
-                "version_or_bitstream": BITSTREAM_ID,
-                "source_sha256": SOURCE_SHA256,
+                "source_id": decision.approval_key.source_id,
+                "canonical_url": decision.approval_key.canonical_url,
+                "version_or_bitstream": decision.approval_key.version_or_bitstream,
+                "source_sha256": decision.approval_key.source_sha256,
                 "state": decision.state.value,
                 "mode": decision.mode.value,
                 "allowed_actions": [action.value for action in decision.allowed_actions],
@@ -108,17 +112,27 @@ def _fixture_register(tmp_path: Path, decision: RightsDecision):
                 "reviewed_by": decision.reviewed_by,
                 "reviewed_at": decision.reviewed_at,
             }
+            for decision in sorted(
+                decisions,
+                key=lambda item: (
+                    item.approval_key.source_id,
+                    item.approval_key.canonical_url,
+                    item.approval_key.version_or_bitstream,
+                    item.approval_key.source_sha256,
+                ),
+            )
         ],
     }
     path = tmp_path / "rights.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     authority = load_fixture_rights_authority(path)
-    return load_authority_register(authority), load_rights_policy(), decision
+    return load_authority_register(authority), load_rights_policy(), decisions
 
 
 @pytest.fixture
 def fixture_register(tmp_path: Path):
-    return _fixture_register(tmp_path, _decision())
+    register, policy, decisions = _fixture_register(tmp_path, _decision())
+    return register, policy, decisions[0]
 
 
 def _graph(
@@ -181,6 +195,61 @@ def _storage_change(graph: ManifestGraph, index: int, **changes: object) -> Mani
     storage = list(graph.storage_references)
     storage[index] = {**storage[index], **changes}
     return ManifestGraph(graph.sources, graph.documents, graph.conversions, tuple(storage))
+
+
+def _with_sibling_bitstream(graph: ManifestGraph, decision: RightsDecision) -> ManifestGraph:
+    source_id = decision.approval_key.source_id
+    document_id = (
+        graph.documents[0]["document_id"]
+        if source_id == graph.sources[0]["source_id"]
+        else "rki-176904-8-v1"
+    )
+    source = {
+        **graph.sources[0],
+        "source_id": source_id,
+        "source_url": "https://edoc.rki.de/handle/" + source_id.removeprefix("rki:"),
+        "bitstream_url": decision.approval_key.canonical_url,
+        "bitstream_id": decision.approval_key.version_or_bitstream,
+        "sha256": decision.approval_key.source_sha256,
+        "decision_sha256": decision.decision_sha256,
+        "title": "Sibling bulletin",
+    }
+    document = {
+        **graph.documents[0],
+        "document_id": document_id,
+        "source_id": source_id,
+        "bitstream_id": decision.approval_key.version_or_bitstream,
+        "paths": {"pdf": "rki/sibling.pdf", "markdown": "rki/sibling.md"},
+    }
+    common = {
+        **graph.storage_references[0],
+        "source_id": source_id,
+        "document_id": document_id,
+        "source_sha256": decision.approval_key.source_sha256,
+        "decision_sha256": decision.decision_sha256,
+        "storage_backend": "object",
+    }
+    pdf = {
+        **common,
+        "artifact_id": "sibling-pdf-" + "1" * 64,
+        "relative_path": "rki/sibling.pdf",
+        "sha256": "1" * 64,
+        "public_reference": "https://downloads.example.test/sibling.pdf",
+    }
+    markdown = {
+        **common,
+        "artifact_id": "sibling-markdown-" + "2" * 64,
+        "relative_path": "rki/sibling.md",
+        "sha256": "2" * 64,
+        "conversion_id": "conv-" + "2" * 64,
+        "public_reference": "https://downloads.example.test/sibling.md",
+    }
+    return ManifestGraph(
+        (*graph.sources, source),
+        (*graph.documents, document),
+        (),
+        (*graph.storage_references, pdf, markdown),
+    )
 
 
 @pytest.mark.parametrize("backend", tuple(StorageBackend))
@@ -356,15 +425,23 @@ def test_remove_all_does_not_consume_unsafe_public_data(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "state", ("not_initialized", "operational", "degraded", "blocked", "unknown")
+    ("state", "label"),
+    (
+        ("not_initialized", "Noch nicht initialisiert"),
+        ("operational", "Betriebsbereit"),
+        ("degraded", "Eingeschränkt verfügbar"),
+        ("blocked", "Blockiert"),
+        ("unknown", "Unbekannt"),
+    ),
 )
-def test_rendered_status_names_every_public_state(state: str) -> None:
+def test_rendered_status_names_every_public_state(state: str, label: str) -> None:
     rendered = render_download_page(
         f"<main>{DOWNLOAD_MARKER}</main>",
         DownloadInputs(rows=(), tombstones=(), public_status={"status": state}, input_hashes={}),
     )
     assert 'class="publication-status"' in rendered
     assert "Datenstatus" in rendered
+    assert label in rendered
 
 
 @pytest.mark.parametrize("state", ("degraded", "blocked"))
@@ -400,6 +477,184 @@ def test_render_escapes_title_and_never_uses_raw_license_input(fixture_register)
     assert '<img src=x onerror="alert(1)">' not in rendered
     assert "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;" in rendered
     assert 'href="https://creativecommons.org/licenses/by/4.0/"' in rendered
+
+
+def test_renderer_rejects_direct_malicious_artifact_url(fixture_register) -> None:
+    register, policy, decision = fixture_register
+    row = project_downloads(_graph(decision), register=register, policy=policy).rows[0]
+    with pytest.raises(DownloadProjectionError):
+        render_download_page(
+            f"<main>{DOWNLOAD_MARKER}</main>",
+            DownloadInputs(
+                rows=(replace(row, artifact_url="javascript:alert(1)"),),
+                tombstones=(),
+                public_status={"status": "operational"},
+                input_hashes={},
+            ),
+        )
+
+
+def test_renderer_rejects_remove_all_row(fixture_register) -> None:
+    register, policy, decision = fixture_register
+    row = project_downloads(_graph(decision), register=register, policy=policy).rows[0]
+    with pytest.raises(DownloadProjectionError):
+        render_download_page(
+            f"<main>{DOWNLOAD_MARKER}</main>",
+            DownloadInputs(
+                rows=(replace(row, mode=PublicationMode.REMOVE_ALL),),
+                tombstones=(),
+                public_status={"status": "operational"},
+                input_hashes={},
+            ),
+        )
+
+
+def test_renderer_rejects_artifact_data_on_source_only_row(tmp_path: Path) -> None:
+    decision = _decision(mode=PublicationMode.SOURCE_ONLY, state=RightsState.METADATA_ONLY)
+    register, policy, _decisions = _fixture_register(tmp_path, decision)
+    row = project_downloads(_graph(decision), register=register, policy=policy).rows[0]
+    with pytest.raises(DownloadProjectionError):
+        render_download_page(
+            f"<main>{DOWNLOAD_MARKER}</main>",
+            DownloadInputs(
+                rows=(replace(row, artifact_url="https://downloads.example.test/leak.pdf"),),
+                tombstones=(),
+                public_status={"status": "operational"},
+                input_hashes={},
+            ),
+        )
+
+
+def test_project_downloads_requires_injected_rights_inputs(fixture_register) -> None:
+    _register, _policy, decision = fixture_register
+    with pytest.raises(TypeError):
+        project_downloads(_graph(decision))
+
+
+def test_pdf_only_document_is_projected(fixture_register) -> None:
+    register, policy, decision = fixture_register
+    graph = _graph(decision)
+    document = {**graph.documents[0], "paths": {"pdf": "rki/7.pdf", "markdown": None}}
+    inputs = project_downloads(
+        ManifestGraph(graph.sources, (document,), (), graph.storage_references[:1]),
+        register=register,
+        policy=policy,
+    )
+    assert [row.artifact_kind for row in inputs.rows] == ["pdf"]
+
+
+def test_sibling_bitstreams_bind_only_their_own_artifacts(tmp_path: Path) -> None:
+    first = _decision()
+    second = _decision(
+        source_sha256="b" * 64,
+        bitstream_url="https://edoc.rki.de/bitstream/handle/176904/7/other.pdf",
+    )
+    register, policy, _decisions = _fixture_register(tmp_path, first, second)
+    rows = project_downloads(
+        _with_sibling_bitstream(_graph(first), second), register=register, policy=policy
+    ).rows
+    assert {(row.bitstream_id, row.artifact_kind) for row in rows} == {
+        (first.approval_key.version_or_bitstream, "pdf"),
+        (first.approval_key.version_or_bitstream, "markdown"),
+        (second.approval_key.version_or_bitstream, "pdf"),
+        (second.approval_key.version_or_bitstream, "markdown"),
+    }
+
+
+def test_source_only_rows_sort_by_bitstream_not_input_order(tmp_path: Path) -> None:
+    first = _decision(mode=PublicationMode.SOURCE_ONLY, state=RightsState.METADATA_ONLY)
+    second = _decision(
+        mode=PublicationMode.SOURCE_ONLY,
+        state=RightsState.METADATA_ONLY,
+        source_sha256="b" * 64,
+        bitstream_url="https://edoc.rki.de/bitstream/handle/176904/7/other.pdf",
+    )
+    register, policy, _decisions = _fixture_register(tmp_path, first, second)
+    first_graph = _graph(first)
+    sibling = _with_sibling_bitstream(first_graph, second)
+    rows = project_downloads(
+        ManifestGraph(tuple(reversed(sibling.sources)), (), (), ()),
+        register=register,
+        policy=policy,
+    ).rows
+    assert [row.bitstream_id for row in rows] == sorted(
+        [first.approval_key.version_or_bitstream, second.approval_key.version_or_bitstream]
+    )
+
+
+@pytest.mark.parametrize("state", ("degraded", "blocked"))
+def test_degraded_and_blocked_without_success_name_missing_success(state: str) -> None:
+    rendered = render_download_page(
+        f"<main>{DOWNLOAD_MARKER}</main>",
+        DownloadInputs(rows=(), tombstones=(), public_status={"status": state}, input_hashes={}),
+    )
+    assert "Kein erfolgreicher Lauf dokumentiert." in rendered
+
+
+def test_cross_source_duplicate_public_reference_is_rejected(tmp_path: Path) -> None:
+    first = _decision()
+    second = _decision(
+        source_id="rki:176904/8",
+        source_sha256="b" * 64,
+        bitstream_url="https://edoc.rki.de/bitstream/handle/176904/8/source.pdf",
+    )
+    register, policy, _decisions = _fixture_register(tmp_path, first, second)
+    graph = _with_sibling_bitstream(_graph(first), second)
+    duplicate = _storage_change(
+        graph,
+        2,
+        public_reference=graph.storage_references[0]["public_reference"],
+    )
+    with pytest.raises(DownloadProjectionError):
+        project_downloads(duplicate, register=register, policy=policy)
+
+
+def test_origin_link_has_no_artifact_fields(tmp_path: Path) -> None:
+    decision = _decision(mode=PublicationMode.ORIGIN_LINK, state=RightsState.UNKNOWN)
+    register, policy, _decisions = _fixture_register(tmp_path, decision)
+    row = project_downloads(_graph(decision), register=register, policy=policy).rows[0]
+    assert row.mode is PublicationMode.ORIGIN_LINK
+    assert (row.artifact_url, row.artifact_sha256, row.artifact_bytes, row.storage_backend) == (
+        None,
+        None,
+        None,
+        None,
+    )
+
+
+@pytest.mark.parametrize("page", ("<main></main>", f"{DOWNLOAD_MARKER}{DOWNLOAD_MARKER}"))
+def test_renderer_requires_exactly_one_marker(page: str) -> None:
+    with pytest.raises(DownloadProjectionError):
+        render_download_page(
+            page,
+            DownloadInputs(
+                rows=(), tombstones=(), public_status={"status": "operational"}, input_hashes={}
+            ),
+        )
+
+
+def test_remove_all_strips_real_payload_secrets(tmp_path: Path) -> None:
+    decision = _decision(mode=PublicationMode.REMOVE_ALL, state=RightsState.TAKEDOWN)
+    register, policy, _decisions = _fixture_register(tmp_path, decision)
+    graph = _graph(decision)
+    source = {
+        **graph.sources[0],
+        "title": "OCR_SECRET_TOKEN bibliography-token",
+        "ocr_text": "OCR_SECRET_TOKEN",
+        "bibliography": "bibliography-token",
+    }
+    storage = tuple(
+        {**reference, "index_text": "OCR_SECRET_TOKEN bibliography-token"}
+        for reference in graph.storage_references
+    )
+    rendered = render_download_page(
+        f"<main>{DOWNLOAD_MARKER}</main>",
+        project_downloads(
+            ManifestGraph((source,), graph.documents, (), storage), register=register, policy=policy
+        ),
+    )
+    assert "OCR_SECRET_TOKEN" not in rendered
+    assert "bibliography-token" not in rendered
 
 
 @pytest.mark.parametrize(

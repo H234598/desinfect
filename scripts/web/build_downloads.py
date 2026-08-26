@@ -20,8 +20,6 @@ from scripts.rki_pipeline.rights import (
     RightsPolicyError,
     RightsRegister,
     RightsState,
-    load_rights_policy,
-    load_rights_register,
     resolve_action,
     validate_license_url,
 )
@@ -199,14 +197,28 @@ def _artifact_rows(
 ) -> tuple[DownloadRow, ...]:
     paths = _mapping(document.get("paths"), "document.paths")
     pdf_path = _require_string(paths.get("pdf"), "document.paths.pdf")
-    markdown_path = _require_string(paths.get("markdown"), "document.paths.markdown")
-    if pdf_path == markdown_path:
+    markdown_value = paths.get("markdown")
+    if markdown_value is not None and type(markdown_value) is not str:
+        raise DownloadProjectionError("document.paths.markdown muss Text oder None sein")
+    markdown_path = (
+        None
+        if markdown_value is None
+        else _require_string(markdown_value, "document.paths.markdown")
+    )
+    if markdown_path is not None and pdf_path == markdown_path:
         raise DownloadProjectionError("PDF- und Markdown-Pfad kollidieren")
     rows: list[DownloadRow] = []
     seen_references: set[str] = set()
     seen_artifacts: set[tuple[str, str]] = set()
     seen_kinds: set[str] = set()
     for reference in storage:
+        relative_path = _require_string(reference.get("relative_path"), "relative_path")
+        if relative_path == pdf_path:
+            kind = "pdf"
+        elif relative_path == markdown_path:
+            kind = "markdown"
+        else:
+            continue
         if (
             reference.get("source_id") != key.source_id
             or reference.get("source_sha256") != key.source_sha256
@@ -223,13 +235,6 @@ def _artifact_rows(
             raise DownloadProjectionError(
                 "Storage-Referenz ist nicht aktuell öffentlich freigegeben"
             )
-        relative_path = _require_string(reference.get("relative_path"), "relative_path")
-        if relative_path == pdf_path:
-            kind = "pdf"
-        elif relative_path == markdown_path:
-            kind = "markdown"
-        else:
-            raise DownloadProjectionError("Storage-Referenz ist kein öffentliches Dokumentartefakt")
         if kind in seen_kinds:
             raise DownloadProjectionError("Storage-Referenz ist für Artefaktart mehrdeutig")
         seen_kinds.add(kind)
@@ -278,15 +283,14 @@ def _artifact_rows(
 def project_downloads(
     graph: ManifestGraph,
     status: Mapping[str, object] | None = None,
-    register: RightsRegister | None = None,
-    policy: RightsPolicy | None = None,
+    *,
+    register: RightsRegister,
+    policy: RightsPolicy,
 ) -> DownloadInputs:
     """Derive safe public rows from IDs and public references only."""
 
     if type(graph) is not ManifestGraph:
         raise DownloadProjectionError("graph muss exakter ManifestGraph sein")
-    register = load_rights_register() if register is None else register
-    policy = load_rights_policy() if policy is None else policy
     public_status: Mapping[str, object] = (
         {"status": "unknown"} if status is None else _mapping(status, "status")
     )
@@ -337,7 +341,7 @@ def project_downloads(
                     origin_url=origin_url,
                     artifact_kind=None,
                     artifact_id=None,
-                    bitstream_id=None,
+                    bitstream_id=key.version_or_bitstream,
                     artifact_url=None,
                     artifact_sha256=None,
                     artifact_bytes=None,
@@ -373,6 +377,11 @@ def project_downloads(
             row.artifact_id or "",
         )
     )
+    materialized_references = [
+        row.artifact_url for row in rows if row.mode is PublicationMode.MATERIALIZED
+    ]
+    if len(set(materialized_references)) != len(materialized_references):
+        raise DownloadProjectionError("public_reference ist global doppelt")
     return DownloadInputs(tuple(rows), tuple(tombstones), public_status, {})
 
 
@@ -386,16 +395,31 @@ def _status_fragment(status: Mapping[str, object]) -> str:
         f"<p>{html.escape(_STATUS_LABELS[state], quote=True)}</p>",
     ]
     pipeline = status.get("pipeline")
-    if isinstance(pipeline, Mapping) and pipeline.get("last_successful_run_at") is not None:
+    has_success = (
+        isinstance(pipeline, Mapping) and pipeline.get("last_successful_run_at") is not None
+    )
+    if has_success:
         parts.append(
             f"<p>Letzter erfolgreicher Lauf: {html.escape(_require_string(pipeline['last_successful_run_at'], 'last_successful_run_at'), quote=True)}</p>"
         )
     if state in {"degraded", "blocked"}:
+        if not has_success:
+            parts.append("<p>Kein erfolgreicher Lauf dokumentiert.</p>")
         parts.append('<p><a href="/Wartung/Wiederherstellung/">Wiederherstellungshinweise</a></p>')
     return "".join(parts) + "</section>"
 
 
 def _row_fragment(row: DownloadRow) -> str:
+    if type(row) is not DownloadRow:
+        raise DownloadProjectionError("row muss exakter DownloadRow sein")
+    if row.mode not in {
+        PublicationMode.MATERIALIZED,
+        PublicationMode.SOURCE_ONLY,
+        PublicationMode.ORIGIN_LINK,
+    }:
+        raise DownloadProjectionError("row besitzt keinen öffentlichen Publikationsmodus")
+    if row.bitstream_id != row.approval_key.version_or_bitstream:
+        raise DownloadProjectionError("row.bitstream_id passt nicht zum ApprovalKey")
     title = html.escape(row.title, quote=True)
     origin = validate_origin_url(row.origin_url, source_id=row.source_id)
     parts = ['<article class="download">', f"<h3>{title}</h3>"]
@@ -403,18 +427,45 @@ def _row_fragment(row: DownloadRow) -> str:
         if (
             row.artifact_url is None
             or row.artifact_kind not in {"pdf", "markdown"}
+            or type(row.artifact_id) is not str
+            or _SHA256.fullmatch(row.artifact_sha256 or "") is None
+            or type(row.artifact_bytes) is not int
+            or row.artifact_bytes < 0
+            or type(row.storage_backend) is not StorageBackend
             or row.attribution is None
         ):
             raise DownloadProjectionError("materialized Row ist unvollständig")
+        artifact_url = _safe_https_url(row.artifact_url, "artifact_url")
         text = "PDF herunterladen" if row.artifact_kind == "pdf" else "Quell-Markdown herunterladen"
         parts.append(
-            f'<p><a href="{html.escape(row.artifact_url, quote=True)}" rel="noopener noreferrer">{text}</a></p>'
+            f'<p><a href="{html.escape(artifact_url, quote=True)}" rel="noopener noreferrer">{text}</a></p>'
         )
         license_url = validate_license_url(
             row.attribution.license_url, license_notice=row.attribution.license_notice
         )
         parts.append(
             f'<p>{html.escape(row.attribution.copyright_notice, quote=True)} · <a href="{html.escape(license_url, quote=True)}" rel="noopener noreferrer">{html.escape(row.attribution.license_notice, quote=True)}</a></p>'
+        )
+        parts.append(
+            "<p>Rechtestatus: Freigegeben. Veröffentlichungsmodus: Materialisiert. Verfügbarkeit: Download verfügbar.</p>"
+        )
+    else:
+        if any(
+            value is not None
+            for value in (
+                row.artifact_kind,
+                row.artifact_id,
+                row.artifact_url,
+                row.artifact_sha256,
+                row.artifact_bytes,
+                row.storage_backend,
+                row.attribution,
+            )
+        ):
+            raise DownloadProjectionError("nicht-materialized Row enthält Artefaktdaten")
+        mode = "Nur Quelle" if row.mode is PublicationMode.SOURCE_ONLY else "Origin-Link"
+        parts.append(
+            f"<p>Rechtestatus: Nur Metadaten. Veröffentlichungsmodus: {mode}. Verfügbarkeit: Beim RKI verfügbar.</p>"
         )
     parts.append(
         f'<p><a href="{html.escape(origin, quote=True)}" rel="noopener noreferrer">Beim RKI öffnen</a></p>'
