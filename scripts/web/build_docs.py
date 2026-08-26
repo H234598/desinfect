@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 import hashlib
 import html
 import json
+import os
 from pathlib import Path, PurePosixPath
 import stat
 import sys
@@ -22,6 +23,8 @@ from scripts.rki_pipeline.io_utils import (
     atomic_write_text,
     ensure_within,
     normalize_posix_path,
+    open_directory_beneath,
+    open_root_directory,
     read_bounded_utf8_text_beneath,
     relative_path_beneath,
     sha256_file,
@@ -34,7 +37,7 @@ from scripts.rki_pipeline.manifests import (
     ManifestGraphError,
     _index,
     _load_jsonl,
-    _read_catalog_files,
+    _read_catalog_files_fd,
     _validate_catalog,
     _validate_conversions,
     _validate_documents,
@@ -74,6 +77,7 @@ from scripts.web.build_tables import (
 from scripts.web.build_downloads import (
     DownloadInputs,
     DownloadProjectionError,
+    DownloadTombstone,
     project_downloads,
     render_download_page,
 )
@@ -317,19 +321,38 @@ def _source_roots(repo_root: Path) -> tuple[tuple[PurePosixPath, Path, bool], ..
 
 
 def _manifest_capture(repo_root: Path) -> tuple[tuple[str, bytes], ...]:
-    manifest_root = repo_root / _MANIFEST_ROOT
+    manifest_fd: int | None = None
     try:
-        metadata = manifest_root.lstat()
-    except FileNotFoundError:
-        return ()
-    except OSError as exc:
-        raise BuildDocsError("Manifestroot kann nicht sicher geprüft werden") from exc
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-        raise BuildDocsError("Manifestroot muss ein unverlinktes Verzeichnis sein")
-    try:
-        files = _read_catalog_files(manifest_root)
-    except ManifestCatalogError as exc:
+        with open_root_directory(repo_root) as repo_fd:
+            current_fd = os.dup(repo_fd)
+            try:
+                for component in _MANIFEST_ROOT.parts:
+                    try:
+                        metadata = os.stat(
+                            component,
+                            dir_fd=current_fd,
+                            follow_symlinks=False,
+                        )
+                    except FileNotFoundError:
+                        return ()
+                    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                        raise BuildDocsError("Manifestroot muss komponentenweise unverlinkt sein")
+                    next_fd = open_directory_beneath(current_fd, (component,))
+                    os.close(current_fd)
+                    current_fd = next_fd
+                manifest_fd = current_fd
+                current_fd = -1
+                files = _read_catalog_files_fd(manifest_fd)
+            finally:
+                if current_fd >= 0:
+                    os.close(current_fd)
+    except BuildDocsError:
+        raise
+    except (ManifestCatalogError, OSError, UnsafePathError) as exc:
         raise BuildDocsError(f"Manifest-Capture fehlgeschlagen: {exc}") from exc
+    finally:
+        if manifest_fd is not None:
+            os.close(manifest_fd)
     if set(files) != {path.as_posix() for path in _DOWNLOAD_MANIFEST_PATHS}:
         raise BuildDocsError("Manifest-Capture besitzt nicht exakt die kanonischen Pfade")
     return tuple((path.as_posix(), files[path.as_posix()]) for path in _DOWNLOAD_MANIFEST_PATHS)
@@ -657,12 +680,17 @@ def load_publication_manifest_catalog(
     *,
     register: RightsRegister,
     policy: RightsPolicy,
-) -> tuple[LoadedManifestCatalog | None, ManifestGraph, RightsRegister]:
+) -> tuple[
+    LoadedManifestCatalog | None,
+    ManifestGraph,
+    RightsRegister,
+    tuple[DownloadTombstone, ...],
+]:
     """Load captured manifests with web-only fail-closed rights drift handling."""
 
     if not captured.manifest_files:
         empty = ManifestGraph((), (), (), ())
-        return None, empty, register
+        return None, empty, register, ()
     files = dict(captured.manifest_files)
     try:
         graph = _structural_manifest_graph(files)
@@ -690,6 +718,35 @@ def load_publication_manifest_catalog(
         effective_graph = _without_sources(graph, missing_bitstreams)
         effective_register = _register_with(register, quarantines)
         effective_by_key = {entry.approval_key: entry for entry in effective_register.entries}
+        nonmaterialized_bitstreams = {
+            source["bitstream_id"]
+            for source in effective_graph.sources
+            if effective_by_key[_historical_decision(source).approval_key].mode
+            is not PublicationMode.MATERIALIZED
+        }
+        tombstone_document_ids = {
+            document["document_id"]
+            for document in graph.documents
+            if document["bitstream_id"] in nonmaterialized_bitstreams | missing_bitstreams
+        }
+        tombstones = tuple(
+            DownloadTombstone(reference["source_id"], reference["artifact_id"])
+            for reference in graph.storage_references
+            if reference["document_id"] in tombstone_document_ids
+        )
+        nonmaterialized_document_ids = {
+            document["document_id"]
+            for document in effective_graph.documents
+            if document["bitstream_id"] in nonmaterialized_bitstreams
+        }
+        effective_graph = replace(
+            effective_graph,
+            storage_references=tuple(
+                reference
+                for reference in effective_graph.storage_references
+                if reference["document_id"] not in nonmaterialized_document_ids
+            ),
+        )
         projected_sources = []
         for source in effective_graph.sources:
             key = _historical_decision(source).approval_key
@@ -701,7 +758,7 @@ def load_publication_manifest_catalog(
             effective_graph,
             sources=tuple(projected_sources),
         )
-        return loaded, effective_graph, effective_register
+        return loaded, effective_graph, effective_register, tombstones
     except (ManifestCatalogError, ManifestGraphError, RightsPolicyError, ValueError) as exc:
         raise BuildDocsError(f"Manifest-Publikationskatalog ist ungültig: {exc}") from exc
 
@@ -838,17 +895,21 @@ def bind_publication_sources(repo_root: Path) -> BoundPublicationSources:
         register = parse_rights_register(captured.rights_register_bytes.decode("utf-8"))
         policy = parse_rights_policy(captured.rights_policy_bytes.decode("utf-8"))
         status = _strict_status(captured.status_bytes)
-        _loaded, graph, effective_register = load_publication_manifest_catalog(
+        _loaded, graph, effective_register, catalog_tombstones = load_publication_manifest_catalog(
             captured,
             register=register,
             policy=policy,
         )
+        projected_downloads = project_downloads(
+            graph,
+            status,
+            register=effective_register,
+            policy=policy,
+        )
         downloads = freeze_download_inputs(
-            project_downloads(
-                graph,
-                status,
-                register=effective_register,
-                policy=policy,
+            replace(
+                projected_downloads,
+                tombstones=tuple((*projected_downloads.tombstones, *catalog_tombstones)),
             ),
             before,
         )
@@ -891,7 +952,7 @@ def render_docs_tree(
             else ()
         )
         table_inputs = (
-            load_table_inputs(root)
+            load_table_inputs(root, captured_status=bound.download_inputs.public_status)
             if any(page.relative_path == _TABLE_PAGE for page in selected)
             else None
         )

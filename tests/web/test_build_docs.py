@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import contextmanager
 from collections import Counter
 from dataclasses import FrozenInstanceError, replace
@@ -534,8 +535,10 @@ def test_table_state_source_drift_aborts_and_preserves_old_docs(
     target = repo / relative
     real_load = build_docs_module.load_table_inputs
 
-    def load_then_mutate(root: Path) -> object:
-        result = real_load(root)
+    def load_then_mutate(
+        root: Path, *, captured_status: Mapping[str, object] | None = None
+    ) -> object:
+        result = real_load(root, captured_status=captured_status)
         target.write_bytes(target.read_bytes() + b"\n")
         return result
 
@@ -2721,3 +2724,258 @@ def test_attribution_drift_replaces_live_d1_with_safe_fallback(repo: Path) -> No
     refreshed = (repo / "site/Downloads/index.html").read_text(encoding="utf-8")
     assert old_href in refreshed
     assert "D2 Creator" in refreshed
+
+
+def test_site_and_docs_commit_as_one_rollback_unit(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Failure between site and docs commits restores both previous live trees."""
+
+    old_docs = _old_docs(repo)
+    old_site = _old_site(repo)
+    before = _generated_tree_hashes(repo)
+
+    def valid_runner(
+        repo_root: Path,
+        config_path: Path,
+        *,
+        strict: bool,
+        epoch: int,
+        pass_fds: tuple[int, ...],
+    ) -> int:
+        del repo_root, strict, epoch, pass_fds
+        parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        output = Path(parsed["site_dir"])
+        (output / "index.html").write_text("new index", encoding="utf-8")
+        (output / "404.html").write_text("new 404", encoding="utf-8")
+        return 0
+
+    checkpoints: list[PurePosixPath] = []
+
+    def fail_after_site(relative: PurePosixPath) -> None:
+        checkpoints.append(relative)
+        if relative == PurePosixPath("site"):
+            raise StagingError("injected between site and docs commit")
+
+    monkeypatch.setattr(build_site_module, "run_mkdocs_build", valid_runner)
+    monkeypatch.setattr(
+        staging_module,
+        "_coordinated_publication_checkpoint",
+        fail_after_site,
+        raising=False,
+    )
+
+    with pytest.raises(SiteBuildError, match="between site and docs commit"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=False,
+            strict=True,
+            force=True,
+            site_url=None,
+        )
+
+    assert checkpoints == [PurePosixPath("site")]
+    assert _generated_tree_hashes(repo) == before
+    assert (old_docs / "keep.txt").is_file()
+    assert (old_site / "keep.txt").is_file()
+
+
+@pytest.mark.parametrize(
+    ("relative", "broken"),
+    (
+        (PurePosixPath("rki"), False),
+        (PurePosixPath("rki"), True),
+        (PurePosixPath("rki/Bulletins"), False),
+        (PurePosixPath("rki/Bulletins"), True),
+    ),
+)
+def test_manifest_capture_rejects_symlinked_ancestor(
+    repo: Path,
+    tmp_path: Path,
+    relative: PurePosixPath,
+    broken: bool,
+) -> None:
+    """Present or broken ancestor symlinks cannot masquerade as an absent root."""
+
+    link = repo / relative
+    link.parent.mkdir(parents=True, exist_ok=True)
+    target = tmp_path / f"outside-{'-'.join(relative.parts)}-{broken}"
+    if not broken:
+        target.mkdir()
+    link.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(BuildDocsError, match="Manifest"):
+        build_docs_module.capture_publication_inputs(repo)
+
+
+def test_full_build_reuses_captured_status_for_tables(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Table rendering receives bound status and never invokes its live status loader."""
+
+    reads: Counter[str] = Counter()
+    parser_calls: Counter[str] = Counter()
+    live_status_reads = 0
+    injected_statuses: list[object | None] = []
+    original_status = yaml.safe_load((repo / "status.json").read_text(encoding="utf-8"))
+    real_read = build_docs_module.read_bounded_utf8_text_beneath
+    real_register_parser = build_docs_module.parse_rights_register
+    real_policy_parser = build_docs_module.parse_rights_policy
+    real_status_parser = build_docs_module._strict_status
+    real_table_loader = build_docs_module.load_table_inputs
+    import scripts.web.build_tables as build_tables_module
+
+    real_table_json_loader = build_tables_module._load_json
+
+    def tracked_read(root: Path, relative: PurePosixPath, *, max_bytes: int) -> str:
+        reads[relative.as_posix()] += 1
+        return real_read(root, relative, max_bytes=max_bytes)
+
+    def tracked_register(text: str) -> object:
+        parser_calls["register"] += 1
+        return real_register_parser(text)
+
+    def tracked_policy(text: str) -> object:
+        parser_calls["policy"] += 1
+        return real_policy_parser(text)
+
+    def tracked_status(payload: bytes) -> object:
+        parser_calls["status"] += 1
+        return real_status_parser(payload)
+
+    def tracked_table_json(
+        root: Path,
+        relative: PurePosixPath,
+        *,
+        max_bytes: int,
+        required: bool,
+    ) -> object:
+        nonlocal live_status_reads
+        if relative == PurePosixPath("status.json"):
+            live_status_reads += 1
+        return real_table_json_loader(root, relative, max_bytes=max_bytes, required=required)
+
+    def tracked_table_inputs(root: Path, *, captured_status: object | None = None) -> object:
+        injected_statuses.append(captured_status)
+        if captured_status is None:
+            return real_table_loader(root)
+        return real_table_loader(root, captured_status=captured_status)
+
+    monkeypatch.setattr(build_docs_module, "read_bounded_utf8_text_beneath", tracked_read)
+    monkeypatch.setattr(build_docs_module, "parse_rights_register", tracked_register)
+    monkeypatch.setattr(build_docs_module, "parse_rights_policy", tracked_policy)
+    monkeypatch.setattr(build_docs_module, "_strict_status", tracked_status)
+    monkeypatch.setattr(build_tables_module, "_load_json", tracked_table_json)
+    monkeypatch.setattr(build_docs_module, "load_table_inputs", tracked_table_inputs)
+
+    build_docs(repo, force=False)
+
+    assert reads == Counter(
+        {
+            "status.json": 4,
+            "research/rights-register.yml": 4,
+            "config/rights-policy.toml": 4,
+        }
+    )
+    assert parser_calls == Counter({"register": 1, "policy": 1, "status": 1})
+    assert live_status_reads == 0
+    assert len(injected_statuses) == 1
+    assert injected_statuses[0] == original_status
+
+
+def test_transient_captured_status_restore_still_aborts_full_build(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient captured byte generation cannot evade final source drift checks."""
+
+    old = _old_docs(repo)
+    original = (repo / "status.json").read_bytes()
+    changed = original.replace(b'"status": "not_initialized"', b'"status": "blocked"', 1)
+    assert changed != original
+    real_read = build_docs_module.read_bounded_utf8_text_beneath
+    status_reads = 0
+
+    def transient_read(root: Path, relative: PurePosixPath, *, max_bytes: int) -> str:
+        nonlocal status_reads
+        if relative == PurePosixPath("status.json"):
+            status_reads += 1
+            if status_reads == 2:
+                return changed.decode("utf-8")
+        return real_read(root, relative, max_bytes=max_bytes)
+
+    monkeypatch.setattr(build_docs_module, "read_bounded_utf8_text_beneath", transient_read)
+
+    with pytest.raises(BuildDocsError, match="source-hash drift"):
+        build_docs(repo, force=False)
+
+    assert (repo / "status.json").read_bytes() == original
+    assert (old / "keep.txt").is_file()
+
+
+@pytest.mark.parametrize(
+    "mode",
+    (PublicationMode.SOURCE_ONLY, PublicationMode.ORIGIN_LINK, PublicationMode.REMOVE_ALL),
+)
+def test_restrictive_drift_removes_graph_storage_and_carries_tombstones(
+    repo: Path, mode: PublicationMode
+) -> None:
+    """Every non-materialized effective source loses storage before projection."""
+
+    _install_approved_publication(repo)
+    _write_register(repo, _publication_decision(mode=mode))
+    captured = build_docs_module.capture_publication_inputs(repo)
+    register = build_docs_module.parse_rights_register(
+        captured.rights_register_bytes.decode("utf-8")
+    )
+    policy = build_docs_module.parse_rights_policy(captured.rights_policy_bytes.decode("utf-8"))
+
+    _loaded, graph, _effective_register, tombstones = (
+        build_docs_module.load_publication_manifest_catalog(
+            captured,
+            register=register,
+            policy=policy,
+        )
+    )
+    bound = build_docs_module.bind_publication_sources(repo)
+
+    assert graph.storage_references == ()
+    assert {(item.source_id, item.artifact_id) for item in tombstones} == {
+        (item.source_id, item.artifact_id) for item in bound.download_inputs.tombstones
+    }
+    assert tombstones
+
+
+def test_attribution_quarantine_removes_graph_storage_and_carries_tombstones(repo: Path) -> None:
+    """Attribution-only quarantine also removes stale materialized references."""
+
+    _install_approved_publication(repo)
+    _write_register(
+        repo,
+        _publication_decision(
+            creator="D2 Creator",
+            copyright_notice="D2 Copyright",
+            disclaimer_notice="D2 Disclaimer",
+            append_change_notice="Attribution korrigiert",
+        ),
+    )
+    captured = build_docs_module.capture_publication_inputs(repo)
+    register = build_docs_module.parse_rights_register(
+        captured.rights_register_bytes.decode("utf-8")
+    )
+    policy = build_docs_module.parse_rights_policy(captured.rights_policy_bytes.decode("utf-8"))
+
+    _loaded, graph, _effective_register, tombstones = (
+        build_docs_module.load_publication_manifest_catalog(
+            captured,
+            register=register,
+            policy=policy,
+        )
+    )
+    bound = build_docs_module.bind_publication_sources(repo)
+
+    assert graph.storage_references == ()
+    assert {(item.source_id, item.artifact_id) for item in tombstones} == {
+        (item.source_id, item.artifact_id) for item in bound.download_inputs.tombstones
+    }
+    assert tombstones

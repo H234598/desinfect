@@ -34,7 +34,11 @@ from scripts.rki_pipeline.io_utils import (
     source_date_epoch,
     validate_tree_no_symlinks_fd,
 )
-from scripts.rki_pipeline.staging import StagingError, preview_directory, staged_directory
+from scripts.rki_pipeline.staging import (
+    StagingError,
+    coordinated_staged_directories,
+    preview_directory,
+)
 from scripts.web.build_docs import (
     BuildDocsError,
     DocsBuildResult,
@@ -881,19 +885,22 @@ def build_site(
         return SiteBuildResult(docs=docs.result, site_hashes=site_hashes, published=False)
 
     try:
-        with staged_directory(config.docs_dir, allowed_root=root, force=force) as docs_stage:
+        with coordinated_staged_directories(
+            (config.site_dir, config.docs_dir),
+            allowed_root=root,
+            force=force,
+        ) as (site_stage, docs_stage):
             docs = render_docs_tree(root, docs_stage, bound_sources=bound_sources)
-            with staged_directory(config.site_dir, allowed_root=root, force=force) as site_stage:
-                site_hashes = _run_site_build(
-                    repo_root=root,
-                    docs_dir=docs_stage,
-                    site_dir=site_stage,
-                    site_url=validated_url,
-                    epoch=epoch,
-                    partial=False,
-                    content_index=content_index,
-                )
-                _require_bound_unchanged(root, bound_sources.source_hashes)
+            site_hashes = _run_site_build(
+                repo_root=root,
+                docs_dir=docs_stage,
+                site_dir=site_stage,
+                site_url=validated_url,
+                epoch=epoch,
+                partial=False,
+                content_index=content_index,
+            )
+            _require_bound_unchanged(root, bound_sources.source_hashes)
         docs = replace(docs, published=True)
     except SiteBuildError:
         raise
