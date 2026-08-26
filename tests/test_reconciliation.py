@@ -1627,12 +1627,14 @@ def remote_record(
 def remote_catalog(*records: ArtifactRecord) -> LoadedManifestCatalog:
     entries: list[dict[str, object]] = []
     for record in records:
+        if record.pdf_url is None or record.sha256 is None:
+            raise ValueError("remote_catalog erfordert pdf_url und sha256")
         identity = bitstream_identity(record.pdf_url)
         entries.append({
             "source_id": record.source_id,
             "canonical_url": identity.canonical_url,
             "version_or_bitstream": identity.bitstream_id,
-            "source_sha256": record.sha256 or "0" * 64,
+            "source_sha256": record.sha256,
             "state": "unknown",
             "mode": "origin_link",
             "allowed_actions": [],
@@ -1682,6 +1684,13 @@ def remote_catalog(*records: ArtifactRecord) -> LoadedManifestCatalog:
             authorizer=authorizer,
         )
     return LoadedManifestCatalog(graph=graph, rendered=render_manifest_catalog(graph))
+
+
+def test_remote_catalog_rejects_missing_pdf_identity_clearly() -> None:
+    """Test catalog helper must reject incomplete records before key derivation."""
+
+    with pytest.raises(ValueError, match="pdf_url und sha256"):
+        remote_catalog(remote_record(pdf_url=None, sha256=None))
 
 
 def candidate_prepared_object(

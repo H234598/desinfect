@@ -191,13 +191,13 @@
       "synthetic": true
     },
     {
-      "bytes": 2030,
+      "bytes": 1547,
       "license_status": "synthetic",
       "media_type": "application/x-ndjson",
       "path": "manifests/Quellen/manifest.jsonl",
       "provenance": "Desinfect P06 synthetic manifest graph fixture",
       "purpose": "canonical source-manifest collection",
-      "sha256": "961c8d39a27b55b55ec8554efeda5f2701d750939067ba159865f1471e5dbded",
+      "sha256": "5f9445fcc0260835cfc4598854382b14c09b761c3df12dac8ac7fdb6ee17f021",
       "synthetic": true
     },
     {
@@ -227,7 +227,7 @@
       "path": "manifests/Storage/manifest.jsonl",
       "provenance": "Desinfect P06 synthetic manifest graph fixture",
       "purpose": "canonical storage-reference collection",
-      "sha256": "bed05bd6ab4955b1e32e60462d257427bee4193e2f8d648e776e84d4a9ed90c9",
+      "sha256": "11a2c607207cff745deee30efeacefe03bafdaf8be7199d1e4679f910847ff66",
       "synthetic": true
     },
     {
@@ -237,7 +237,7 @@
       "path": "manifests/catalog.json",
       "provenance": "Desinfect P06 synthetic manifest graph fixture",
       "purpose": "canonical manifest collection catalog",
-      "sha256": "33739ddb04c598e578f23b74cba6472b4d80a35eabfc521a9a544470c6f7e870",
+      "sha256": "0dadf2e142639418690d0a2260c80aec652ed47a372b9330a6005b76a7c1b3a0",
       "synthetic": true
     },
     {

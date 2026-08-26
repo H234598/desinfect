@@ -1,11 +1,11 @@
 {
   "collections": [
     {
-      "bytes": 2030,
+      "bytes": 1547,
       "count": 1,
       "kind": "source-manifest",
       "path": "Quellen/manifest.jsonl",
-      "sha256": "961c8d39a27b55b55ec8554efeda5f2701d750939067ba159865f1471e5dbded"
+      "sha256": "5f9445fcc0260835cfc4598854382b14c09b761c3df12dac8ac7fdb6ee17f021"
     },
     {
       "bytes": 809,
@@ -26,7 +26,7 @@
       "count": 2,
       "kind": "storage-reference",
       "path": "Storage/manifest.jsonl",
-      "sha256": "bed05bd6ab4955b1e32e60462d257427bee4193e2f8d648e776e84d4a9ed90c9"
+      "sha256": "11a2c607207cff745deee30efeacefe03bafdaf8be7199d1e4679f910847ff66"
     }
   ],
   "schema_version": "1.0.0"

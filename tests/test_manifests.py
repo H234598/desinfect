@@ -29,7 +29,7 @@ BITSTREAM_URL = "https://edoc.rki.de/bitstream/handle/176904/900000001/source.pd
 BITSTREAM_ID = bitstream_identity(BITSTREAM_URL).bitstream_id
 SOURCE_SHA256 = "4665c3b8cfa6de8d9792a8defb977bfd200465b513575419e0a88541000f5b2a"
 OUTPUT_SHA256 = "c" * 64
-DECISION_SHA256 = "300b00e2394eeafe1045a064187fb88da1f8e0b06e11aa4f1e6f8e9ac659072f"
+DECISION_SHA256 = "d041e5160400a460c9e5765db3309853d2a2056717cc3c24cfb3df16598474b8"
 
 
 def _authorizer():
@@ -100,23 +100,10 @@ def _source() -> dict[str, object]:
                 "hash",
                 "index_text",
                 "ocr",
-                "publish",
                 "thumbnail",
             ],
             "components_state": "cleared",
-            "attribution": {
-                "creators": ["Synthetic Fixture Creator"],
-                "attribution_parties": ["Synthetic Fixture Rights Holder"],
-                "copyright_notice": "Synthetic fixture copyright notice",
-                "license_notice": "CC BY 4.0",
-                "license_url": "https://creativecommons.org/licenses/by/4.0/",
-                "disclaimer_notice": (
-                    "Synthetic fixture only; no external publication rights claim"
-                ),
-                "origin_url": "https://edoc.rki.de/handle/176904/900000001",
-                "prior_change_history": [],
-                "current_change_notice": "Unchanged synthetic fixture",
-            },
+            "attribution": None,
             "approval_key": {
                 "source_id": SOURCE_ID,
                 "canonical_url": BITSTREAM_URL,
@@ -387,7 +374,7 @@ def _second_bitstream() -> tuple[dict[str, object], dict[str, object], dict[str,
         bitstream_url=url,
         bitstream_version=3,
         decision_sha256=(
-            "5e3f8f988bbec59b8a0f56c2980d5b8ae95340468ffc9e54b8a01021c94c44c7"
+            "ee2186700bf54e827a3bb704e1c5cf2677bccdf1108a17a70b95dcb0fa7eecb9"
         ),
         same_content_as=[BITSTREAM_ID],
     )

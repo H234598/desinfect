@@ -1,11 +1,13 @@
 """TDD contract for Git-LFS tracking, objects, budgets, and adapter behavior."""
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 from pathlib import Path
 
 import pytest
 
+from scripts.rki_pipeline import rights
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
 from scripts.rki_pipeline.storage.base import StorageError, StorageIntent
 from scripts.rki_pipeline.storage.config import LfsConfig
@@ -458,6 +460,256 @@ def test_lfs_authorization_precedes_temp_and_repository_writes(
 
     assert target.read_bytes() == before
     assert denied_ledger.events == []
+
+
+@pytest.mark.parametrize("target_kind", ("pointer", "working-tree"))
+def test_lfs_exists_fails_closed_without_exact_revision_after_takedown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    storage_rights,
+    target_kind: str,
+) -> None:
+    """Existence lookup must not hash payload bytes after rights revocation."""
+
+    repository = repository_with_tracking(tmp_path)
+    adapter = LfsStorageAdapter(
+        repository_root=repository,
+        config=config(),
+        authorizer=storage_rights.authorizer,
+    )
+    intent, prepared = materialized_pdf(tmp_path, adapter)
+    reference = adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
+    target = repository / reference.relative_path
+    if target_kind == "working-tree":
+        target.write_bytes(prepared.path.read_bytes())
+
+    storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))
+
+    def payload_forbidden(*_args, **_kwargs):
+        raise AssertionError("exists reached payload verification")
+
+    monkeypatch.setattr(lfs_storage, "hash_file", payload_forbidden)
+    monkeypatch.setattr(lfs_storage, "verify_lfs_object", payload_forbidden)
+    if target_kind == "working-tree":
+        monkeypatch.setattr(lfs_storage, "_pointer_from_path", payload_forbidden)
+
+    assert adapter.exists(intent) is None
+
+
+def test_lfs_exists_never_pairs_takedown_from_another_bitstream(
+    tmp_path: Path,
+    storage_rights,
+) -> None:
+    """Takedown metadata fallback must retain exact ApprovalKey identity."""
+
+    repository = repository_with_tracking(tmp_path)
+    adapter = LfsStorageAdapter(
+        repository_root=repository,
+        config=config(),
+        authorizer=storage_rights.authorizer,
+    )
+    intent, prepared = materialized_pdf(tmp_path, adapter)
+    adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
+    other_url = (
+        "https://edoc.rki.de/bitstream/handle/176904/12345.2/"
+        "other.pdf?sequence=2"
+    )
+    other_bitstream = rights.bitstream_identity(other_url).bitstream_id
+    storage_rights.register_path.write_text(
+        "schema_version: 2\n"
+        "decisions:\n"
+        f'  - source_id: "{SOURCE_ID}"\n'
+        f'    canonical_url: "{other_url}"\n'
+        f'    version_or_bitstream: "{other_bitstream}"\n'
+        f'    source_sha256: "{SOURCE_SHA256}"\n'
+        '    state: "takedown"\n'
+        '    mode: "remove_all"\n'
+        "    allowed_actions: []\n"
+        '    components_state: "blocked"\n'
+        "    attribution: null\n"
+        '    basis: "Synthetic cross-bitstream takedown"\n'
+        '    reviewed_by: "Test Fixture"\n'
+        '    reviewed_at: "2026-08-03T08:00:00Z"\n',
+        encoding="utf-8",
+    )
+
+    assert adapter.exists(intent) is None
+
+
+@pytest.mark.parametrize("target_kind", ("pointer", "working-tree"))
+def test_lfs_exists_projects_exact_current_takedown_without_payload_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    storage_rights,
+    target_kind: str,
+) -> None:
+    """Exact current takedown identity may use stat metadata, never payload bytes."""
+
+    repository = repository_with_tracking(tmp_path)
+    adapter = LfsStorageAdapter(
+        repository_root=repository,
+        config=config(),
+        authorizer=storage_rights.authorizer,
+    )
+    intent, prepared = materialized_pdf(tmp_path, adapter)
+    reference = adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
+    target = repository / reference.relative_path
+    object_path = lfs_object_path(repository, intent.sha256)
+    if target_kind == "working-tree":
+        target.write_bytes(prepared.path.read_bytes())
+    decision_sha256 = storage_rights.set_decisions(
+        (SOURCE_ID, SOURCE_SHA256, "takedown")
+    )[(SOURCE_ID, SOURCE_SHA256)]
+    takedown_intent = replace(
+        intent,
+        decision_sha256=decision_sha256,
+        rights_state="takedown",
+    )
+
+    original_open = Path.open
+    original_read_bytes = Path.read_bytes
+
+    def payload_open(path: Path, *args, **kwargs):
+        if path in {target, object_path}:
+            raise AssertionError("current takedown exists opened payload bytes")
+        return original_open(path, *args, **kwargs)
+
+    def payload_read_bytes(path: Path) -> bytes:
+        if path in {target, object_path}:
+            raise AssertionError("current takedown exists read payload bytes")
+        return original_read_bytes(path)
+
+    def payload_forbidden(*_args, **_kwargs):
+        raise AssertionError("current takedown exists reached payload verification")
+
+    monkeypatch.setattr(Path, "open", payload_open)
+    monkeypatch.setattr(Path, "read_bytes", payload_read_bytes)
+    monkeypatch.setattr(lfs_storage, "_pointer_from_path", payload_forbidden)
+    monkeypatch.setattr(lfs_storage, "hash_file", payload_forbidden)
+    monkeypatch.setattr(lfs_storage, "verify_lfs_object", payload_forbidden)
+
+    result = adapter.exists(takedown_intent)
+
+    assert result is not None
+    assert result.decision_sha256 == decision_sha256
+    assert result.rights_state == "takedown"
+    assert (result.sha256, result.size) == (intent.sha256, intent.size)
+
+
+def test_lfs_exists_rejects_state_drift_for_current_takedown_decision(
+    tmp_path: Path,
+    storage_rights,
+) -> None:
+    """Current decision hash cannot authorize a conflicting intent rights state."""
+
+    repository = repository_with_tracking(tmp_path)
+    adapter = LfsStorageAdapter(
+        repository_root=repository,
+        config=config(),
+        authorizer=storage_rights.authorizer,
+    )
+    intent, prepared = materialized_pdf(tmp_path, adapter)
+    adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
+    decision_sha256 = storage_rights.set_decisions(
+        (SOURCE_ID, SOURCE_SHA256, "takedown")
+    )[(SOURCE_ID, SOURCE_SHA256)]
+    drifted_intent = replace(intent, decision_sha256=decision_sha256)
+
+    assert adapter.exists(drifted_intent) is None
+
+
+def test_lfs_exists_rejects_same_size_working_tree_tamper_when_hash_is_allowed(
+    tmp_path: Path,
+    storage_rights,
+) -> None:
+    """Approved existence lookup must retain raw payload hash integrity."""
+
+    repository = repository_with_tracking(tmp_path)
+    adapter = LfsStorageAdapter(
+        repository_root=repository,
+        config=config(),
+        authorizer=storage_rights.authorizer,
+    )
+    intent, prepared = materialized_pdf(tmp_path, adapter)
+    reference = adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
+    target = repository / reference.relative_path
+    target.write_bytes(b"X" * intent.size)
+
+    with pytest.raises(LfsIntegrityError, match="SHA-256|anderen Inhalt"):
+        adapter.exists(intent)
+
+
+def test_lfs_exists_rejects_same_size_object_tamper_when_hash_is_allowed(
+    tmp_path: Path,
+    storage_rights,
+) -> None:
+    """Approved existence lookup must retain LFS object hash integrity."""
+
+    repository = repository_with_tracking(tmp_path)
+    adapter = LfsStorageAdapter(
+        repository_root=repository,
+        config=config(),
+        authorizer=storage_rights.authorizer,
+    )
+    intent, prepared = materialized_pdf(tmp_path, adapter)
+    adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
+    object_path = lfs_object_path(repository, intent.sha256)
+    object_path.write_bytes(b"X" * intent.size)
+
+    with pytest.raises(LfsIntegrityError, match="SHA-256|anderen Inhalt"):
+        adapter.exists(intent)
+
+
+def test_lfs_exists_rejects_pointer_size_collision_with_missing_object(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    storage_rights,
+) -> None:
+    """Takedown fallback must classify pointer syntax despite a size collision."""
+
+    repository = repository_with_tracking(tmp_path)
+    adapter = LfsStorageAdapter(
+        repository_root=repository,
+        config=LfsConfig(
+            artifact_root="rki/Bulletins",
+            max_run_objects=2,
+            max_run_bytes=256,
+            warn_total_bytes=512,
+            block_total_bytes=1024,
+        ),
+        authorizer=storage_rights.authorizer,
+    )
+    intent, prepared = materialized_pdf(tmp_path, adapter, payload=b"X" * 128)
+    reference = adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
+    target = repository / reference.relative_path
+    assert target.stat().st_size == intent.size
+    storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))
+    object_path = lfs_object_path(repository, intent.sha256)
+    object_path.unlink()
+
+    original_open = Path.open
+    original_read_bytes = Path.read_bytes
+
+    def payload_open(path: Path, *args, **kwargs):
+        if path in {target, object_path}:
+            raise AssertionError("takedown exists opened payload bytes")
+        return original_open(path, *args, **kwargs)
+
+    def payload_read_bytes(path: Path) -> bytes:
+        if path in {target, object_path}:
+            raise AssertionError("takedown exists read payload bytes")
+        return original_read_bytes(path)
+
+    def payload_forbidden(*_args, **_kwargs):
+        raise AssertionError("takedown exists reached payload verification")
+
+    monkeypatch.setattr(Path, "open", payload_open)
+    monkeypatch.setattr(Path, "read_bytes", payload_read_bytes)
+    monkeypatch.setattr(lfs_storage, "_pointer_from_path", payload_forbidden)
+    monkeypatch.setattr(lfs_storage, "hash_file", payload_forbidden)
+    monkeypatch.setattr(lfs_storage, "verify_lfs_object", payload_forbidden)
+
+    assert adapter.exists(intent) is None
 
 
 def test_lfs_constructor_rejects_structural_authorizer(

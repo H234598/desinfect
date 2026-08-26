@@ -98,6 +98,24 @@ def test_rights_policy_module_exists() -> None:
     assert (ROOT / "scripts" / "rki_pipeline" / "rights.py").is_file()
 
 
+def test_canonical_synthetic_fixture_never_grants_external_publish() -> None:
+    """A no-rights fixture must not become an external publication approval."""
+
+    register = rights.load_rights_register(ROOT / "research" / "rights-register.yml")
+    decision = register.entries[0]
+
+    assert "no external publication rights claim" in decision.basis
+    assert rights.RightsAction.PUBLISH not in decision.allowed_actions
+    assert decision.attribution is None
+    with pytest.raises(rights.RightsPolicyError, match="allowed_actions"):
+        rights.resolve_action(
+            decision.approval_key,
+            action=rights.RightsAction.PUBLISH,
+            register=register,
+            policy=rights.load_rights_policy(),
+        )
+
+
 def test_rights_policy_exposes_stable_api() -> None:
     """Catch accidental loss of the P06 rights boundary API."""
 

@@ -334,6 +334,16 @@ def test_source_manifest_rejects_noncanonical_decision_fields(
         build_source_manifest(_record(), rights_decision=decision)
 
 
+def test_source_manifest_rejects_foreign_attribution_with_domain_error() -> None:
+    """A forged attribution object must fail before field serialization."""
+
+    record = _record()
+    decision = _unchecked_decision(_decision(record), attribution=object())
+
+    with pytest.raises(ManifestBuildError, match="Rechteentscheidung"):
+        build_source_manifest(record, rights_decision=decision)
+
+
 @pytest.mark.parametrize(
     "state",
     (RightsState.INTERNAL_ONLY, RightsState.TAKEDOWN),

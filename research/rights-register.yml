@@ -13,21 +13,9 @@ decisions:
       - "hash"
       - "index_text"
       - "ocr"
-      - "publish"
       - "thumbnail"
     components_state: "cleared"
-    attribution:
-      creators:
-        - "Synthetic Fixture Creator"
-      attribution_parties:
-        - "Synthetic Fixture Rights Holder"
-      copyright_notice: "Synthetic fixture copyright notice"
-      license_notice: "CC BY 4.0"
-      license_url: "https://creativecommons.org/licenses/by/4.0/"
-      disclaimer_notice: "Synthetic fixture only; no external publication rights claim"
-      origin_url: "https://edoc.rki.de/handle/176904/900000001"
-      prior_change_history: []
-      current_change_notice: "Unchanged synthetic fixture"
+    attribution: null
     basis: "Synthetic P06 conversion fixture; no external publication rights claim"
     reviewed_by: "Desinfect maintainers"
     reviewed_at: "2026-08-03T14:00:00Z"

@@ -148,6 +148,18 @@ def test_source_manifest_publish_requires_cleared_components() -> None:
             / "manifest.jsonl"
         ).read_text(encoding="utf-8")
     )
+    payload["rights"]["allowed_actions"].insert(-1, "publish")
+    payload["rights"]["attribution"] = {
+        "creators": ["Synthetic Fixture Creator"],
+        "attribution_parties": ["Synthetic Fixture Rights Holder"],
+        "copyright_notice": "Synthetic fixture copyright notice",
+        "license_notice": "CC BY 4.0",
+        "license_url": "https://creativecommons.org/licenses/by/4.0/",
+        "disclaimer_notice": "Synthetic fixture only",
+        "origin_url": "https://edoc.rki.de/handle/176904/900000001",
+        "prior_change_history": [],
+        "current_change_notice": "Unchanged synthetic fixture",
+    }
     payload["rights"]["components_state"] = "unknown"
 
     with pytest.raises(SchemaContractError, match="components_state"):

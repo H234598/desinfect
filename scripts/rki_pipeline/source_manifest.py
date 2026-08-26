@@ -16,6 +16,7 @@ from scripts.rki_pipeline.rights import (
     ComponentsState,
     PublicationMode,
     RightsAction,
+    RightsAttribution,
     RightsDecision,
     RightsState,
     decision_sha256,
@@ -124,6 +125,10 @@ def build_source_manifest(
             for action in rights_decision.allowed_actions
         )
         or type(rights_decision.components_state) is not ComponentsState
+        or (
+            rights_decision.attribution is not None
+            and type(rights_decision.attribution) is not RightsAttribution
+        )
         or not rights_decision.basis
         or (
             rights_decision.state
