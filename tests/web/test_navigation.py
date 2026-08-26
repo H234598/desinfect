@@ -56,6 +56,11 @@ def repo(tmp_path: Path) -> Path:
         shutil.copytree(source / name, target / name)
     shutil.copy2(source / "mkdocs.yml", target / "mkdocs.yml")
     shutil.copy2(source / "status.json", target / "status.json")
+    (target / "research").mkdir()
+    shutil.copy2(
+        source / "research/rights-register.yml",
+        target / "research/rights-register.yml",
+    )
     return target
 
 

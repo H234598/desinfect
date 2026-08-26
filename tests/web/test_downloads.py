@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
+
+import scripts.web.build_docs as build_docs_module
 
 from scripts.rki_pipeline.documents import bitstream_identity
 from scripts.rki_pipeline.manifests import ManifestGraph
@@ -849,3 +852,26 @@ def test_origin_url_accepts_exact_source_handle() -> None:
         validate_origin_url("https://edoc.rki.de/handle/176904/7", source_id=SOURCE_ID)
         == "https://edoc.rki.de/handle/176904/7"
     )
+
+
+def test_bound_download_inputs_freeze_status_and_hash_mappings(fixture_register) -> None:
+    register, policy, decision = fixture_register
+    projected = project_downloads(
+        _graph(decision),
+        {"status": "operational", "pipeline": {"last_successful_run_at": None}},
+        register=register,
+        policy=policy,
+    )
+
+    frozen = build_docs_module.freeze_download_inputs(
+        projected,
+        {"status.json": "a" * 64},
+    )
+
+    assert isinstance(frozen.public_status, MappingProxyType)
+    assert isinstance(frozen.public_status["pipeline"], MappingProxyType)
+    assert isinstance(frozen.input_hashes, MappingProxyType)
+    with pytest.raises(TypeError):
+        frozen.public_status["pipeline"]["last_successful_run_at"] = "changed"
+    with pytest.raises(TypeError):
+        frozen.input_hashes["status.json"] = "b" * 64

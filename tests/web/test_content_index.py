@@ -47,6 +47,7 @@ def test_repository_has_reader_and_hidden_maintenance_pages_without_taxonomy_rol
         "Methodik/Bewertung.md",
         "Methodik/Sicherheit.md",
         "Tabelle.md",
+        "Downloads.md",
         "Wartung/Architektur.md",
         "Wartung/Datenmodell.md",
         "Wartung/Automatisierung.md",
