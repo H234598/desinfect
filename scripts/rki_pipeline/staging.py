@@ -74,10 +74,25 @@ class _CoordinatedTarget:
 
 
 @dataclass(frozen=True, slots=True)
+class _RollbackDiagnostic:
+    target_name: str
+    quarantine_name: str
+    phase: str
+    error: BaseException
+    quarantine_remaining: bool
+
+    def render(self) -> str:
+        message = f"target={self.target_name}; phase={self.phase}; error={self.error}"
+        if self.quarantine_remaining:
+            message += f"; sicherer Quarantänerest={self.quarantine_name}"
+        return message
+
+
+@dataclass(frozen=True, slots=True)
 class _RollbackOutcome:
     staging_published: bool
     target_moved: bool
-    errors: tuple[BaseException, ...]
+    diagnostics: tuple[_RollbackDiagnostic, ...]
 
 
 def _coordinated_publication_checkpoint(relative: PurePosixPath) -> None:
@@ -375,10 +390,16 @@ def _rollback_published_target(
 ) -> _RollbackOutcome:
     """Claim own publication, then restore backup regardless of cleanup failures."""
 
-    errors: list[BaseException] = []
+    failures: list[tuple[str, BaseException]] = []
+    quarantine_remaining = False
     if staging_published:
         if published_fd is None:
-            errors.append(StagingConflictError("Publiziertes Ziel besitzt keinen gehaltenen FD"))
+            failures.append(
+                (
+                    "claim",
+                    StagingConflictError("Publiziertes Ziel besitzt keinen gehaltenen FD"),
+                )
+            )
         else:
             try:
                 quarantine_fd = _claim_owned_target(
@@ -388,33 +409,27 @@ def _rollback_published_target(
                     published_fd,
                 )
             except BaseException as exc:
-                errors.append(exc)
+                failures.append(("claim", exc))
             else:
                 staging_published = False
                 if quarantine_fd is not None:
-                    quarantine_identity = _directory_identity(quarantine_fd)
-                    cleanup_succeeded = False
+                    quarantine_remaining = True
                     try:
+                        quarantine_identity = _directory_identity(quarantine_fd)
                         clear_generated_tree_fd(quarantine_fd)
-                        cleanup_succeeded = True
-                    except BaseException as exc:
-                        errors.append(exc)
-                    finally:
-                        os.close(quarantine_fd)
-                    if cleanup_succeeded:
                         if not _named_identity_matches(
                             parent_fd,
                             quarantine_name,
                             quarantine_identity,
                         ):
-                            errors.append(
-                                StagingConflictError("Eigene Quarantäne wurde parallel ersetzt")
-                            )
+                            raise StagingConflictError("Eigene Quarantäne wurde parallel ersetzt")
                         elif remove_quarantine:
-                            try:
-                                os.rmdir(quarantine_name, dir_fd=parent_fd)
-                            except BaseException as exc:
-                                errors.append(exc)
+                            os.rmdir(quarantine_name, dir_fd=parent_fd)
+                            quarantine_remaining = False
+                    except BaseException as exc:
+                        failures.append(("quarantine_cleanup", exc))
+                    finally:
+                        os.close(quarantine_fd)
 
     if target_moved:
         try:
@@ -428,9 +443,32 @@ def _rollback_published_target(
             target_moved = False
             fsync_directory_fd(parent_fd)
         except BaseException as exc:
-            errors.append(exc)
+            failures.append(("backup_restore", exc))
 
-    return _RollbackOutcome(staging_published, target_moved, tuple(errors))
+    diagnostics = tuple(
+        _RollbackDiagnostic(
+            target_name=target_name,
+            quarantine_name=quarantine_name,
+            phase=phase,
+            error=error,
+            quarantine_remaining=quarantine_remaining,
+        )
+        for phase, error in failures
+    )
+    return _RollbackOutcome(staging_published, target_moved, diagnostics)
+
+
+def _rollback_failure(
+    label: str,
+    primary: BaseException,
+    diagnostics: tuple[_RollbackDiagnostic, ...],
+) -> StagingError:
+    """Keep primary visible while attaching structured secondary diagnostics."""
+
+    rendered = " | ".join(diagnostic.render() for diagnostic in diagnostics)
+    return StagingError(
+        f"{label}; Primärfehler={type(primary).__name__}: {primary}; Rollbackdiagnostik={rendered}"
+    )
 
 
 @contextmanager
@@ -552,7 +590,7 @@ def staged_directory(
 
             if entry_exists(parent_fd, backup_name):
                 raise StagingError(f"Backup blieb nach Stagingtransaktion bestehen: {backup_name}")
-        except BaseException:
+        except BaseException as primary:
             if staging_fd is not None:
                 os.close(staging_fd)
                 staging_fd = None
@@ -560,29 +598,25 @@ def staged_directory(
                 # A later backup-cleanup error must never replace the durable new
                 # target with a potentially partially removed old backup.
                 raise
-            try:
-                outcome = _rollback_published_target(
-                    parent_fd=parent_fd,
-                    target_name=target_name,
-                    backup_name=backup_name,
-                    quarantine_name=quarantine_name,
-                    published_fd=published_fd,
-                    staging_published=staging_published,
-                    target_moved=target_moved,
-                    remove_quarantine=False,
-                )
-                staging_published = outcome.staging_published
-                target_moved = outcome.target_moved
-                publication_state.published = staging_published
-                if outcome.errors:
-                    raise StagingError("; ".join(str(error) for error in outcome.errors)) from (
-                        outcome.errors[0]
-                    )
-            except BaseException as rollback_failure:
-                raise StagingError(
-                    "Staging fehlgeschlagen und Rollback konnte nicht sicher "
-                    f"abgeschlossen werden: {rollback_failure}"
-                ) from rollback_failure
+            outcome = _rollback_published_target(
+                parent_fd=parent_fd,
+                target_name=target_name,
+                backup_name=backup_name,
+                quarantine_name=quarantine_name,
+                published_fd=published_fd,
+                staging_published=staging_published,
+                target_moved=target_moved,
+                remove_quarantine=False,
+            )
+            staging_published = outcome.staging_published
+            target_moved = outcome.target_moved
+            publication_state.published = staging_published
+            if outcome.diagnostics:
+                raise _rollback_failure(
+                    "Staging fehlgeschlagen und Rollbackdiagnostik liegt vor",
+                    primary,
+                    outcome.diagnostics,
+                ) from primary
             raise
         finally:
             if staging_fd is not None:
@@ -780,9 +814,9 @@ def coordinated_staged_directories(
                             f"konnte nicht vollständig entfernt werden: {cleanup_error}"
                         ) from cleanup_error
                     item.target_moved = False
-        except BaseException:
+        except BaseException as primary:
             if not committed:
-                rollback_errors: list[BaseException] = []
+                rollback_diagnostics: list[_RollbackDiagnostic] = []
                 for item in reversed(transactions):
                     outcome = _rollback_published_target(
                         parent_fd=item.parent_fd,
@@ -796,13 +830,13 @@ def coordinated_staged_directories(
                     )
                     item.staging_published = outcome.staging_published
                     item.target_moved = outcome.target_moved
-                    rollback_errors.extend(outcome.errors)
-                if rollback_errors:
-                    raise StagingError(
-                        "Koordinierte Publikation fehlgeschlagen und Rollback konnte nicht "
-                        "sicher abgeschlossen werden: "
-                        + "; ".join(str(error) for error in rollback_errors)
-                    ) from rollback_errors[0]
+                    rollback_diagnostics.extend(outcome.diagnostics)
+                if rollback_diagnostics:
+                    raise _rollback_failure(
+                        "Koordinierte Publikation fehlgeschlagen und Rollbackdiagnostik liegt vor",
+                        primary,
+                        tuple(rollback_diagnostics),
+                    ) from primary
             raise
         finally:
             cleanup_error: BaseException | None = None

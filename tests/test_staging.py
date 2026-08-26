@@ -27,6 +27,20 @@ def _generated(path: Path, payload: str) -> None:
     (path / "value.txt").write_text(payload, encoding="utf-8")
 
 
+def _exception_evidence(error: BaseException) -> str:
+    """Collect visible message, notes, and explicit causes without implicit contexts."""
+
+    evidence: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        evidence.append(str(current))
+        evidence.extend(getattr(current, "__notes__", ()))
+        current = current.__cause__
+    return "\n".join(evidence)
+
+
 def test_staged_directory_publishes_complete_tree(tmp_path: Path) -> None:
     """Replace a marked target only after the context exits successfully."""
 
@@ -123,6 +137,80 @@ def test_coordinated_cleanup_failure_keeps_originally_absent_target_absent(
 
     assert not site.exists()
     assert (docs / "value.txt").read_text(encoding="utf-8") == "old docs"
+
+
+def test_coordinated_rollback_preserves_primary_and_exact_quarantine_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Secondary cleanup failure reports exact rest without masking primary fault."""
+
+    site = tmp_path / "site"
+    docs = tmp_path / "build/docs"
+    _generated(site, "old site")
+    _generated(docs, "old docs")
+
+    def fail_after_site(relative: object) -> None:
+        if str(relative) == "site":
+            raise RuntimeError("PRIMARY between commits")
+
+    def fail_clear(_descriptor: int) -> None:
+        raise OSError("SECONDARY quarantine clear")
+
+    monkeypatch.setattr(staging_module, "_coordinated_publication_checkpoint", fail_after_site)
+    monkeypatch.setattr(staging_module, "clear_generated_tree_fd", fail_clear)
+
+    with pytest.raises(BaseException) as raised:
+        with coordinated_staged_directories(
+            (site, docs), allowed_root=tmp_path, force=True
+        ) as stages:
+            for stage in stages:
+                (stage / "value.txt").write_text("new", encoding="utf-8")
+
+    quarantines = list(tmp_path.glob(".site.quarantine-*"))
+    assert len(quarantines) == 1
+    evidence = _exception_evidence(raised.value)
+    assert "PRIMARY between commits" in evidence
+    assert "SECONDARY quarantine clear" in evidence
+    assert quarantines[0].name in evidence
+    assert (site / "value.txt").read_text(encoding="utf-8") == "old site"
+    assert (docs / "value.txt").read_text(encoding="utf-8") == "old docs"
+    assert quarantines[0].is_dir()
+
+
+def test_single_rollback_preserves_primary_and_exact_quarantine_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Single-target rollback exposes same primary, secondary, and safe rest details."""
+
+    site = tmp_path / "site"
+    _generated(site, "old site")
+
+    def reject(_descriptor: int) -> None:
+        raise RuntimeError("PRIMARY single validator")
+
+    def fail_clear(_descriptor: int) -> None:
+        raise OSError("SECONDARY single quarantine clear")
+
+    monkeypatch.setattr(staging_module, "clear_generated_tree_fd", fail_clear)
+
+    with pytest.raises(BaseException) as raised:
+        with staged_directory(
+            site,
+            allowed_root=tmp_path,
+            publication_validator=reject,
+        ) as stage:
+            (stage / "value.txt").write_text("new", encoding="utf-8")
+
+    quarantines = list(tmp_path.glob(".site.quarantine-*"))
+    assert len(quarantines) == 1
+    evidence = _exception_evidence(raised.value)
+    assert "PRIMARY single validator" in evidence
+    assert "SECONDARY single quarantine clear" in evidence
+    assert quarantines[0].name in evidence
+    assert (site / "value.txt").read_text(encoding="utf-8") == "old site"
+    assert quarantines[0].is_dir()
 
 
 def test_coordinated_rollback_reports_missing_backup_without_losing_other_target(
