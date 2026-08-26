@@ -202,6 +202,7 @@ def _artifact_rows(
     key: ApprovalKey,
     attribution: RightsAttribution,
     decision_sha256: str,
+    rights_state: RightsState,
 ) -> tuple[DownloadRow, ...]:
     paths = _mapping(document.get("paths"), "document.paths")
     pdf_path = _require_string(paths.get("pdf"), "document.paths.pdf")
@@ -269,7 +270,7 @@ def _artifact_rows(
                     source.get("publication_date"), "publication_date"
                 ),
                 approval_key=key,
-                rights_state=RightsState.APPROVED,
+                rights_state=rights_state,
                 mode=PublicationMode.MATERIALIZED,
                 origin_url=validate_origin_url(
                     _require_string(source.get("source_url"), "source_url"), source_id=key.source_id
@@ -376,6 +377,7 @@ def project_downloads(
                 key=key,
                 attribution=decision.attribution,
                 decision_sha256=decision.decision_sha256,
+                rights_state=decision.state,
             )
         )
     rows.sort(

@@ -16,6 +16,7 @@ from scripts.rki_pipeline.rights import (
     RightsAttribution,
     RightsDecision,
     RightsRegister,
+    RightsPolicyError,
     RightsState,
     decision_sha256,
     load_authority_register,
@@ -27,6 +28,7 @@ from scripts.web.build_downloads import (
     DOWNLOAD_MARKER,
     DownloadInputs,
     DownloadProjectionError,
+    _artifact_rows,
     project_downloads,
     render_download_page,
     validate_origin_url,
@@ -275,6 +277,52 @@ def test_pdf_and_markdown_share_source_approval_but_not_artifact_identity(fixtur
     assert pdf.approval_key.source_sha256 not in {pdf.artifact_sha256, markdown.artifact_sha256}
     assert (pdf.artifact_kind, markdown.artifact_kind) == ("pdf", "markdown")
     assert pdf.artifact_id != markdown.artifact_id
+
+
+def test_artifact_rows_carry_explicit_decision_rights_state(fixture_register) -> None:
+    _register, _policy, decision = fixture_register
+    graph = _graph(decision)
+    row = _artifact_rows(
+        graph.sources[0],
+        graph.documents[0],
+        graph.storage_references,
+        key=decision.approval_key,
+        attribution=decision.attribution,
+        decision_sha256=decision.decision_sha256,
+        rights_state=RightsState.INTERNAL_ONLY,
+    )[0]
+    assert row.rights_state is RightsState.INTERNAL_ONLY
+
+
+def test_materialized_row_renders_exact_rights_mode_and_availability(fixture_register) -> None:
+    register, policy, decision = fixture_register
+    row = project_downloads(_graph(decision), register=register, policy=policy).rows[0]
+    rendered = render_download_page(
+        f"<main>{DOWNLOAD_MARKER}</main>",
+        DownloadInputs(
+            rows=(row,), tombstones=(), public_status={"status": "operational"}, input_hashes={}
+        ),
+    )
+    assert "Rechtestatus: Freigegeben." in rendered
+    assert "Veröffentlichungsmodus: Materialisiert." in rendered
+    assert "Verfügbarkeit: Download verfügbar." in rendered
+
+
+def test_canonical_rights_validation_rejects_publish_with_blocked_components() -> None:
+    approved = _decision()
+    with pytest.raises(RightsPolicyError, match="components_state"):
+        RightsDecision(
+            approval_key=approved.approval_key,
+            state=approved.state,
+            mode=approved.mode,
+            allowed_actions=approved.allowed_actions,
+            components_state=ComponentsState.BLOCKED,
+            attribution=approved.attribution,
+            basis=approved.basis,
+            reviewed_by=approved.reviewed_by,
+            reviewed_at=approved.reviewed_at,
+            decision_sha256=None,
+        )
 
 
 def test_source_only_has_zero_payload_hash_or_index_fields(tmp_path: Path) -> None:
