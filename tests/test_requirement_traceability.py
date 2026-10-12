@@ -1,4 +1,5 @@
 """Tests for plan provenance and rule-based requirement traceability."""
+
 from __future__ import annotations
 
 import unittest

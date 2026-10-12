@@ -1,4 +1,5 @@
 """Regression tests for the blocking P04 validator itself."""
+
 from __future__ import annotations
 
 from pathlib import Path

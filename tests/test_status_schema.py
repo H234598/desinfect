@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import json
@@ -15,7 +14,9 @@ def test_status_has_three_independent_clocks() -> None:
     payload = json.loads((ROOT / "status.json").read_text(encoding="utf-8"))
     validate_document("status", payload)
     assert set(payload["pipeline"]) >= {
-        "last_main_commit_at", "last_successful_run_at", "last_successful_write_at"
+        "last_main_commit_at",
+        "last_successful_run_at",
+        "last_successful_write_at",
     }
 
 

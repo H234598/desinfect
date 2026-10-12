@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exact stage, policy, commit, base-drift, and non-force push writer."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -122,17 +123,13 @@ def _staged_entry(runner: GitRunner, path: str) -> TreeEntry:
         if record
     )
     if len(records) != 1:
-        raise GitWriterError(
-            f"Staged Pfad besitzt nicht genau einen Indexeintrag: {path}"
-        )
+        raise GitWriterError(f"Staged Pfad besitzt nicht genau einen Indexeintrag: {path}")
     header, separator, record_path = records[0].partition(b"\t")
     fields = header.split()
     if separator != b"\t" or len(fields) != 3:
         raise GitWriterError(f"Ungültiger Indexeintrag: {path}")
     if fields[2] != b"0":
-        raise GitWriterError(
-            f"Staged Pfad besitzt nicht genau einen Indexeintrag: {path}"
-        )
+        raise GitWriterError(f"Staged Pfad besitzt nicht genau einen Indexeintrag: {path}")
     if record_path.decode("utf-8", errors="strict") != path:
         raise GitWriterError(f"Indexeintrag besitzt unerwarteten Pfad: {path}")
     mode = fields[0].decode("ascii", errors="strict")
@@ -214,9 +211,9 @@ def apply_commit_plan(
             f"Staged Pfade driften: erwartet {plan.changed_paths}, gefunden {staged}"
         )
     status_diagnostic = runner.run("status", "--short").decode("utf-8", errors="replace")
-    diff_diagnostic = runner.run(
-        "diff", "--cached", "--name-status", "--no-renames"
-    ).decode("utf-8", errors="replace")
+    diff_diagnostic = runner.run("diff", "--cached", "--name-status", "--no-renames").decode(
+        "utf-8", errors="replace"
+    )
     quiet = subprocess.run(
         ["git", "diff", "--cached", "--quiet"],
         cwd=runner.root,
@@ -236,16 +233,20 @@ def apply_commit_plan(
     runner.run("commit", "-m", plan.subject, "-m", plan.body)
     commit_sha = runner.run("rev-parse", "HEAD").decode("ascii").strip()
     count = int(
-        runner.run(
-            "rev-list", "--count", f"{plan.expected_base_sha}..{commit_sha}"
-        ).decode("ascii")
+        runner.run("rev-list", "--count", f"{plan.expected_base_sha}..{commit_sha}").decode("ascii")
     )
     if count != 1:
         raise GitWriterError(f"Writer erzeugte {count} statt genau eines Commits")
 
     pushed = False
     if push:
-        runner.run("fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main", env=push_env)
+        runner.run(
+            "fetch",
+            "--no-tags",
+            "origin",
+            "+refs/heads/main:refs/remotes/origin/main",
+            env=push_env,
+        )
         remote = runner.run("rev-parse", "refs/remotes/origin/main").decode("ascii").strip()
         if remote != plan.expected_base_sha:
             raise GitWriterError("origin/main änderte sich seit der Dispatchplanung")

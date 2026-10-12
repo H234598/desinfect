@@ -29,7 +29,9 @@ def assess_quality(
     if type(pages) is not tuple or not all(type(page) is str for page in pages):
         raise TypeError("pages muss ein String-Tupel sein")
 
-    visible = tuple("".join(character for character in page if not character.isspace()) for page in pages)
+    visible = tuple(
+        "".join(character for character in page if not character.isspace()) for page in pages
+    )
     character_count = sum(len(page) for page in visible)
     replacement_count = sum(page.count("\ufffd") for page in visible)
     replacement_ratio = replacement_count / character_count if character_count else 0.0

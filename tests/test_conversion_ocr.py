@@ -45,9 +45,7 @@ class _OcrRunner:
         missing_tool: str | None = None,
     ) -> None:
         self.page_text = page_text
-        self.pgm_headers = pgm_headers or tuple(
-            b"P5\n2 3\n255\n" for _ in page_text
-        )
+        self.pgm_headers = pgm_headers or tuple(b"P5\n2 3\n255\n" for _ in page_text)
         self.extra_output = extra_output
         self.missing_output = missing_output
         self.symlink_output = symlink_output
@@ -85,13 +83,9 @@ class _OcrRunner:
                     target.write_bytes(self.pgm_headers[page_number - 1] + b"\0" * 6)
                     output.symlink_to(target)
                 else:
-                    output.write_bytes(
-                        self.pgm_headers[page_number - 1] + b"\0" * 6
-                    )
+                    output.write_bytes(self.pgm_headers[page_number - 1] + b"\0" * 6)
             if self.extra_output and page_number == len(self.page_text):
-                (Path(arguments[-1]).parent / "page-extra.pgm").write_bytes(
-                    b"P5\n1 1\n255\n\0"
-                )
+                (Path(arguments[-1]).parent / "page-extra.pgm").write_bytes(b"P5\n1 1\n255\n\0")
             sha256 = ("c" if self.drift_tool == name else "a") * 64
             return _result(name, arguments, sha256=sha256)
         page_number = int(Path(arguments[0]).stem.split("-")[-1])
@@ -139,8 +133,7 @@ def test_ocr_uses_pagewise_fixed_tools_and_forces_review(tmp_path: Path) -> None
     raster_dir = tmp_path / "ocr-raster"
     assert result.pages == ("Erste Seite\n", "Second page\n")
     assert result.markdown == (
-        "<!-- rki-page: 1 -->\nErste Seite\n\n"
-        "<!-- rki-page: 2 -->\nSecond page\n"
+        "<!-- rki-page: 1 -->\nErste Seite\n\n<!-- rki-page: 2 -->\nSecond page\n"
     )
     assert result.quality == "needs_review"
     assert runner.calls == [

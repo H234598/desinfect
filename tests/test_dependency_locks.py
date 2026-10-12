@@ -32,8 +32,7 @@ def _write_report(path: Path, packages: dict[str, str]) -> None:
 
     report = {
         "install": [
-            {"metadata": {"name": name, "version": version}}
-            for name, version in packages.items()
+            {"metadata": {"name": name, "version": version}} for name, version in packages.items()
         ]
     }
     path.write_text(json.dumps(report), encoding="utf-8")

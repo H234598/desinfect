@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Offline-safe CLI for storage verification and LFS-to-LFS migration drills."""
+
 from __future__ import annotations
 
 import argparse
@@ -142,9 +143,7 @@ def _plan(payload: dict[str, object]) -> MigrationPlan:
 
 def _prepared_objects(payload: dict[str, object]) -> tuple[PreparedObject, ...]:
     if payload.get("schema_version") != "1.1.0":
-        raise ValueError(
-            f"Unbekannte Prepared-Manifest-Version: {payload.get('schema_version')!r}"
-        )
+        raise ValueError(f"Unbekannte Prepared-Manifest-Version: {payload.get('schema_version')!r}")
     raw_objects = _required(payload, "objects")
     if not isinstance(raw_objects, list):
         raise ValueError("Prepared-Manifest besitzt keine Objektliste")
@@ -248,7 +247,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "verify":
             validate_lfs_tracking(args.repository_root / ".gitattributes")
             inventory = inventory_lfs_objects(args.repository_root)
-            print(stable_json_dumps({"objects": inventory.objects, "bytes": inventory.bytes}), end="")
+            print(
+                stable_json_dumps({"objects": inventory.objects, "bytes": inventory.bytes}), end=""
+            )
             return 0
 
         if args.command == "plan":
@@ -299,7 +300,10 @@ def main(argv: list[str] | None = None) -> int:
             target,
             ledger=EffectLedger(RunMode.APPLY),
         )
-        print(stable_json_dumps({"references": [reference.to_dict() for reference in references]}), end="")
+        print(
+            stable_json_dumps({"references": [reference.to_dict() for reference in references]}),
+            end="",
+        )
         return 0
     except (OSError, ValueError, StorageError, json.JSONDecodeError) as exc:
         print(f"storage-cli: {exc}", file=sys.stderr)

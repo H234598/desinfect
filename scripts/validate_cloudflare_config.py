@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Validate fail-closed P09.4 Cloudflare deployment boundaries."""
+
 from __future__ import annotations
 
 import argparse
@@ -17,8 +18,8 @@ DISPATCH_MAIN = "github.event_name == 'workflow_dispatch' && github.ref == 'refs
 VPN_PROVISIONING_DEADLINE_SECONDS = 900
 VPN_DEPLOY_TIMEOUT_RESERVE_MINUTES = 10
 VPN_DEPLOY_TIMEOUT_MINUTES = (
-    (VPN_PROVISIONING_DEADLINE_SECONDS + 59) // 60 + VPN_DEPLOY_TIMEOUT_RESERVE_MINUTES
-)
+    VPN_PROVISIONING_DEADLINE_SECONDS + 59
+) // 60 + VPN_DEPLOY_TIMEOUT_RESERVE_MINUTES
 
 
 class ConfigIssue(NamedTuple):
@@ -91,16 +92,36 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
         return [_issue(workflow_path, "CFD002", "Workflowwurzel muss ein Mapping sein")]
     workflow = workflow_value
     triggers = _triggers(workflow)
-    if not isinstance(triggers, dict) or set(triggers) != {"pull_request", "push", "workflow_dispatch"}:
-        issues.append(_issue(workflow_path, "CFD002", "nur PR, main-Push und manueller Start sind erlaubt"))
+    if not isinstance(triggers, dict) or set(triggers) != {
+        "pull_request",
+        "push",
+        "workflow_dispatch",
+    }:
+        issues.append(
+            _issue(workflow_path, "CFD002", "nur PR, main-Push und manueller Start sind erlaubt")
+        )
     elif triggers.get("push") != {"branches": ["main"]}:
-        issues.append(_issue(workflow_path, "CFD002", "Push-Validierung muss auf main begrenzt sein"))
+        issues.append(
+            _issue(workflow_path, "CFD002", "Push-Validierung muss auf main begrenzt sein")
+        )
     if workflow.get("permissions") != {"contents": "read"}:
-        issues.append(_issue(workflow_path, "CFD003", "Workflowrechte müssen exakt contents: read sein"))
+        issues.append(
+            _issue(workflow_path, "CFD003", "Workflowrechte müssen exakt contents: read sein")
+        )
 
     jobs = workflow.get("jobs")
-    if not isinstance(jobs, dict) or set(jobs) != {"validate", "deploy_staging", "deploy_production"}:
-        issues.append(_issue(workflow_path, "CFD003", "Validate-, Staging- und Production-Job sind exakt erforderlich"))
+    if not isinstance(jobs, dict) or set(jobs) != {
+        "validate",
+        "deploy_staging",
+        "deploy_production",
+    }:
+        issues.append(
+            _issue(
+                workflow_path,
+                "CFD003",
+                "Validate-, Staging- und Production-Job sind exakt erforderlich",
+            )
+        )
         return issues
     validate = jobs["validate"]
     staging = jobs["deploy_staging"]
@@ -109,17 +130,31 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
         return [*issues, _issue(workflow_path, "CFD003", "Jobs müssen Mappings sein")]
 
     if "environment" in validate or re.search(r"\bsecrets\s*(?:\.|\[)", str(validate)):
-        issues.append(_issue(workflow_path, "CFD004", "PR-/Push-Validierung darf keine Umgebung oder Secrets verwenden"))
+        issues.append(
+            _issue(
+                workflow_path,
+                "CFD004",
+                "PR-/Push-Validierung darf keine Umgebung oder Secrets verwenden",
+            )
+        )
     if staging.get("if") != DISPATCH_MAIN or staging.get("needs") != ["validate"]:
-        issues.append(_issue(workflow_path, "CFD004", "Staging muss manuell auf main und nach Validate laufen"))
+        issues.append(
+            _issue(
+                workflow_path, "CFD004", "Staging muss manuell auf main und nach Validate laufen"
+            )
+        )
     if staging.get("environment") != {"name": "cloudflare-watchdog-staging"}:
         issues.append(_issue(workflow_path, "CFD005", "Staging braucht geschützte feste Umgebung"))
     if production.get("if") != f"{DISPATCH_MAIN} && inputs.deploy_production":
         issues.append(_issue(workflow_path, "CFD004", "Production braucht manuelle main-Freigabe"))
     if production.get("needs") != ["validate", "deploy_staging"]:
-        issues.append(_issue(workflow_path, "CFD005", "Production muss denselben Staging-Lauf abwarten"))
+        issues.append(
+            _issue(workflow_path, "CFD005", "Production muss denselben Staging-Lauf abwarten")
+        )
     if production.get("environment") != {"name": "cloudflare-watchdog-production"}:
-        issues.append(_issue(workflow_path, "CFD005", "Production braucht geschützte feste Umgebung"))
+        issues.append(
+            _issue(workflow_path, "CFD005", "Production braucht geschützte feste Umgebung")
+        )
 
     for name, job in jobs.items():
         for step in job.get("steps", []):
@@ -127,22 +162,49 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
                 continue
             action = str(step["uses"]).split(" #", 1)[0]
             if not ACTION_SHA.fullmatch(action):
-                issues.append(_issue(workflow_path, "CFD006", f"{name}: Action nicht mit Voll-SHA gepinnt: {action}"))
+                issues.append(
+                    _issue(
+                        workflow_path,
+                        "CFD006",
+                        f"{name}: Action nicht mit Voll-SHA gepinnt: {action}",
+                    )
+                )
         install = _step(job, "Install locked Worker dependencies")
-        if install is None or install.get("run") != "npm --prefix cloudflare/watchdog ci --ignore-scripts":
+        if (
+            install is None
+            or install.get("run") != "npm --prefix cloudflare/watchdog ci --ignore-scripts"
+        ):
             issues.append(_issue(workflow_path, "CFD007", f"{name}: gelocktes npm ci fehlt"))
 
     workflow_text = workflow_path.read_text(encoding="utf-8")
     if re.search(r"\bnpx\s+wrangler\b|curl[^\n|]*(?:\||>)\s*(?:sh|bash)\b", workflow_text):
-        issues.append(_issue(workflow_path, "CFD007", "ungepinnte Wrangler-/Installer-Ausführung verboten"))
+        issues.append(
+            _issue(workflow_path, "CFD007", "ungepinnte Wrangler-/Installer-Ausführung verboten")
+        )
     staging_deploy = _step(staging, "Deploy staging without cron")
     production_deploy = _step(production, "Deploy production with cron")
     staging_run = str(staging_deploy.get("run", "")) if staging_deploy else ""
-    if staging_run != 'npm --prefix cloudflare/watchdog run deploy -- --env staging --var "DEPLOYMENT_VERSION:${GITHUB_SHA}"':
-        issues.append(_issue(workflow_path, "CFD008", "Staging muss gelockten Wrangler mit --env staging verwenden"))
+    if (
+        staging_run
+        != 'npm --prefix cloudflare/watchdog run deploy -- --env staging --var "DEPLOYMENT_VERSION:${GITHUB_SHA}"'
+    ):
+        issues.append(
+            _issue(
+                workflow_path,
+                "CFD008",
+                "Staging muss gelockten Wrangler mit --env staging verwenden",
+            )
+        )
     production_run = str(production_deploy.get("run", "")) if production_deploy else ""
-    if production_run != 'npm --prefix cloudflare/watchdog run deploy -- --env="" --var "DEPLOYMENT_VERSION:${GITHUB_SHA}"':
-        issues.append(_issue(workflow_path, "CFD008", "Production muss kanonische Wrangler-Umgebung verwenden"))
+    if (
+        production_run
+        != 'npm --prefix cloudflare/watchdog run deploy -- --env="" --var "DEPLOYMENT_VERSION:${GITHUB_SHA}"'
+    ):
+        issues.append(
+            _issue(
+                workflow_path, "CFD008", "Production muss kanonische Wrangler-Umgebung verwenden"
+            )
+        )
     for label, job in (("staging", staging), ("production", production)):
         timeout_minutes = job.get("timeout-minutes")
         if type(timeout_minutes) is not int or timeout_minutes != VPN_DEPLOY_TIMEOUT_MINUTES:
@@ -154,7 +216,9 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
                     f"(900s Readiness + {VPN_DEPLOY_TIMEOUT_RESERVE_MINUTES}m Reserve) sein",
                 )
             )
-        deploy_name = "Deploy staging without cron" if label == "staging" else "Deploy production with cron"
+        deploy_name = (
+            "Deploy staging without cron" if label == "staging" else "Deploy production with cron"
+        )
         deploy_index = _step_index(job, deploy_name)
         install_index = _step_index(job, "Install OpenVPN for VPN health verification")
         health_index = _step_index(job, "Verify deployed health and version through VPN")
@@ -164,7 +228,13 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
             or health_index is None
             or not deploy_index < install_index < health_index
         ):
-            issues.append(_issue(workflow_path, "CFD009", f"{label}: Deploy-, OpenVPN- und Health-Reihenfolge fehlt"))
+            issues.append(
+                _issue(
+                    workflow_path,
+                    "CFD009",
+                    f"{label}: Deploy-, OpenVPN- und Health-Reihenfolge fehlt",
+                )
+            )
         install = _step(job, "Install OpenVPN for VPN health verification") or {}
         if str(install.get("run", "")).strip() != (
             "if ! command -v openvpn >/dev/null 2>&1; then\n"
@@ -172,7 +242,9 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
             "  sudo apt-get install --no-install-recommends --yes openvpn\n"
             "fi"
         ):
-            issues.append(_issue(workflow_path, "CFD009", f"{label}: minimale OpenVPN-Installation fehlt"))
+            issues.append(
+                _issue(workflow_path, "CFD009", f"{label}: minimale OpenVPN-Installation fehlt")
+            )
         health = _step(job, "Verify deployed health and version through VPN") or {}
         health_run = str(health.get("run", ""))
         health_env = health.get("env", {})
@@ -192,7 +264,9 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
             or health_run
             != 'sh scripts/verify_cloudflare_health_via_vpn.sh --url "$WATCHDOG_HEALTH_URL" --expected-version "$EXPECTED_VERSION"'
         ):
-            issues.append(_issue(workflow_path, "CFD009", f"{label}: VPN-Health-/Versionsprüfung fehlt"))
+            issues.append(
+                _issue(workflow_path, "CFD009", f"{label}: VPN-Health-/Versionsprüfung fehlt")
+            )
     if not health_script_path.is_file() or not vpn_health_script_path.is_file():
         issues.append(_issue(vpn_health_script_path, "CFD009", "VPN-Readiness-Prüfskript fehlt"))
     else:
@@ -242,12 +316,24 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
     package_value, error = _load(package_path, json.loads)
     if error:
         issues.append(error)
-    elif not isinstance(package_value, dict) or package_value.get("scripts", {}).get("deploy") != "wrangler deploy" or package_value.get("scripts", {}).get("deploy:dry-run") != 'wrangler deploy --dry-run --env=""' or package_value.get("devDependencies", {}).get("wrangler") != "4.118.0":
-        issues.append(_issue(package_path, "CFD007", "Deployskript und Wrangler müssen exakt gelockt sein"))
+    elif (
+        not isinstance(package_value, dict)
+        or package_value.get("scripts", {}).get("deploy") != "wrangler deploy"
+        or package_value.get("scripts", {}).get("deploy:dry-run")
+        != 'wrangler deploy --dry-run --env=""'
+        or package_value.get("devDependencies", {}).get("wrangler") != "4.118.0"
+    ):
+        issues.append(
+            _issue(package_path, "CFD007", "Deployskript und Wrangler müssen exakt gelockt sein")
+        )
     lock_value, error = _load(lock_path, json.loads)
     if error:
         issues.append(error)
-    elif not isinstance(lock_value, dict) or lock_value.get("packages", {}).get("node_modules/wrangler", {}).get("version") != "4.118.0":
+    elif (
+        not isinstance(lock_value, dict)
+        or lock_value.get("packages", {}).get("node_modules/wrangler", {}).get("version")
+        != "4.118.0"
+    ):
         issues.append(_issue(lock_path, "CFD007", "package-lock muss Wrangler 4.118.0 auflösen"))
 
     wrangler_value, error = _load(wrangler_path, json.loads)
@@ -256,15 +342,36 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
     elif isinstance(wrangler_value, dict):
         production_crons = wrangler_value.get("triggers", {}).get("crons")
         staging_config = wrangler_value.get("env", {}).get("staging", {})
-        staging_crons = staging_config.get("triggers", {}).get("crons") if isinstance(staging_config, dict) else None
+        staging_crons = (
+            staging_config.get("triggers", {}).get("crons")
+            if isinstance(staging_config, dict)
+            else None
+        )
         if production_crons != ["0 2 * * *"] or staging_crons != []:
-            issues.append(_issue(wrangler_path, "CFD010", "nur Production darf täglichen Cron enthalten"))
+            issues.append(
+                _issue(wrangler_path, "CFD010", "nur Production darf täglichen Cron enthalten")
+            )
         production_binding = wrangler_value.get("durable_objects", {}).get("bindings")
-        staging_binding = staging_config.get("durable_objects", {}).get("bindings") if isinstance(staging_config, dict) else None
+        staging_binding = (
+            staging_config.get("durable_objects", {}).get("bindings")
+            if isinstance(staging_config, dict)
+            else None
+        )
         if staging_binding != production_binding:
-            issues.append(_issue(wrangler_path, "CFD010", "Staging braucht dieselbe feste DO-Bindungsform"))
-        if wrangler_value.get("vars", {}).get("DEPLOYMENT_VERSION") != "local" or staging_config.get("vars", {}).get("DEPLOYMENT_VERSION") != "local":
-            issues.append(_issue(wrangler_path, "CFD009", "Healthversion muss in beiden Umgebungen deklariert sein"))
+            issues.append(
+                _issue(wrangler_path, "CFD010", "Staging braucht dieselbe feste DO-Bindungsform")
+            )
+        if (
+            wrangler_value.get("vars", {}).get("DEPLOYMENT_VERSION") != "local"
+            or staging_config.get("vars", {}).get("DEPLOYMENT_VERSION") != "local"
+        ):
+            issues.append(
+                _issue(
+                    wrangler_path,
+                    "CFD009",
+                    "Healthversion muss in beiden Umgebungen deklariert sein",
+                )
+            )
         if (
             wrangler_value.get("workers_dev") is not False
             or wrangler_value.get("routes")
@@ -306,13 +413,33 @@ def validate_repository(root: Path = ROOT) -> list[ConfigIssue]:
     worker_value, error = _load(worker_path, lambda value: value)
     if error:
         issues.append(error)
-    elif not all(token in str(worker_value) for token in ('request.method === "GET"', 'url.pathname === "/healthz"', "DEPLOYMENT_VERSION", "status: 404")):
-        issues.append(_issue(worker_path, "CFD009", "read-only /healthz oder 404-Schreibgrenze fehlt"))
+    elif not all(
+        token in str(worker_value)
+        for token in (
+            'request.method === "GET"',
+            'url.pathname === "/healthz"',
+            "DEPLOYMENT_VERSION",
+            "status: 404",
+        )
+    ):
+        issues.append(
+            _issue(worker_path, "CFD009", "read-only /healthz oder 404-Schreibgrenze fehlt")
+        )
     runbook_value, error = _load(runbook_path, lambda value: value)
     if error:
         issues.append(error)
-    elif not all(token in str(runbook_value) for token in ("GitHub-Gesamtausfall", "wrangler rollback", "cloudflare-watchdog-staging", "cloudflare-watchdog-production")):
-        issues.append(_issue(runbook_path, "CFD011", "Betriebs-, Ausfall- oder Rollbackvertrag fehlt"))
+    elif not all(
+        token in str(runbook_value)
+        for token in (
+            "GitHub-Gesamtausfall",
+            "wrangler rollback",
+            "cloudflare-watchdog-staging",
+            "cloudflare-watchdog-production",
+        )
+    ):
+        issues.append(
+            _issue(runbook_path, "CFD011", "Betriebs-, Ausfall- oder Rollbackvertrag fehlt")
+        )
     return issues
 
 
@@ -325,7 +452,9 @@ def main(argv: list[str] | None = None) -> int:
         for issue in issues:
             print(issue.render(), file=sys.stderr)
         return 1
-    print("P09.4 Cloudflare config: ok; pr_dry_run=1; staging_before_production=1; health_version=1")
+    print(
+        "P09.4 Cloudflare config: ok; pr_dry_run=1; staging_before_production=1; health_version=1"
+    )
     return 0
 
 

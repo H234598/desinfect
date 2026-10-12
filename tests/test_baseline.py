@@ -1,4 +1,5 @@
 """Tests for the compact P00 baseline validator."""
+
 from __future__ import annotations
 
 import json
@@ -19,9 +20,7 @@ class BaselineTests(unittest.TestCase):
 
     def test_locked_decisions(self) -> None:
         """Keep ADR-003 on A and ADR-014 on B in the machine register."""
-        data = json.loads(
-            (ROOT / "config/architecture-decisions.json").read_text(encoding="utf-8")
-        )
+        data = json.loads((ROOT / "config/architecture-decisions.json").read_text(encoding="utf-8"))
         self.assertEqual(data["locked_decisions"], {"ADR-003": "A", "ADR-014": "B"})
         choices = {item["id"]: item["choice"] for item in data["decisions"]}
         self.assertEqual(choices["ADR-003"], "A")

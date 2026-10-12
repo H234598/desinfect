@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Strict period selection for deterministic archive aggregation."""
+
 from __future__ import annotations
 
 import argparse
@@ -242,7 +243,9 @@ def period_ref(kind: TaskKind, value: str) -> PeriodRef:
         close = datetime.combine(date.fromordinal(end.toordinal() + 1), time.min, _BERLIN)
         source_date_epoch = int(close.timestamp())
     except (OverflowError, OSError, ValueError) as exc:
-        raise PeriodSelectionError("Periodenende liegt außerhalb des unterstützten Bereichs") from exc
+        raise PeriodSelectionError(
+            "Periodenende liegt außerhalb des unterstützten Bereichs"
+        ) from exc
     if source_date_epoch < 0:
         raise PeriodSelectionError("Periode liegt vor RKI-Korpus und unterstütztem Unix-Epoch")
     return PeriodRef(kind, value, start, end, source_date_epoch)
@@ -294,7 +297,9 @@ def select_periods(
     for kind, value in pairs:
         period = period_ref(kind, value)
         if as_of.timestamp() < period.source_date_epoch:
-            raise PeriodSelectionError(f"Periode ist noch nicht abgeschlossen: {kind.value}:{value}")
+            raise PeriodSelectionError(
+                f"Periode ist noch nicht abgeschlossen: {kind.value}:{value}"
+            )
         selected.append(period)
     return tuple(sorted(selected, key=lambda item: (_KIND_ORDER[item.kind], item.start)))
 
@@ -302,9 +307,7 @@ def select_periods(
 _CONVERSION_STATES = frozenset(
     {"converted", "skipped_unchanged", "needs_review", "failed", "not_materialized"}
 )
-_MATERIALIZED_CONVERSION_STATES = frozenset(
-    {"converted", "skipped_unchanged", "needs_review"}
-)
+_MATERIALIZED_CONVERSION_STATES = frozenset({"converted", "skipped_unchanged", "needs_review"})
 
 
 def _mapping_value(record: Mapping[str, object], field: str, *, label: str) -> object:
@@ -426,9 +429,7 @@ def _period_documents(
     prepared_by_logical_key: Mapping[str, PreparedObject],
 ) -> tuple[PeriodDocument, ...]:
     sources = _index_exact(graph.sources, field="bitstream_id", label="Source")
-    storage_by_path = _index_exact(
-        graph.storage_references, field="relative_path", label="Storage"
-    )
+    storage_by_path = _index_exact(graph.storage_references, field="relative_path", label="Storage")
     conversions = _index_exact(graph.conversions, field="conversion_id", label="Conversion")
     by_owner: dict[tuple[str, str], list[dict[str, object]]] = {}
     for conversion in conversions.values():
@@ -464,9 +465,7 @@ def _period_documents(
             for candidate in all_candidates
             if _mapping_value(candidate, "storage_reference", label="Conversion") is not None
         ]
-        if len(persisted_candidates) > 1 or (
-            not persisted_candidates and len(all_candidates) > 1
-        ):
+        if len(persisted_candidates) > 1 or (not persisted_candidates and len(all_candidates) > 1):
             raise AggregationError(f"Conversion für Dokument ist mehrdeutig: {document_id}")
         conversion = (
             persisted_candidates[0]
@@ -508,9 +507,9 @@ def _period_documents(
             markdown_reference = storage_by_path.get(markdown_path)
             if markdown_reference is None:
                 raise AggregationError(f"Storage für Markdown fehlt: {markdown_path}")
-            if _mapping_value(conversion, "storage_reference", label="Conversion") != _mapping_value(
-                markdown_reference, "artifact_id", label="Storage"
-            ):
+            if _mapping_value(
+                conversion, "storage_reference", label="Conversion"
+            ) != _mapping_value(markdown_reference, "artifact_id", label="Storage"):
                 raise AggregationError("Conversion-Storage-Referenz stimmt nicht exakt überein")
             if _mapping_value(markdown_reference, "sha256", label="Storage") != _mapping_value(
                 conversion, "output_sha256", label="Conversion"
@@ -568,7 +567,9 @@ def _bundle_path(period: PeriodRef, format_name: str) -> str:
     return f"{directory}/RKI-Einzelartikel-{period.value}-{suffix}"
 
 
-def _planned_archives(period: PeriodRef, documents: tuple[PeriodDocument, ...]) -> tuple[PlannedArchive, ...]:
+def _planned_archives(
+    period: PeriodRef, documents: tuple[PeriodDocument, ...]
+) -> tuple[PlannedArchive, ...]:
     archives: list[PlannedArchive] = []
     member_directories = {"markdown": "Markdown", "pdf": "PDF"}
     for format_name in ("markdown", "pdf"):
@@ -580,7 +581,9 @@ def _planned_archives(period: PeriodRef, documents: tuple[PeriodDocument, ...]) 
         if not entries_payloads:
             continue
         try:
-            basenames = tuple(PurePosixPath(payload.logical_key).name for payload in entries_payloads)
+            basenames = tuple(
+                PurePosixPath(payload.logical_key).name for payload in entries_payloads
+            )
             if len(set(basename.casefold() for basename in basenames)) != len(basenames):
                 raise ValueError("Portable Kollision")
             entries = tuple(
@@ -604,7 +607,9 @@ def _planned_archives(period: PeriodRef, documents: tuple[PeriodDocument, ...]) 
             raise
         except ValueError as exc:
             raise AggregationError(f"Archiv-Kollision oder ungültiger Eintrag: {exc}") from exc
-        archives.append(PlannedArchive(relative_bundle=_bundle_path(period, format_name), spec=spec))
+        archives.append(
+            PlannedArchive(relative_bundle=_bundle_path(period, format_name), spec=spec)
+        )
     return tuple(archives)
 
 
@@ -685,9 +690,7 @@ def plan_period_archives(
         raise AggregationError("graph muss ein exakter ManifestGraph sein")
     if not isinstance(prepared_by_logical_key, Mapping):
         raise AggregationError("prepared_by_logical_key muss ein Mapping sein")
-    storage_by_path = _index_exact(
-        graph.storage_references, field="relative_path", label="Storage"
-    )
+    storage_by_path = _index_exact(graph.storage_references, field="relative_path", label="Storage")
     expected_keys = set(storage_by_path)
     actual_keys = set(prepared_by_logical_key)
     if expected_keys != actual_keys:
@@ -815,8 +818,7 @@ def _month_index_renderer_input(
         if (
             reference.period.kind is not TaskKind.WEEK
             or format_name not in {"pdf", "markdown"}
-            or reference.archive_id
-            != f"rki-week-{reference.period.value.lower()}-{format_name}"
+            or reference.archive_id != f"rki-week-{reference.period.value.lower()}-{format_name}"
             or reference.relative_bundle != _bundle_path(reference.period, format_name)
             or identity in seen
         ):
@@ -889,9 +891,7 @@ def render_month_index(
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     frozen_input = (
-        _month_index_renderer_input(aggregation_plan)
-        if renderer_input is None
-        else renderer_input
+        _month_index_renderer_input(aggregation_plan) if renderer_input is None else renderer_input
     )
     weekly_links = _week_archive_links(period_plan.period, index_path, frozen_input)
     for document in documents:
@@ -902,7 +902,9 @@ def render_month_index(
             pdf_link = f"[PDF]({_relative_link(index_path, document.pdf.logical_key)})"
         markdown_link = "—"
         if document.markdown is not None:
-            markdown_link = f"[Markdown]({_relative_link(index_path, document.markdown.logical_key)})"
+            markdown_link = (
+                f"[Markdown]({_relative_link(index_path, document.markdown.logical_key)})"
+            )
         lines.append(
             "| "
             + " | ".join(
@@ -938,12 +940,16 @@ def _document_manifest(document: PeriodDocument) -> dict[str, object]:
         "publication_date": document.publication_date,
         "pdf_artifact_id": None if document.pdf is None else document.pdf.artifact_id,
         "pdf_sha256": None if document.pdf is None else document.pdf.sha256,
-        "markdown_artifact_id": None if document.markdown is None else document.markdown.artifact_id,
+        "markdown_artifact_id": None
+        if document.markdown is None
+        else document.markdown.artifact_id,
         "markdown_sha256": None if document.markdown is None else document.markdown.sha256,
     }
 
 
-def _archive_manifest(period: PeriodRef, archive: PlannedArchive, build: ArchiveBuild) -> dict[str, object]:
+def _archive_manifest(
+    period: PeriodRef, archive: PlannedArchive, build: ArchiveBuild
+) -> dict[str, object]:
     if type(archive) is not PlannedArchive or type(build) is not ArchiveBuild:
         raise PeriodManifestError("Archiv-Build ist ungültig")
     expected_entries = tuple(sorted(entry.path for entry in archive.spec.entries))
@@ -1008,9 +1014,7 @@ def _manifest_fingerprint(value: dict[str, object]) -> str:
         if key == "input_fingerprint":
             continue
         if key == "archives" and type(content) is list:
-            normalized[key] = [
-                {**archive, "storage_reference": None} for archive in content
-            ]
+            normalized[key] = [{**archive, "storage_reference": None} for archive in content]
         else:
             normalized[key] = content
     return hashlib.sha256(stable_json_dumps(normalized).encode("utf-8")).hexdigest()
@@ -1040,7 +1044,11 @@ def _validate_manifest_order(value: dict[str, object], period: PeriodRef) -> Non
     documents = value["documents"]
     archives = value["archives"]
     month_manifests = value["month_manifests"]
-    if type(documents) is not list or type(archives) is not list or type(month_manifests) is not list:
+    if (
+        type(documents) is not list
+        or type(archives) is not list
+        or type(month_manifests) is not list
+    ):
         raise PeriodManifestError("Manifest-Listen sind ungültig")
     if documents != sorted(
         documents,
@@ -1128,9 +1136,7 @@ def inspect_period_publication(
         "Archive",
         period.kind.value,
     )
-    missing_path = (
-        f"rki/Bulletins/Manifeste/Archive/{period.kind.value}/{period.value}.json"
-    )
+    missing_path = f"rki/Bulletins/Manifeste/Archive/{period.kind.value}/{period.value}.json"
     try:
         with open_root_directory(root) as root_fd:
             manifest_fd = open_directory_beneath(root_fd, manifest_parts)
@@ -1144,7 +1150,9 @@ def inspect_period_publication(
                 os.close(manifest_fd)
             manifest = validate_period_manifest(payload)
             if manifest["kind"] != period.kind.value or manifest["period"] != period.value:
-                raise PeriodManifestError("Periodenmanifest stimmt nicht mit angefragter Periode überein")
+                raise PeriodManifestError(
+                    "Periodenmanifest stimmt nicht mit angefragter Periode überein"
+                )
             archives = manifest["archives"]
             if type(archives) is not list:
                 raise PeriodManifestError("Periodenmanifest-Archive sind ungültig")
@@ -1161,7 +1169,9 @@ def inspect_period_publication(
                 except FileNotFoundError:
                     raise
                 except (OSError, UnsafePathError) as exc:
-                    raise ArchiveSecurityError("Periodenarchivpfad ist nicht sicher lesbar") from exc
+                    raise ArchiveSecurityError(
+                        "Periodenarchivpfad ist nicht sicher lesbar"
+                    ) from exc
                 try:
                     validate_archive_bundle_fd(
                         bundle_fd,
@@ -1308,7 +1318,9 @@ def _hash_regular_file(parent_fd: int, name: str, expected: os.stat_result) -> t
         os.close(descriptor)
 
 
-def _tree_signature_fd(directory_fd: int, prefix: str = "") -> tuple[tuple[str, int, int, str], ...]:
+def _tree_signature_fd(
+    directory_fd: int, prefix: str = ""
+) -> tuple[tuple[str, int, int, str], ...]:
     """Return file path/mode/size/SHA tuples without resolving any child path."""
 
     root_before = os.fstat(directory_fd)
@@ -1327,10 +1339,14 @@ def _tree_signature_fd(directory_fd: int, prefix: str = "") -> tuple[tuple[str, 
             child_fd = open_directory_beneath(directory_fd, (name,))
             try:
                 if not _same_file_metadata(metadata, os.fstat(child_fd)):
-                    raise AggregationError("Aggregationsverzeichnis änderte sich während der Prüfung")
+                    raise AggregationError(
+                        "Aggregationsverzeichnis änderte sich während der Prüfung"
+                    )
                 rows.extend(_tree_signature_fd(child_fd, relative))
                 if not _same_file_metadata(metadata, os.fstat(child_fd)):
-                    raise AggregationError("Aggregationsverzeichnis änderte sich während der Prüfung")
+                    raise AggregationError(
+                        "Aggregationsverzeichnis änderte sich während der Prüfung"
+                    )
             finally:
                 os.close(child_fd)
             continue
@@ -1345,12 +1361,16 @@ def _tree_signature_fd(directory_fd: int, prefix: str = "") -> tuple[tuple[str, 
     ):
         raise AggregationError("Aggregationsverzeichnis änderte sich während der Prüfung")
     for name, before in metadata_by_name.items():
-        if not _same_file_metadata(before, os.stat(name, dir_fd=directory_fd, follow_symlinks=False)):
+        if not _same_file_metadata(
+            before, os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        ):
             raise AggregationError("Aggregationsbaum änderte sich während der Prüfung")
     return tuple(rows)
 
 
-def _existing_tree_signature(root: Path, relative: PurePosixPath) -> tuple[tuple[str, int, int, str], ...]:
+def _existing_tree_signature(
+    root: Path, relative: PurePosixPath
+) -> tuple[tuple[str, int, int, str], ...]:
     """Inspect final target through held root and target descriptors only."""
 
     with open_root_directory(root) as root_fd:
@@ -1384,7 +1404,9 @@ def _authorize_plan(plan: AggregationPlan, authorizer: RightsStorageAuthorizer) 
                         operation="archive",
                     )
                 except StorageAuthorizationError as exc:
-                    raise AggregationError("Rechteentscheidung autorisiert Archivaggregation nicht") from exc
+                    raise AggregationError(
+                        "Rechteentscheidung autorisiert Archivaggregation nicht"
+                    ) from exc
         for archive in period_plan.archives:
             if type(archive) is not PlannedArchive:
                 raise AggregationError("AggregationPlan enthält keinen exakten PlannedArchive")
@@ -1396,7 +1418,9 @@ def _authorize_plan(plan: AggregationPlan, authorizer: RightsStorageAuthorizer) 
                         operation="archive",
                     )
                 except StorageAuthorizationError as exc:
-                    raise AggregationError("Rechteentscheidung autorisiert Archivaggregation nicht") from exc
+                    raise AggregationError(
+                        "Rechteentscheidung autorisiert Archivaggregation nicht"
+                    ) from exc
 
 
 def _snapshot_plan(aggregation_plan: AggregationPlan) -> AggregationPlan:
@@ -1417,7 +1441,9 @@ def _snapshot_plan(aggregation_plan: AggregationPlan) -> AggregationPlan:
                 raise AggregationError("PeriodPlan enthält keine kanonische PeriodRef")
         except PeriodSelectionError as exc:
             raise AggregationError("PeriodPlan enthält keine kanonische PeriodRef") from exc
-    if periods != tuple(sorted(periods, key=lambda item: (_KIND_ORDER[item.period.kind], item.period.start))):
+    if periods != tuple(
+        sorted(periods, key=lambda item: (_KIND_ORDER[item.period.kind], item.period.start))
+    ):
         raise AggregationError("AggregationPlan-Perioden sind nicht kanonisch sortiert")
     seen_periods: set[tuple[TaskKind, str]] = set()
     for period_plan in periods:
@@ -1450,7 +1476,10 @@ def _snapshot_plan(aggregation_plan: AggregationPlan) -> AggregationPlan:
             f"rki/Bulletins/Manifeste/Archive/{period_plan.period.kind.value}/"
             f"{period_plan.period.value}.json"
         )
-        if period_plan.index_path != expected_index or period_plan.manifest_path != expected_manifest:
+        if (
+            period_plan.index_path != expected_index
+            or period_plan.manifest_path != expected_manifest
+        ):
             raise AggregationError("PeriodPlan-Ausgabepfade sind nicht kanonisch")
         for archive in period_plan.archives:
             if type(archive) is not PlannedArchive or type(archive.spec) is not ArchiveSpec:
@@ -1459,14 +1488,18 @@ def _snapshot_plan(aggregation_plan: AggregationPlan) -> AggregationPlan:
                 type(entry) is not ArchiveEntry or type(entry.prepared) is not PreparedObject
                 for entry in archive.spec.entries
             ):
-                raise AggregationError("ArchiveSpec.entries muss ein exaktes ArchiveEntry-tuple sein")
+                raise AggregationError(
+                    "ArchiveSpec.entries muss ein exaktes ArchiveEntry-tuple sein"
+                )
         try:
             expected_archives = _planned_archives(period_plan.period, period_plan.documents)
         except (AggregationError, ValueError) as exc:
             raise AggregationError("PeriodPlan-Archive sind nicht kanonisch") from exc
         if period_plan.archives != expected_archives:
             raise AggregationError("PeriodPlan-Archive sind nicht kanonisch")
-    snapshot = AggregationPlan(periods=periods, input_fingerprint=aggregation_plan.input_fingerprint)
+    snapshot = AggregationPlan(
+        periods=periods, input_fingerprint=aggregation_plan.input_fingerprint
+    )
     if snapshot.input_fingerprint != _plan_fingerprint(snapshot.periods):
         raise AggregationError("AggregationPlan-Fingerprint ist nicht kanonisch")
     _validate_archive_payloads(snapshot)
@@ -1498,11 +1531,19 @@ def _validate_archive_payloads(plan: AggregationPlan) -> None:
                 continue
             if archive is None:
                 raise AggregationError("Dokumentpayload besitzt kein Periodenarchiv")
-            actual = tuple(sorted((entry.prepared for entry in archive.spec.entries), key=lambda item: item.artifact_id))
+            actual = tuple(
+                sorted(
+                    (entry.prepared for entry in archive.spec.entries),
+                    key=lambda item: item.artifact_id,
+                )
+            )
             if actual != expected:
-                raise AggregationError("Archivpayload stimmt nicht exakt mit Periodendokumenten überein")
+                raise AggregationError(
+                    "Archivpayload stimmt nicht exakt mit Periodendokumenten überein"
+                )
         if any(
-            archive.spec.kind not in {
+            archive.spec.kind
+            not in {
                 f"{period_plan.period.kind.value}-pdf",
                 f"{period_plan.period.kind.value}-markdown",
             }
@@ -1525,7 +1566,11 @@ def _copy_regular_file(
             raise AggregationError("Quellbaum enthält keine reguläre Datei")
         destination = os.open(
             name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
             stat.S_IMODE(expected.st_mode),
             dir_fd=destination_fd,
         )
@@ -1636,7 +1681,9 @@ def _clear_planned_outputs(stage_fd: int, plan: AggregationPlan) -> None:
 
     for period_plan in plan.periods:
         for format_name in ("pdf", "markdown"):
-            _remove_stage_path(stage_fd, _bundle_path(period_plan.period, format_name), directory=True)
+            _remove_stage_path(
+                stage_fd, _bundle_path(period_plan.period, format_name), directory=True
+            )
         if period_plan.index_path is not None:
             _remove_stage_path(stage_fd, period_plan.index_path, directory=False)
         _remove_stage_path(stage_fd, period_plan.manifest_path, directory=False)
@@ -1701,9 +1748,7 @@ def _load_existing_weekly_references(
             if match is None:
                 raise AggregationError("Wochenmanifest-Namensraum enthält unbekannten Eintrag")
             period = period_ref(TaskKind.WEEK, match["period"])
-            if not any(
-                period.start <= month.end and period.end >= month.start for month in months
-            ):
+            if not any(period.start <= month.end and period.end >= month.start for month in months):
                 continue
             value = validate_period_manifest(
                 _read_stable_regular_at(
@@ -1721,12 +1766,8 @@ def _load_existing_weekly_references(
                 if type(archive) is not dict:
                     raise AggregationError("Wochenmanifest-Archivreferenz ist ungültig")
                 kind = _string(archive, "kind", label="Wochenarchiv")
-                relative_bundle = _string(
-                    archive, "relative_bundle", label="Wochenarchiv"
-                )
-                relative = PurePosixPath(
-                    _canonical_path(relative_bundle, label="Wochenarchivpfad")
-                )
+                relative_bundle = _string(archive, "relative_bundle", label="Wochenarchiv")
+                relative = PurePosixPath(_canonical_path(relative_bundle, label="Wochenarchivpfad"))
                 try:
                     bundle_fd = open_directory_beneath(stage_fd, relative.parts)
                 except FileNotFoundError as exc:
@@ -1741,9 +1782,7 @@ def _load_existing_weekly_references(
                         input_fingerprint=_string(
                             archive, "input_fingerprint", label="Wochenarchiv"
                         ),
-                        output_sha256=_string(
-                            archive, "output_sha256", label="Wochenarchiv"
-                        ),
+                        output_sha256=_string(archive, "output_sha256", label="Wochenarchiv"),
                         size=archive["bytes"],
                     )
                 finally:
@@ -1837,7 +1876,9 @@ def materialize_period_archives(
 
     def validate_published(target_fd: int) -> None:
         if stage_signature is None or _tree_signature_fd(target_fd) != stage_signature:
-            raise AggregationError("Veröffentlichte Aggregationsgeneration stimmt nicht mit Staging überein")
+            raise AggregationError(
+                "Veröffentlichte Aggregationsgeneration stimmt nicht mit Staging überein"
+            )
 
     try:
         with staged_directory(
@@ -1905,7 +1946,9 @@ def materialize_period_archives(
                     )
                     index_relatives.append(index_path)
                 manifest_path = _canonical_path(period_plan.manifest_path, label="Manifestpfad")
-                manifest_payload = render_period_manifest(period_plan, builds_by_period[period_index])
+                manifest_payload = render_period_manifest(
+                    period_plan, builds_by_period[period_index]
+                )
                 validate_period_manifest(manifest_payload)
                 atomic_write_bytes(
                     stage_root / manifest_path,
@@ -1941,8 +1984,12 @@ def materialize_period_archives(
             for event_target, digest, size in pending_events:
                 ledger.record(EffectKind.TEMP_FILE, event_target, sha256=digest, size=size)
         except Exception as record_error:
-            raise AggregationError("Archivaggregation wurde veröffentlicht, aber konnte nicht vollständig protokolliert werden") from record_error
-        raise AggregationError("Archivaggregation wurde veröffentlicht, Cleanup fehlgeschlagen") from exc
+            raise AggregationError(
+                "Archivaggregation wurde veröffentlicht, aber konnte nicht vollständig protokolliert werden"
+            ) from record_error
+        raise AggregationError(
+            "Archivaggregation wurde veröffentlicht, Cleanup fehlgeschlagen"
+        ) from exc
     except Exception as exc:
         if not staging_state.published:
             del ledger.events[event_count:]
@@ -1969,7 +2016,9 @@ def materialize_period_archives(
         for event_target, digest, size in pending_events:
             ledger.record(EffectKind.TEMP_FILE, event_target, sha256=digest, size=size)
     except Exception as exc:
-        raise AggregationError("Archivaggregation wurde veröffentlicht, aber konnte nicht vollständig protokolliert werden") from exc
+        raise AggregationError(
+            "Archivaggregation wurde veröffentlicht, aber konnte nicht vollständig protokolliert werden"
+        ) from exc
     final_archives = tuple(
         MaterializedPeriodArchive(
             archive_id=item.archive_id,
@@ -1995,7 +2044,9 @@ _CLI_PAYLOAD_SHA256 = hashlib.sha256(_CLI_PAYLOAD).hexdigest()
 _CLI_UTC = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 
 
-def _cli_fixture(temp_root: Path, as_of: datetime) -> tuple[AggregationPlan, RightsStorageAuthorizer]:
+def _cli_fixture(
+    temp_root: Path, as_of: datetime
+) -> tuple[AggregationPlan, RightsStorageAuthorizer]:
     """Build one fixed, local-only fixture through normal aggregation contracts."""
 
     authority = load_rights_authority()
@@ -2004,8 +2055,7 @@ def _cli_fixture(temp_root: Path, as_of: datetime) -> tuple[AggregationPlan, Rig
         ApprovalKey(
             source_id=_CLI_SOURCE_ID,
             canonical_url=(
-                "https://edoc.rki.de/bitstream/handle/176904/900000001/"
-                "source.pdf?sequence=1"
+                "https://edoc.rki.de/bitstream/handle/176904/900000001/source.pdf?sequence=1"
             ),
             version_or_bitstream=(
                 "rki-bitstream-d1a348dc6e1b0b17036ae59a761fc7b3ff19a96201ad44de0ae93fe099945c00"

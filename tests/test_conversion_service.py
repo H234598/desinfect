@@ -1,4 +1,5 @@
 """Atomic, rights-bound PDF conversion orchestration."""
+
 from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import replace
@@ -38,9 +39,7 @@ from scripts.rki_pipeline.storage.base import RightsStorageAuthorizer, StorageIn
 PDF = (Path(__file__).parent / "fixtures" / "pdf" / "minimal.pdf").read_bytes()
 SOURCE_ID = "rki:176904/12345.2"
 DOCUMENT_ID = "rki-176904-12345-v2"
-BITSTREAM_URL = (
-    "https://edoc.rki.de/bitstream/handle/176904/12345.2/source.pdf?sequence=1"
-)
+BITSTREAM_URL = "https://edoc.rki.de/bitstream/handle/176904/12345.2/source.pdf?sequence=1"
 BITSTREAM_ID = bitstream_identity(BITSTREAM_URL).bitstream_id
 
 
@@ -173,10 +172,8 @@ decisions:
     intent = StorageIntent.from_path(
         source,
         artifact_id=BITSTREAM_ID,
-        logical_key=logical_key or (
-            "Jahre/2020/Markdown/2020-01-01_gesamtausgabe_"
-            f"{DOCUMENT_ID}_{BITSTREAM_ID}.md"
-        ),
+        logical_key=logical_key
+        or (f"Jahre/2020/Markdown/2020-01-01_gesamtausgabe_{DOCUMENT_ID}_{BITSTREAM_ID}.md"),
         source_id=SOURCE_ID,
         source_sha256=authorized_sha256,
         decision_sha256=decision.decision_sha256,
@@ -225,20 +222,14 @@ def test_good_text_conversion_publishes_atomic_valid_bundle(
     assert result.ocr_used is False
     output = result.output_path.read_text(encoding="utf-8")
     assert output.startswith(
-        "---\n"
-        f'id: "{DOCUMENT_ID}"\n'
-        'title: "Epidemiologisches Bulletin 1/2020"\n'
+        f'---\nid: "{DOCUMENT_ID}"\ntitle: "Epidemiologisches Bulletin 1/2020"\n'
     )
     assert output.index("---\n\n") < output.index("<!-- rki-page: 1 -->")
-    assert output.count(
-        "<!-- rki-page: 1 -->"
-    ) == 1
+    assert output.count("<!-- rki-page: 1 -->") == 1
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     assert manifest["conversion_id"] == result.conversion_id
     assert manifest["fingerprint_sha256"] == result.fingerprint_sha256
-    assert manifest["output_sha256"] == hashlib.sha256(
-        result.output_path.read_bytes()
-    ).hexdigest()
+    assert manifest["output_sha256"] == hashlib.sha256(result.output_path.read_bytes()).hexdigest()
     assert manifest["storage_reference"] is None
     assert manifest["state"] == "converted"
     assert [tool["name"] for tool in manifest["toolchain"]] == [

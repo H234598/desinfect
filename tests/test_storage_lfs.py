@@ -1,4 +1,5 @@
 """TDD contract for Git-LFS tracking, objects, budgets, and adapter behavior."""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -118,19 +119,14 @@ def test_gitattributes_allows_binary_pdf_fixture_rule(tmp_path: Path) -> None:
 def test_lfs_pointer_parser_is_exact() -> None:
     oid = "a" * 64
     pointer = parse_lfs_pointer(
-        "version https://git-lfs.github.com/spec/v1\n"
-        f"oid sha256:{oid}\n"
-        "size 12\n"
+        f"version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize 12\n"
     )
     assert pointer.oid == oid
     assert pointer.size == 12
     with pytest.raises(LfsIntegrityError):
         parse_lfs_pointer(f"oid sha256:{oid}\nsize 12\n")
     with pytest.raises(LfsIntegrityError):
-        parse_lfs_pointer(
-            "version https://git-lfs.github.com/spec/v1\n"
-            "oid sha256:BAD\nsize -1\n"
-        )
+        parse_lfs_pointer("version https://git-lfs.github.com/spec/v1\noid sha256:BAD\nsize -1\n")
 
 
 def write_lfs_object(repository: Path, payload: bytes) -> tuple[str, Path]:
@@ -232,7 +228,9 @@ def test_lfs_adapter_materializes_then_applies_without_git_commit(
     assert not any(event.kind is EffectKind.GIT_COMMIT for event in apply_ledger.events)
     adapter.verify(reference)
 
-    before = sorted(path.as_posix() for path in (repository / ".git" / "lfs" / "objects").rglob("*"))
+    before = sorted(
+        path.as_posix() for path in (repository / ".git" / "lfs" / "objects").rglob("*")
+    )
     repeated = adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
     after = sorted(path.as_posix() for path in (repository / ".git" / "lfs" / "objects").rglob("*"))
     assert repeated == reference
@@ -328,9 +326,7 @@ def test_lfs_adapter_verifies_pointer_against_local_object(
     target = repository / "rki" / "Bulletins" / "Jahre" / "1994" / "a.pdf"
     target.parent.mkdir(parents=True)
     target.write_text(
-        "version https://git-lfs.github.com/spec/v1\n"
-        f"oid sha256:{oid}\n"
-        "size 7\n",
+        f"version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize 7\n",
         encoding="utf-8",
     )
     adapter = LfsStorageAdapter(
@@ -364,9 +360,7 @@ def test_lfs_reference_inventory_excludes_noncanonical_markdown(
     (artifacts / "README.md").write_text("archive notes", encoding="utf-8")
     (artifacts / "Jahre" / "1994" / "notes.md").parent.mkdir(parents=True)
     (artifacts / "Jahre" / "1994" / "notes.md").write_text("not artifact", encoding="utf-8")
-    (artifacts / "Jahre" / "1994" / "Markdown" / "bulletin.md").parent.mkdir(
-        parents=True
-    )
+    (artifacts / "Jahre" / "1994" / "Markdown" / "bulletin.md").parent.mkdir(parents=True)
     (artifacts / "Jahre" / "1994" / "Markdown" / "bulletin.md").write_text(
         "canonical artifact", encoding="utf-8"
     )
@@ -510,10 +504,7 @@ def test_lfs_exists_never_pairs_takedown_from_another_bitstream(
     )
     intent, prepared = materialized_pdf(tmp_path, adapter)
     adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
-    other_url = (
-        "https://edoc.rki.de/bitstream/handle/176904/12345.2/"
-        "other.pdf?sequence=2"
-    )
+    other_url = "https://edoc.rki.de/bitstream/handle/176904/12345.2/other.pdf?sequence=2"
     other_bitstream = rights.bitstream_identity(other_url).bitstream_id
     storage_rights.register_path.write_text(
         "schema_version: 2\n"
@@ -557,9 +548,9 @@ def test_lfs_exists_projects_exact_current_takedown_without_payload_reads(
     object_path = lfs_object_path(repository, intent.sha256)
     if target_kind == "working-tree":
         target.write_bytes(prepared.path.read_bytes())
-    decision_sha256 = storage_rights.set_decisions(
-        (SOURCE_ID, SOURCE_SHA256, "takedown")
-    )[(SOURCE_ID, SOURCE_SHA256)]
+    decision_sha256 = storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))[
+        (SOURCE_ID, SOURCE_SHA256)
+    ]
     takedown_intent = replace(
         intent,
         decision_sha256=decision_sha256,
@@ -610,9 +601,9 @@ def test_lfs_exists_rejects_state_drift_for_current_takedown_decision(
     )
     intent, prepared = materialized_pdf(tmp_path, adapter)
     adapter.apply(prepared, ledger=EffectLedger(RunMode.APPLY))
-    decision_sha256 = storage_rights.set_decisions(
-        (SOURCE_ID, SOURCE_SHA256, "takedown")
-    )[(SOURCE_ID, SOURCE_SHA256)]
+    decision_sha256 = storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))[
+        (SOURCE_ID, SOURCE_SHA256)
+    ]
     drifted_intent = replace(intent, decision_sha256=decision_sha256)
 
     assert adapter.exists(drifted_intent) is None
@@ -827,6 +818,7 @@ def test_lfs_intra_call_revocation_blocks_next_payload_effect(
             return payload
 
         monkeypatch.setattr(lfs_storage, "read_verified_payload", read_then_revoke)
+
         def action():
             return adapter.materialize(
                 source_intent,
@@ -842,6 +834,7 @@ def test_lfs_intra_call_revocation_blocks_next_payload_effect(
             return result
 
         monkeypatch.setattr(lfs_storage, "read_verified_payload", read_then_revoke)
+
         def action():
             return adapter.export(
                 reference,
@@ -861,6 +854,7 @@ def test_lfs_intra_call_revocation_blocks_next_payload_effect(
             "_prepared_payload",
             staticmethod(read_prepared_then_revoke),
         )
+
         def action():
             return adapter.apply(prepared, ledger=ledger)
     elif operation == "verify":
@@ -872,6 +866,7 @@ def test_lfs_intra_call_revocation_blocks_next_payload_effect(
             return result
 
         monkeypatch.setattr(LfsStorageAdapter, "_validated_source", validate_then_revoke)
+
         def action():
             return adapter.verify(reference)
     else:
@@ -887,6 +882,7 @@ def test_lfs_intra_call_revocation_blocks_next_payload_effect(
             "reference_for_path",
             reference_then_revoke,
         )
+
         def action():
             return adapter.apply(prepared, ledger=ledger)
 
@@ -997,6 +993,7 @@ def test_lfs_apply_rolls_back_pointer_and_owned_object_when_post_write_verify_fa
 
     monkeypatch.setattr(lfs_storage, "atomic_write_bytes", write_with_revocation)
     if failure == "verify-interrupt":
+
         def interrupt_verify(self, reference):
             raise KeyboardInterrupt
 

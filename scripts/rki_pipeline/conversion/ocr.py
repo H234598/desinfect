@@ -245,8 +245,7 @@ def _run(
 
 def _raster_paths(raster_dir: Path, expected_page_count: int) -> tuple[Path, ...]:
     expected = tuple(
-        raster_dir / f"page-{number:04d}.pgm"
-        for number in range(1, expected_page_count + 1)
+        raster_dir / f"page-{number:04d}.pgm" for number in range(1, expected_page_count + 1)
     )
     try:
         entries = tuple(sorted(os.scandir(raster_dir), key=lambda entry: entry.name))
@@ -277,11 +276,7 @@ def _pgm_tokens(data: bytes) -> tuple[bytes, ...]:
             index = newline + 1
             continue
         start = index
-        while (
-            index < len(data)
-            and not chr(data[index]).isspace()
-            and data[index] != ord("#")
-        ):
+        while index < len(data) and not chr(data[index]).isspace() and data[index] != ord("#"):
             index += 1
         if start == index:
             break

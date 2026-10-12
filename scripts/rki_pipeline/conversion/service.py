@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Rights-bound, rollback-safe conversion bundle materialization."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -113,14 +114,13 @@ _OPTIONS = {
         "oem": 1,
     },
 }
+
+
 def _options_sha256(limits: PdfLimits, *, frontmatter_sha256: str) -> str:
     options = {
         **_OPTIONS,
         "frontmatter": {"schema_version": 1, "sha256": frontmatter_sha256},
-        "limits": {
-            name: getattr(limits, name)
-            for name in limits.__dataclass_fields__
-        },
+        "limits": {name: getattr(limits, name) for name in limits.__dataclass_fields__},
     }
     return sha256_bytes(stable_json_dumps(options).encode("utf-8"))
 
@@ -136,9 +136,7 @@ def _authorize(
 
 def _converter_identity(toolchain: tuple[ToolEvidence, ...]) -> tuple[str, str]:
     converter = "+".join(tool.name for tool in toolchain)
-    versions = ";".join(
-        f"{tool.name}:{tool.version_output.splitlines()[0]}" for tool in toolchain
-    )
+    versions = ";".join(f"{tool.name}:{tool.version_output.splitlines()[0]}" for tool in toolchain)
     if len(converter) > 120:
         converter = "toolchain-" + sha256_bytes(converter.encode("utf-8"))
     if len(versions) > 120:
@@ -288,9 +286,9 @@ def _existing_result(
                         dir_fd=conversions_fd,
                         follow_symlinks=False,
                     )
-                    if (
-                        not stat.S_ISDIR(current.st_mode)
-                        or (current.st_dev, current.st_ino) != (held.st_dev, held.st_ino)
+                    if not stat.S_ISDIR(current.st_mode) or (current.st_dev, current.st_ino) != (
+                        held.st_dev,
+                        held.st_ino,
                     ):
                         raise ConversionIntegrityError(
                             "Conversion-Bundle wurde während der Prüfung ausgetauscht"
@@ -301,21 +299,19 @@ def _existing_result(
                         dir_fd=root_fd,
                         follow_symlinks=False,
                     )
-                    if (
-                        not stat.S_ISDIR(current_conversions.st_mode)
-                        or (current_conversions.st_dev, current_conversions.st_ino)
-                        != (held_conversions.st_dev, held_conversions.st_ino)
-                    ):
+                    if not stat.S_ISDIR(current_conversions.st_mode) or (
+                        current_conversions.st_dev,
+                        current_conversions.st_ino,
+                    ) != (held_conversions.st_dev, held_conversions.st_ino):
                         raise ConversionIntegrityError(
                             "Conversion-Verzeichnis wurde während der Prüfung ausgetauscht"
                         )
                     held_root = os.fstat(root_fd)
                     current_root = os.stat(root, follow_symlinks=False)
-                    if (
-                        not stat.S_ISDIR(current_root.st_mode)
-                        or (current_root.st_dev, current_root.st_ino)
-                        != (held_root.st_dev, held_root.st_ino)
-                    ):
+                    if not stat.S_ISDIR(current_root.st_mode) or (
+                        current_root.st_dev,
+                        current_root.st_ino,
+                    ) != (held_root.st_dev, held_root.st_ino):
                         raise ConversionIntegrityError(
                             "Conversion-Wurzel wurde während der Prüfung ausgetauscht"
                         )
@@ -324,7 +320,9 @@ def _existing_result(
             finally:
                 os.close(conversions_fd)
     except (OSError, ValueError) as exc:
-        raise ConversionIntegrityError("Conversion-Bundle besitzt keine gültige Markierung") from exc
+        raise ConversionIntegrityError(
+            "Conversion-Bundle besitzt keine gültige Markierung"
+        ) from exc
     try:
         manifest = json.loads(manifest_bytes)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -340,10 +338,7 @@ def _existing_result(
         or manifest["fingerprint_sha256"] != expected_fingerprint
     ):
         raise ConversionIntegrityError("Conversion-Manifest driftet von Fingerprint/Identität")
-    if (
-        manifest["quality"] != expected_quality
-        or manifest["ocr_used"] is not expected_ocr_used
-    ):
+    if manifest["quality"] != expected_quality or manifest["ocr_used"] is not expected_ocr_used:
         raise ConversionIntegrityError(
             "Conversion-Manifest driftet von frisch abgeleiteter Qualität/OCR-Nutzung"
         )
@@ -489,7 +484,9 @@ def _materialize_conversion(
     if bitstream_id != intent.artifact_id:
         raise ConversionIntegrityError("Bitstream-ID stimmt nicht mit StorageIntent überein")
     if intent.sha256 != intent.source_sha256:
-        raise ConversionIntegrityError("Payload-SHA stimmt nicht mit autorisierter Rechte-SHA überein")
+        raise ConversionIntegrityError(
+            "Payload-SHA stimmt nicht mit autorisierter Rechte-SHA überein"
+        )
     source_pdf = _source_pdf_path(intent, bitstream_id, metadata)
     try:
         render_frontmatter(

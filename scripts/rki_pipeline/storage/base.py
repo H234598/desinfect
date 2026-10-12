@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Immutable backend-neutral storage contracts."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -25,12 +26,8 @@ _SHA256 = frozenset("0123456789abcdef")
 _VISIBILITY = frozenset({"public", "repository_authorized", "internal", "restricted"})
 _RIGHTS = frozenset({"approved", "metadata_only", "internal_only", "unknown", "takedown"})
 _PROVENANCE_STATES = frozenset({"current", "legacy_needs_review"})
-_SOURCE_ID = re.compile(
-    r"^rki:176904/(?P<number>[0-9]+)(?:\.(?P<version>[2-9]|[1-9][0-9]+))?$"
-)
-_DOCUMENT_ID = re.compile(
-    r"^rki-176904-(?P<number>[0-9]+)-v(?P<version>[1-9][0-9]*)$"
-)
+_SOURCE_ID = re.compile(r"^rki:176904/(?P<number>[0-9]+)(?:\.(?P<version>[2-9]|[1-9][0-9]+))?$")
+_DOCUMENT_ID = re.compile(r"^rki-176904-(?P<number>[0-9]+)-v(?P<version>[1-9][0-9]*)$")
 _CONVERSION_ID = re.compile(r"^conv-[0-9a-f]{64}$")
 
 
@@ -77,9 +74,7 @@ def rights_actions_for_storage_operation(
     }
     if operation == "apply":
         if type(backend) is not StorageBackend:
-            raise StorageAuthorizationError(
-                "Storage-apply benötigt ein exaktes Backend"
-            )
+            raise StorageAuthorizationError("Storage-apply benötigt ein exaktes Backend")
         if backend is StorageBackend.LFS or visibility != "public":
             return (RightsAction.CACHE,)
         return (RightsAction.CACHE, RightsAction.PUBLISH)
@@ -96,8 +91,13 @@ def _valid_sha256(value: str) -> bool:
 
 
 def _validate_common(
-    *, artifact_id: str, logical_key: str, sha256: str, size: int,
-    visibility: str, rights_state: str,
+    *,
+    artifact_id: str,
+    logical_key: str,
+    sha256: str,
+    size: int,
+    visibility: str,
+    rights_state: str,
 ) -> None:
     if type(artifact_id) is not str or len(artifact_id) < 3:
         raise ValueError("artifact_id muss mindestens drei Zeichen besitzen")
@@ -120,10 +120,7 @@ def _validate_authorization_provenance(
     required: bool,
 ) -> None:
     if not required:
-        present = sum(
-            value is not None
-            for value in (source_id, source_sha256, decision_sha256)
-        )
+        present = sum(value is not None for value in (source_id, source_sha256, decision_sha256))
         if present not in {0, 3}:
             raise ValueError(
                 "Legacy-Provenienz muss vollständig gesetzt oder vollständig leer sein"
@@ -163,9 +160,8 @@ def validate_storage_provenance_relationship(
     if source is None or document is None:
         raise ValueError("source_id und document_id sind nicht kanonisch verknüpft")
     source_version = int(source.group("version") or "1")
-    if (
-        source.group("number") != document.group("number")
-        or source_version != int(document.group("version"))
+    if source.group("number") != document.group("number") or source_version != int(
+        document.group("version")
     ):
         raise ValueError("source_id und document_id müssen Handle und Version teilen")
 
@@ -241,10 +237,18 @@ class StorageIntent:
 
     @classmethod
     def from_path(
-        cls, source_path: Path, *, artifact_id: str, logical_key: str,
-        source_id: str, source_sha256: str, decision_sha256: str,
-        visibility: str, rights_state: str,
-        document_id: str | None = None, conversion_id: str | None = None,
+        cls,
+        source_path: Path,
+        *,
+        artifact_id: str,
+        logical_key: str,
+        source_id: str,
+        source_sha256: str,
+        decision_sha256: str,
+        visibility: str,
+        rights_state: str,
+        document_id: str | None = None,
+        conversion_id: str | None = None,
     ) -> StorageIntent:
         size, sha256 = hash_file(source_path)
         return cls(
@@ -387,10 +391,7 @@ class RightsStorageAuthorizer:
     policy: RightsPolicy
 
     def __post_init__(self) -> None:
-        if (
-            type(self.authority) is not RightsAuthority
-            or type(self.policy) is not RightsPolicy
-        ):
+        if type(self.authority) is not RightsAuthority or type(self.policy) is not RightsPolicy:
             raise StorageAuthorizationError(
                 "RightsStorageAuthorizer benötigt versiegelte Authority und Policy"
             )
@@ -403,9 +404,7 @@ class RightsStorageAuthorizer:
         backend: StorageBackend | None = None,
     ) -> None:
         if getattr(subject, "provenance_state", "current") != "current":
-            raise StorageAuthorizationError(
-                f"Legacy-Provenienz blockiert Storage-{operation}"
-            )
+            raise StorageAuthorizationError(f"Legacy-Provenienz blockiert Storage-{operation}")
         try:
             register = load_authority_register(self.authority)
             matches = tuple(
@@ -458,13 +457,9 @@ def authorize_storage_operation(
     """Enforce non-bypassable provenance floor before injected policy."""
 
     if type(authorizer) is not RightsStorageAuthorizer:
-        raise StorageAuthorizationError(
-            "authorizer muss ein exakter RightsStorageAuthorizer sein"
-        )
+        raise StorageAuthorizationError("authorizer muss ein exakter RightsStorageAuthorizer sein")
     if getattr(subject, "provenance_state", "current") != "current":
-        raise StorageAuthorizationError(
-            f"Legacy-Provenienz blockiert Storage-{operation}"
-        )
+        raise StorageAuthorizationError(f"Legacy-Provenienz blockiert Storage-{operation}")
     authorizer.authorize(subject, operation=operation, backend=backend)
 
 
@@ -474,10 +469,16 @@ class StorageAdapter(Protocol):
 
     backend: StorageBackend
 
-    def authorize(self, subject: StorageIntent | PreparedObject | StorageReference, *, operation: str) -> None: ...
+    def authorize(
+        self, subject: StorageIntent | PreparedObject | StorageReference, *, operation: str
+    ) -> None: ...
     def exists(self, intent: StorageIntent) -> StorageReference | None: ...
-    def materialize(self, intent: StorageIntent, *, temp_root: Path, ledger: EffectLedger) -> PreparedObject: ...
-    def export(self, reference: StorageReference, *, temp_root: Path, ledger: EffectLedger) -> PreparedObject: ...
+    def materialize(
+        self, intent: StorageIntent, *, temp_root: Path, ledger: EffectLedger
+    ) -> PreparedObject: ...
+    def export(
+        self, reference: StorageReference, *, temp_root: Path, ledger: EffectLedger
+    ) -> PreparedObject: ...
     def apply(self, prepared: PreparedObject, *, ledger: EffectLedger) -> StorageReference: ...
     def verify(self, reference: StorageReference) -> None: ...
     def list_references(self) -> tuple[StorageReference, ...]: ...

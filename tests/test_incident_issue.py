@@ -427,9 +427,7 @@ def test_client_lists_marker_with_fixed_route_headers_timeout_and_pagination() -
         {"body": "ordinary", "number": number, "state": "open", "title": "ordinary"}
         for number in range(1, 101)
     ]
-    transport = FakeTransport(
-        [FakeResponse(first_page), FakeResponse([marker_issue(101)])]
-    )
+    transport = FakeTransport([FakeResponse(first_page), FakeResponse([marker_issue(101)])])
     client = GitHubRestClient(TOKEN, transport=transport)
 
     matches = client.list_issue_matches()
@@ -530,9 +528,27 @@ def test_client_counts_previous_consecutive_failures_for_current_workflow() -> N
 @pytest.mark.parametrize(
     "current",
     [
-        {"head_branch": "feature", "id": 900, "repository": {"full_name": REPOSITORY}, "run_number": 10, "workflow_id": 42},
-        {"head_branch": "main", "id": 901, "repository": {"full_name": REPOSITORY}, "run_number": 10, "workflow_id": 42},
-        {"head_branch": "main", "id": 900, "repository": {"full_name": "attacker/repo"}, "run_number": 10, "workflow_id": 42},
+        {
+            "head_branch": "feature",
+            "id": 900,
+            "repository": {"full_name": REPOSITORY},
+            "run_number": 10,
+            "workflow_id": 42,
+        },
+        {
+            "head_branch": "main",
+            "id": 901,
+            "repository": {"full_name": REPOSITORY},
+            "run_number": 10,
+            "workflow_id": 42,
+        },
+        {
+            "head_branch": "main",
+            "id": 900,
+            "repository": {"full_name": "attacker/repo"},
+            "run_number": 10,
+            "workflow_id": 42,
+        },
     ],
 )
 def test_client_rejects_untrusted_current_run_identity(current: dict[str, object]) -> None:
@@ -674,13 +690,9 @@ def test_client_uses_exact_mutation_routes(
         if request.data is not None
     ]
     if plan.action == "create":
-        assert payloads == [
-            {"body": plan.body, "labels": [LABEL], "title": TITLE_PREFIX}
-        ]
+        assert payloads == [{"body": plan.body, "labels": [LABEL], "title": TITLE_PREFIX}]
     elif plan.action == "update":
-        assert payloads == [
-            {"body": plan.body, "labels": [LABEL], "title": TITLE_PREFIX}
-        ]
+        assert payloads == [{"body": plan.body, "labels": [LABEL], "title": TITLE_PREFIX}]
     elif plan.action == "reopen":
         assert payloads == [
             {
@@ -954,7 +966,7 @@ def test_plan_cli_rejects_oversized_status_before_read(
 @pytest.mark.parametrize(
     ("raw", "message"),
     [
-        (b"{\"value\":\xff}", "UTF-8"),
+        (b'{"value":\xff}', "UTF-8"),
         (b'{"value":1,"value":2}', "doppelten Schlüssel"),
         (b'{"value":NaN}', "nichtendlichen Wert"),
         (b'{"value":1e9999}', "nichtendlichen Wert"),

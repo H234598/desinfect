@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Compatibility CLI for the modular RKI Epidemiologisches Bulletin grabber."""
+
 from __future__ import annotations
 
 import argparse

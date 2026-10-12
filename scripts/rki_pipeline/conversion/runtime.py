@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Bounded, path-free runtime evidence for system PDF conversion tools."""
+
 from __future__ import annotations
 
 import hashlib
@@ -40,9 +41,7 @@ def _sha256_regular(path: Path) -> str:
         resolved = path.resolve(strict=True)
         descriptor = os.open(
             resolved,
-            os.O_RDONLY
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
         )
     except OSError as exc:
         raise RuntimeEvidenceError(f"Runtime-Datei ist nicht sicher lesbar: {path.name}") from exc
@@ -56,7 +55,9 @@ def _sha256_regular(path: Path) -> str:
                 return digest.hexdigest()
             digest.update(chunk)
     except OSError as exc:
-        raise RuntimeEvidenceError(f"Runtime-Datei konnte nicht gehasht werden: {path.name}") from exc
+        raise RuntimeEvidenceError(
+            f"Runtime-Datei konnte nicht gehasht werden: {path.name}"
+        ) from exc
     finally:
         os.close(descriptor)
 
@@ -71,7 +72,9 @@ def _run(executable: str | Path, arguments: tuple[str, ...]) -> bytes:
                 limits=_EVIDENCE_LIMITS,
             )
     except ProcessRunnerError as exc:
-        raise RuntimeEvidenceError(f"Runtime-Probe fehlgeschlagen: {Path(executable).name}") from exc
+        raise RuntimeEvidenceError(
+            f"Runtime-Probe fehlgeschlagen: {Path(executable).name}"
+        ) from exc
     if result.returncode != 0:
         raise RuntimeEvidenceError(
             f"Runtime-Probe endete mit Status {result.returncode}: {Path(executable).name}"
@@ -113,10 +116,14 @@ def _libraries(tool_paths: tuple[Path, ...]) -> tuple[NamedDigest, ...]:
 
 def _fonts() -> tuple[NamedDigest, ...]:
     try:
-        lines = _run("fc-list", ("--format=%{file}\n",)).decode(
-            "utf-8",
-            errors="strict",
-        ).splitlines()
+        lines = (
+            _run("fc-list", ("--format=%{file}\n",))
+            .decode(
+                "utf-8",
+                errors="strict",
+            )
+            .splitlines()
+        )
     except UnicodeDecodeError as exc:
         raise RuntimeEvidenceError("fontconfig-Ausgabe ist nicht UTF-8") from exc
     values: dict[str, str] = {}

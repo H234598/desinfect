@@ -44,9 +44,7 @@ def validate(root: Path = FIXTURE_ROOT, manifest_path: Path = MANIFEST) -> None:
         raise ValueError("Fixture-Manifest besitzt eine unbekannte schema_version")
     maximum = data.get("max_file_bytes")
     if type(maximum) is not int or maximum <= 0 or maximum > MAX_FIXTURE_BYTES:
-        raise ValueError(
-            f"max_file_bytes muss zwischen 1 und {MAX_FIXTURE_BYTES} liegen"
-        )
+        raise ValueError(f"max_file_bytes muss zwischen 1 und {MAX_FIXTURE_BYTES} liegen")
     entries = data.get("entries")
     if not isinstance(entries, list) or not entries:
         raise ValueError("Fixture-Manifest benötigt mindestens einen Eintrag")

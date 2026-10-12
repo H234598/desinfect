@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Secure resumable PDF download beneath a held caller-owned output root."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -83,10 +84,7 @@ class DownloadResult:
 def _lower_headers(headers: Mapping[str, str]) -> dict[str, str]:
     """Normalize response header names."""
 
-    return {
-        str(key).lower(): str(value)
-        for key, value in headers.items()
-    }
+    return {str(key).lower(): str(value) for key, value in headers.items()}
 
 
 def _regular_entry_size(parent_fd: int, name: str) -> int | None:
@@ -101,9 +99,7 @@ def _regular_entry_size(parent_fd: int, name: str) -> int | None:
     except FileNotFoundError:
         return None
     if not stat.S_ISREG(metadata.st_mode):
-        raise PdfDownloadError(
-            f"Ziel oder Partialdatei ist keine reguläre Datei: {name}"
-        )
+        raise PdfDownloadError(f"Ziel oder Partialdatei ist keine reguläre Datei: {name}")
     return metadata.st_size
 
 
@@ -120,9 +116,7 @@ def _acquire_target_lock(parent_fd: int, target_name: str) -> int:
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
-            raise PdfDownloadError(
-                f"Download-Lock ist keine reguläre Datei: {lock_name}"
-            )
+            raise PdfDownloadError(f"Download-Lock ist keine reguläre Datei: {lock_name}")
         try:
             fcntl.flock(
                 descriptor,
@@ -130,9 +124,7 @@ def _acquire_target_lock(parent_fd: int, target_name: str) -> int:
             )
         except OSError as exc:
             if exc.errno in {errno.EACCES, errno.EAGAIN}:
-                raise PdfDownloadBusyError(
-                    f"PDF-Ziel ist bereits gesperrt: {target_name}"
-                ) from exc
+                raise PdfDownloadBusyError(f"PDF-Ziel ist bereits gesperrt: {target_name}") from exc
             raise
         return descriptor
     except BaseException:
@@ -185,9 +177,7 @@ def _validate_content_type(
         "application/pdf",
         "application/octet-stream",
     }:
-        raise PdfContentTypeError(
-            f"Unerwarteter PDF Content-Type: {content_type}"
-        )
+        raise PdfContentTypeError(f"Unerwarteter PDF Content-Type: {content_type}")
     return media_type
 
 
@@ -203,26 +193,14 @@ def _validate_content_range(
     unit, separator, remainder = value.partition(" ")
     span, slash, _total = remainder.partition("/")
     start, dash, _end = span.partition("-")
-    if (
-        unit.lower() != "bytes"
-        or not separator
-        or not slash
-        or not dash
-    ):
-        raise PdfRangeError(
-            f"Ungültiger Content-Range: {value}"
-        )
+    if unit.lower() != "bytes" or not separator or not slash or not dash:
+        raise PdfRangeError(f"Ungültiger Content-Range: {value}")
     try:
         parsed_start = int(start)
     except ValueError as exc:
-        raise PdfRangeError(
-            f"Ungültiger Content-Range: {value}"
-        ) from exc
+        raise PdfRangeError(f"Ungültiger Content-Range: {value}") from exc
     if parsed_start != expected_start:
-        raise PdfRangeError(
-            f"Content-Range beginnt bei {parsed_start}, "
-            f"erwartet {expected_start}"
-        )
+        raise PdfRangeError(f"Content-Range beginnt bei {parsed_start}, erwartet {expected_start}")
 
 
 def _declared_length(
@@ -236,13 +214,9 @@ def _declared_length(
     try:
         value = int(raw)
     except ValueError as exc:
-        raise PdfDownloadError(
-            "Ungültiger Content-Length-Header"
-        ) from exc
+        raise PdfDownloadError("Ungültiger Content-Length-Header") from exc
     if value < 0:
-        raise PdfDownloadError(
-            "Negativer Content-Length-Header"
-        )
+        raise PdfDownloadError("Negativer Content-Length-Header")
     return value
 
 
@@ -254,17 +228,10 @@ def _open_response(
 ) -> ResponseLike:
     """Open the first response, optionally requesting a byte range."""
 
-    headers = (
-        {"Range": f"bytes={resume_size}-"}
-        if resume_size
-        else {}
-    )
+    headers = {"Range": f"bytes={resume_size}-"} if resume_size else {}
     return client.open_stream(
         candidate.url,
-        accept=(
-            "application/pdf,"
-            "application/octet-stream;q=0.9,*/*;q=0.1"
-        ),
+        accept=("application/pdf,application/octet-stream;q=0.9,*/*;q=0.1"),
         allowed_statuses=frozenset({200, 206, 416}),
         headers=headers,
     )
@@ -350,17 +317,9 @@ def download_pdf(
                         part_name,
                         dir_fd=parent_fd,
                     )
-                    raise ResponseTooLargeError(
-                        f"Partialdatei überschreitet "
-                        f"{max_bytes} Bytes"
-                    )
+                    raise ResponseTooLargeError(f"Partialdatei überschreitet {max_bytes} Bytes")
 
-                flags = (
-                    os.O_RDWR
-                    | os.O_CREAT
-                    | _CLOEXEC
-                    | _NOFOLLOW
-                )
+                flags = os.O_RDWR | os.O_CREAT | _CLOEXEC | _NOFOLLOW
                 descriptor = os.open(
                     part_name,
                     flags,
@@ -371,18 +330,13 @@ def download_pdf(
                 try:
                     metadata = os.fstat(descriptor)
                     if not stat.S_ISREG(metadata.st_mode):
-                        raise PdfDownloadError(
-                            "Partialdatei ist keine reguläre Datei"
-                        )
+                        raise PdfDownloadError("Partialdatei ist keine reguläre Datei")
                     response = _open_response(
                         client,
                         candidate,
                         resume_size=partial_size,
                     )
-                    if (
-                        response.status_code == 416
-                        and partial_size
-                    ):
+                    if response.status_code == 416 and partial_size:
                         response.close()
                         response = None
                         os.ftruncate(descriptor, 0)
@@ -392,12 +346,8 @@ def download_pdf(
                             candidate,
                             resume_size=0,
                         )
-                    headers = _lower_headers(
-                        response.headers
-                    )
-                    content_type = _validate_content_type(
-                        headers
-                    )
+                    headers = _lower_headers(response.headers)
+                    content_type = _validate_content_type(headers)
                     if response.status_code == 206:
                         _validate_content_range(
                             headers.get("content-range"),
@@ -408,11 +358,7 @@ def download_pdf(
                             partial_size,
                             os.SEEK_SET,
                         )
-                        state = (
-                            RecordState.RESUMED
-                            if partial_size
-                            else RecordState.DOWNLOADED
-                        )
+                        state = RecordState.RESUMED if partial_size else RecordState.DOWNLOADED
                     elif response.status_code == 200:
                         os.ftruncate(descriptor, 0)
                         os.lseek(
@@ -423,31 +369,23 @@ def download_pdf(
                         partial_size = 0
                         state = RecordState.DOWNLOADED
                     else:
-                        raise PdfRangeError(
-                            "Server akzeptiert den PDF-Abruf nicht"
-                        )
+                        raise PdfRangeError("Server akzeptiert den PDF-Abruf nicht")
 
                     declared = _declared_length(headers)
-                    if (
-                        declared is not None
-                        and partial_size + declared > max_bytes
-                    ):
+                    if declared is not None and partial_size + declared > max_bytes:
                         raise ResponseTooLargeError(
                             f"PDF würde "
                             f"{partial_size + declared} Bytes "
                             f"erreichen; Grenze ist {max_bytes}"
                         )
                     total = partial_size
-                    for chunk in response.iter_content(
-                        1024 * 1024
-                    ):
+                    for chunk in response.iter_content(1024 * 1024):
                         if not chunk:
                             continue
                         total += len(chunk)
                         if total > max_bytes:
                             raise ResponseTooLargeError(
-                                "PDF überschreitet die Grenze "
-                                f"von {max_bytes} Bytes"
+                                f"PDF überschreitet die Grenze von {max_bytes} Bytes"
                             )
                         view = memoryview(chunk)
                         while view:
@@ -478,9 +416,7 @@ def download_pdf(
                         sha256=sha256,
                         relative_path=relative.as_posix(),
                         etag=headers.get("etag"),
-                        last_modified=headers.get(
-                            "last-modified"
-                        ),
+                        last_modified=headers.get("last-modified"),
                         content_type=content_type,
                     )
                 except BaseException:

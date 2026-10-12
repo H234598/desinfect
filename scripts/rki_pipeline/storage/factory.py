@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Fail-closed construction of configured storage adapters."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -29,9 +30,7 @@ def build_storage_adapter(
     if not isinstance(selected, StorageBackend):
         raise StorageConfigurationError("backend muss ein StorageBackend sein")
     if type(authorizer) is not RightsStorageAuthorizer:
-        raise StorageConfigurationError(
-            "authorizer muss ein exakter RightsStorageAuthorizer sein"
-        )
+        raise StorageConfigurationError("authorizer muss ein exakter RightsStorageAuthorizer sein")
     if selected is StorageBackend.LFS:
         from scripts.rki_pipeline.storage.lfs import LfsStorageAdapter
 

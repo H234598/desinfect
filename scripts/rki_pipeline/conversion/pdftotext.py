@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Deterministic Poppler text extraction with explicit page boundaries."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -53,9 +54,7 @@ def _pages(stdout: bytes, expected_page_count: int) -> tuple[str, ...]:
         raise TextExtractionError("pdftotext-Ausgabe endet nicht mit Seitenumbruch")
     raw_pages = stdout[:-1].split(b"\f")
     if len(raw_pages) != expected_page_count:
-        raise TextExtractionError(
-            "pdftotext-Seitenzahl stimmt nicht mit pdfinfo überein"
-        )
+        raise TextExtractionError("pdftotext-Seitenzahl stimmt nicht mit pdfinfo überein")
     try:
         pages = tuple(page.decode("utf-8", errors="strict") for page in raw_pages)
     except UnicodeDecodeError as exc:
@@ -97,9 +96,7 @@ def extract_text(
     try:
         require_fixed_runner_locale(active_runner)
     except ProcessRunnerError as exc:
-        raise TextExtractionError(
-            "pdftotext-Runner erfüllt festen Locale-Vertrag nicht"
-        ) from exc
+        raise TextExtractionError("pdftotext-Runner erfüllt festen Locale-Vertrag nicht") from exc
     try:
         version_result = active_runner.run(
             executable,
@@ -108,8 +105,7 @@ def extract_text(
             limits=limits,
         )
         arguments = tuple(
-            source_path.as_posix() if value == "$INPUT" else value
-            for value in _ARGUMENT_TEMPLATE
+            source_path.as_posix() if value == "$INPUT" else value for value in _ARGUMENT_TEMPLATE
         )
         extraction_result = active_runner.run(
             executable,
@@ -120,9 +116,7 @@ def extract_text(
     except ProcessRunnerError as exc:
         raise TextExtractionError("pdftotext konnte nicht ausgeführt werden") from exc
     if extraction_result.returncode != 0:
-        raise TextExtractionError(
-            f"pdftotext endete mit Status {extraction_result.returncode}"
-        )
+        raise TextExtractionError(f"pdftotext endete mit Status {extraction_result.returncode}")
     if version_result.executable_sha256 != extraction_result.executable_sha256:
         raise TextExtractionError("pdftotext-Executable driftete zwischen Aufrufen")
 

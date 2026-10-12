@@ -1,4 +1,5 @@
 """TDD contract for backend-neutral storage types and strict TOML config."""
+
 from __future__ import annotations
 
 import hashlib
@@ -446,50 +447,46 @@ def test_rights_storage_authorizer_reloads_and_compares_exact_decision(
     register_path = tmp_path / "rights-register.yml"
 
     def write_decision(state: str) -> str:
-        canonical_url = (
-            "https://edoc.rki.de/bitstream/handle/176904/12345.2/"
-            "source.pdf?sequence=1"
-        )
+        canonical_url = "https://edoc.rki.de/bitstream/handle/176904/12345.2/source.pdf?sequence=1"
         approved = state == "approved"
         register_path.write_text(
             yaml.safe_dump(
                 {
                     "schema_version": 2,
-                    "decisions": [{
-                        "source_id": SOURCE_ID,
-                        "canonical_url": canonical_url,
-                        "version_or_bitstream": rights.bitstream_identity(
-                            canonical_url
-                        ).bitstream_id,
-                        "source_sha256": SOURCE_SHA256,
-                        "state": state,
-                        "mode": "materialized" if approved else "remove_all",
-                        "allowed_actions": (
-                            sorted(action.value for action in rights.RightsAction)
-                            if approved else []
-                        ),
-                        "components_state": "cleared" if approved else "blocked",
-                        "attribution": {
-                            "creators": ["Synthetic Creator"],
-                            "attribution_parties": ["Synthetic Rights Holder"],
-                            "copyright_notice": "Synthetic copyright notice",
-                            "license_notice": "CC BY 4.0",
-                            "license_url": (
-                                "https://creativecommons.org/licenses/by/4.0/"
+                    "decisions": [
+                        {
+                            "source_id": SOURCE_ID,
+                            "canonical_url": canonical_url,
+                            "version_or_bitstream": rights.bitstream_identity(
+                                canonical_url
+                            ).bitstream_id,
+                            "source_sha256": SOURCE_SHA256,
+                            "state": state,
+                            "mode": "materialized" if approved else "remove_all",
+                            "allowed_actions": (
+                                sorted(action.value for action in rights.RightsAction)
+                                if approved
+                                else []
                             ),
-                            "disclaimer_notice": "Synthetic fixture only",
-                            "origin_url": (
-                                "https://edoc.rki.de/handle/176904/12345.2"
-                            ),
-                            "prior_change_history": [],
-                            "current_change_notice": "Unchanged synthetic fixture",
-                        } if approved else None,
-                        "basis": (
-                            "Synthetic fixture; no external publication rights claim"
-                        ),
-                        "reviewed_by": "Test Fixture",
-                        "reviewed_at": "2026-08-03T08:00:00Z",
-                    }],
+                            "components_state": "cleared" if approved else "blocked",
+                            "attribution": {
+                                "creators": ["Synthetic Creator"],
+                                "attribution_parties": ["Synthetic Rights Holder"],
+                                "copyright_notice": "Synthetic copyright notice",
+                                "license_notice": "CC BY 4.0",
+                                "license_url": ("https://creativecommons.org/licenses/by/4.0/"),
+                                "disclaimer_notice": "Synthetic fixture only",
+                                "origin_url": ("https://edoc.rki.de/handle/176904/12345.2"),
+                                "prior_change_history": [],
+                                "current_change_notice": "Unchanged synthetic fixture",
+                            }
+                            if approved
+                            else None,
+                            "basis": ("Synthetic fixture; no external publication rights claim"),
+                            "reviewed_by": "Test Fixture",
+                            "reviewed_at": "2026-08-03T08:00:00Z",
+                        }
+                    ],
                 },
                 sort_keys=False,
             ),
@@ -629,11 +626,14 @@ def test_storage_operation_mapping_is_total_and_effect_specific(
 ) -> None:
     """Wrong operation mapping must block before payload effects."""
 
-    assert rights_actions_for_storage_operation(
-        operation,
-        backend=backend,
-        visibility=visibility,
-    ) == expected
+    assert (
+        rights_actions_for_storage_operation(
+            operation,
+            backend=backend,
+            visibility=visibility,
+        )
+        == expected
+    )
 
 
 @pytest.mark.parametrize(
@@ -669,10 +669,7 @@ def test_effect_operation_source_inventory_is_closed() -> None:
     observed: set[str] = set()
     for relative in relatives:
         source = (
-            Path(__file__).resolve().parents[1]
-            / "scripts"
-            / "rki_pipeline"
-            / relative
+            Path(__file__).resolve().parents[1] / "scripts" / "rki_pipeline" / relative
         ).read_text(encoding="utf-8")
         for node in ast.walk(ast.parse(source)):
             if not isinstance(node, ast.Call):

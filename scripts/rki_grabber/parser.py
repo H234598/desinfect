@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Pure HTML and metadata parsers extracted from the original RKI grabber."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -19,9 +20,7 @@ from scripts.rki_grabber.models import (
 from scripts.rki_pipeline.documents import DocumentIdentityError, bitstream_identity
 from scripts.rki_pipeline.paths import DocumentPathError, DocumentType, canonical_document_paths
 
-HANDLE_PATH_RE = re.compile(
-    r"^/handle/(?P<handle>176904/[0-9]+(?:\.[0-9]+)?)/?$"
-)
+HANDLE_PATH_RE = re.compile(r"^/handle/(?P<handle>176904/[0-9]+(?:\.[0-9]+)?)/?$")
 PDF_PATH_RE = re.compile(
     r"/bitstream/handle/176904/[0-9]+(?:\.[0-9]+)?/.+\.pdf$",
     re.IGNORECASE,
@@ -138,9 +137,7 @@ def extract_submission_item_links(
             continue
         text = anchor.get_text(" ", strip=True)
         if not (
-            ISO_DATE_RE.search(text)
-            or "Epidemiologisches Bulletin" in text
-            or YEAR_RE.search(text)
+            ISO_DATE_RE.search(text) or "Epidemiologisches Bulletin" in text or YEAR_RE.search(text)
         ):
             continue
         found[url] = handle
@@ -155,9 +152,7 @@ def find_next_page(html: str, *, current_url: str) -> str | None:
         rel_value = anchor.get("rel", [])
         rel = " ".join(rel_value) if isinstance(rel_value, list) else str(rel_value)
         class_value = anchor.get("class", [])
-        classes = (
-            " ".join(class_value) if isinstance(class_value, list) else str(class_value)
-        )
+        classes = " ".join(class_value) if isinstance(class_value, list) else str(class_value)
         text = anchor.get_text(" ", strip=True).lower()
         if (
             "next" in rel.lower()

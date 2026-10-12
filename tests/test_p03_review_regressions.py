@@ -1,4 +1,5 @@
 """Regression tests for the actionable PR #7 review findings."""
+
 from __future__ import annotations
 
 import fcntl
@@ -147,9 +148,7 @@ def test_filtered_listing_link_does_not_create_false_pagination_failure() -> Non
             excluded_handles={"176904/1996"},
         )
     )
-    assert items == [
-        ("176904/12345.2", f"{BASE}/handle/176904/12345.2")
-    ]
+    assert items == [("176904/12345.2", f"{BASE}/handle/176904/12345.2")]
 
 
 def test_download_fails_fast_when_target_lock_is_held(tmp_path: Path) -> None:
@@ -202,8 +201,5 @@ def test_api_documentation_assigns_schema_validation_to_callers() -> None:
     """Documentation must not claim that to_dict() performs validation."""
 
     api = (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
-    assert (
-        "to_dict()` liefert ausschließlich JSON-kompatible Werte und validiert"
-        not in api
-    )
+    assert "to_dict()` liefert ausschließlich JSON-kompatible Werte und validiert" not in api
     assert "Schema-Validierung" in api

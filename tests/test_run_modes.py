@@ -1,4 +1,5 @@
 """TDD contract for strict plan/materialize/apply isolation."""
+
 from __future__ import annotations
 
 import subprocess
@@ -54,11 +55,7 @@ def test_mode_matrix(tmp_path: Path, mode: RunMode, effect: EffectKind, allowed:
         mode,
         temp_root=temp_root if mode is RunMode.MATERIALIZE else None,
     )
-    target = (
-        (temp_root / "artifact").as_posix()
-        if effect is EffectKind.TEMP_FILE
-        else "artifact"
-    )
+    target = (temp_root / "artifact").as_posix() if effect is EffectKind.TEMP_FILE else "artifact"
     if allowed:
         ledger.record(effect, target)
         assert ledger.events[-1].kind is effect

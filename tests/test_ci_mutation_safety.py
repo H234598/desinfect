@@ -1,4 +1,5 @@
 """Regression tests for Variant-B GitHub Actions mutation safety."""
+
 from __future__ import annotations
 
 from pathlib import Path

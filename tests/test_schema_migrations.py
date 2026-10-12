@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from copy import deepcopy
@@ -8,7 +7,11 @@ from pathlib import Path
 import pytest
 
 from scripts.rki_pipeline.documents import bitstream_identity
-from scripts.rki_pipeline.schema_registry import SchemaContractError, migrate_document, validate_document
+from scripts.rki_pipeline.schema_registry import (
+    SchemaContractError,
+    migrate_document,
+    validate_document,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -125,8 +128,7 @@ def test_source_manifest_v1_2_migration_derives_exact_source_not_artifact_hash()
     assert migrated["rights"]["approval_key"] == {
         "source_id": "rki:176904/12345.2",
         "canonical_url": (
-            "https://edoc.rki.de/bitstream/handle/176904/12345.2/"
-            "issue.pdf?sequence=2"
+            "https://edoc.rki.de/bitstream/handle/176904/12345.2/issue.pdf?sequence=2"
         ),
         "version_or_bitstream": (
             "rki-bitstream-ca16f3bf368deddef0cc580b31c0105db58edcfd486fa689a8860cb8aea67176"
@@ -139,14 +141,9 @@ def test_source_manifest_publish_requires_cleared_components() -> None:
     """Persisted publish authority must retain the component-review gate."""
 
     payload = json.loads(
-        (
-            ROOT
-            / "tests"
-            / "fixtures"
-            / "manifests"
-            / "Quellen"
-            / "manifest.jsonl"
-        ).read_text(encoding="utf-8")
+        (ROOT / "tests" / "fixtures" / "manifests" / "Quellen" / "manifest.jsonl").read_text(
+            encoding="utf-8"
+        )
     )
     payload["rights"]["allowed_actions"].insert(-1, "publish")
     payload["rights"]["attribution"] = {

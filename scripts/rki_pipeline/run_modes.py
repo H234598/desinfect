@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Strict run modes, effect ledger, and repository side-effect snapshots."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -88,14 +89,11 @@ class EffectLedger:
         if not isinstance(kind, EffectKind):
             raise ValueError("kind muss ein EffectKind sein")
         if kind not in _ALLOWED_EFFECTS[self.mode]:
-            raise ModeViolation(
-                f"Effekt {kind.value} ist im Modus {self.mode.value} verboten"
-            )
+            raise ModeViolation(f"Effekt {kind.value} ist im Modus {self.mode.value} verboten")
         if type(target) is not str or not target or "\x00" in target:
             raise ValueError("Effektziel muss eine nichtleere Zeichenkette sein")
         if sha256 is not None and (
-            len(sha256) != 64
-            or any(character not in "0123456789abcdef" for character in sha256)
+            len(sha256) != 64 or any(character not in "0123456789abcdef" for character in sha256)
         ):
             raise ValueError("sha256 muss ein kleingeschriebener SHA-256 sein")
         if size is not None and (type(size) is not int or size < 0):
@@ -135,9 +133,7 @@ class EffectLedger:
 
         selected = set(kinds)
         return frozenset(
-            event.target
-            for event in self.events
-            if not selected or event.kind in selected
+            event.target for event in self.events if not selected or event.kind in selected
         )
 
 
@@ -163,9 +159,7 @@ def _git(root: Path, *arguments: str, check: bool = True) -> bytes:
             capture_output=True,
         ).stdout
     except (OSError, subprocess.CalledProcessError) as exc:
-        raise ModeViolation(
-            f"Git-Snapshot fehlgeschlagen: {' '.join(arguments)}"
-        ) from exc
+        raise ModeViolation(f"Git-Snapshot fehlgeschlagen: {' '.join(arguments)}") from exc
 
 
 def _sha256(path: Path) -> str | None:
@@ -238,12 +232,7 @@ def _nul_paths(payload: bytes) -> frozenset[str]:
 def _dirty_snapshot(root: Path, worktree: bytes) -> tuple[tuple[str, str | None], ...]:
     """Fingerprint every currently dirty/untracked path, including prior dirt."""
 
-    return tuple(
-        sorted(
-            (path, _fingerprint(root / path))
-            for path in _status_paths(worktree)
-        )
-    )
+    return tuple(sorted((path, _fingerprint(root / path)) for path in _status_paths(worktree)))
 
 
 def _staged_snapshot(root: Path) -> tuple[tuple[str, str | None], ...]:
@@ -315,11 +304,7 @@ class SideEffectGuard:
             raise ValueError("Ledger- und Guard-Modus müssen übereinstimmen")
         self.repository_root = Path(repository_root).resolve()
         self.mode = mode
-        self.temp_root = (
-            None
-            if temp_root is None
-            else Path(temp_root).resolve()
-        )
+        self.temp_root = None if temp_root is None else Path(temp_root).resolve()
         self.ledger = ledger
         self.protected_paths = protected_paths
         self._before: RepositorySnapshot | None = None
@@ -364,9 +349,7 @@ class SideEffectGuard:
         before = dict(before_rows)
         after = dict(after_rows)
         return frozenset(
-            path
-            for path in set(before) | set(after)
-            if before.get(path) != after.get(path)
+            path for path in set(before) | set(after) if before.get(path) != after.get(path)
         )
 
     @staticmethod
@@ -384,9 +367,13 @@ class SideEffectGuard:
                 details.append("nicht registriert: " + ", ".join(missing))
             if extra:
                 details.append("ohne tatsächlichen Effekt: " + ", ".join(extra))
-            raise ModeViolation(f"{label} stimmt nicht exakt mit dem Ledger überein ({'; '.join(details)})")
+            raise ModeViolation(
+                f"{label} stimmt nicht exakt mit dem Ledger überein ({'; '.join(details)})"
+            )
 
-    def _committed_paths(self, before: RepositorySnapshot, after: RepositorySnapshot) -> frozenset[str]:
+    def _committed_paths(
+        self, before: RepositorySnapshot, after: RepositorySnapshot
+    ) -> frozenset[str]:
         if before.head == after.head:
             return frozenset()
         return _nul_paths(
@@ -417,16 +404,10 @@ class SideEffectGuard:
             or bool(protected_changed)
         )
         if self.mode in {RunMode.PLAN, RunMode.MATERIALIZE} and repository_changed:
-            raise ModeViolation(
-                f"Repositoryzustand wurde im Modus {self.mode.value} verändert"
-            )
+            raise ModeViolation(f"Repositoryzustand wurde im Modus {self.mode.value} verändert")
 
         if self.mode is RunMode.APPLY:
-            actual_commits = (
-                frozenset({after.head})
-                if before.head != after.head
-                else frozenset()
-            )
+            actual_commits = frozenset({after.head}) if before.head != after.head else frozenset()
             self._require_exact(
                 label="Git-Commit/HEAD",
                 actual=actual_commits,
@@ -454,9 +435,7 @@ class SideEffectGuard:
                     + ", ".join(missing_files)
                 )
 
-            missing_protected = sorted(
-                protected_changed - self.ledger.targets(EffectKind.STATUS)
-            )
+            missing_protected = sorted(protected_changed - self.ledger.targets(EffectKind.STATUS))
             if missing_protected:
                 raise ModeViolation(
                     "Geschützter Statuspfad ist nicht als STATUS im Ledger registriert: "
@@ -484,6 +463,5 @@ class SideEffectGuard:
             missing_temp = sorted(changed_temp - registered_temp)
             if missing_temp:
                 raise ModeViolation(
-                    "Temporäre Änderung ist nicht im Ledger registriert: "
-                    + ", ".join(missing_temp)
+                    "Temporäre Änderung ist nicht im Ledger registriert: " + ", ".join(missing_temp)
                 )

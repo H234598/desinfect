@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Validate the public status and the strict three-clock contract."""
+
 from __future__ import annotations
 
 import json
@@ -21,7 +22,10 @@ def validate() -> None:
     if not required.issubset(pipeline):
         raise ValueError("status.json trennt die drei Uhren nicht vollständig")
     corpus = payload["corpus"]
-    if "analysis_corpus_complete_through_year" not in corpus or "public_mirror_complete_through_year" not in corpus:
+    if (
+        "analysis_corpus_complete_through_year" not in corpus
+        or "public_mirror_complete_through_year" not in corpus
+    ):
         raise ValueError("ADR-014=B verlangt getrennte Analyse- und Spiegelvollständigkeit")
 
 

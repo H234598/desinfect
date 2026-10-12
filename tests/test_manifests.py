@@ -373,9 +373,7 @@ def _second_bitstream() -> tuple[dict[str, object], dict[str, object], dict[str,
         bitstream_id=bitstream.bitstream_id,
         bitstream_url=url,
         bitstream_version=3,
-        decision_sha256=(
-            "ee2186700bf54e827a3bb704e1c5cf2677bccdf1108a17a70b95dcb0fa7eecb9"
-        ),
+        decision_sha256=("ee2186700bf54e827a3bb704e1c5cf2677bccdf1108a17a70b95dcb0fa7eecb9"),
         same_content_as=[BITSTREAM_ID],
     )
     source["rights"]["approval_key"] = {
@@ -515,9 +513,9 @@ def test_graph_catalog_validation_does_not_authorize_visibility_effects(
         f'    source_sha256: "{SOURCE_SHA256}"\n'
         '    state: "internal_only"\n'
         '    mode: "origin_link"\n'
-        '    allowed_actions: []\n'
+        "    allowed_actions: []\n"
         '    components_state: "unknown"\n'
-        '    attribution: null\n'
+        "    attribution: null\n"
         '    basis: "Synthetic internal-only manifest test"\n'
         '    reviewed_by: "Test Reviewer"\n'
         '    reviewed_at: "2026-08-03T16:00:00Z"\n',
@@ -847,7 +845,10 @@ def test_catalog_materialization_replaces_corrupt_snapshot(tmp_path: Path) -> No
     assert repaired.changed is True
     assert repaired.rendered == first.rendered
     assert len(ledger.events) == 5
-    assert manifests.load_manifest_catalog(repaired.root, authorizer=_authorizer()).rendered == first.rendered
+    assert (
+        manifests.load_manifest_catalog(repaired.root, authorizer=_authorizer()).rendered
+        == first.rendered
+    )
 
 
 def test_concurrent_catalog_materializers_are_serialized(

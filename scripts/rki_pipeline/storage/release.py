@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Release asset adapter without direct GitHub SDK or network dependencies."""
+
 from __future__ import annotations
 
 from scripts.rki_pipeline.run_modes import EffectKind

@@ -1,4 +1,5 @@
 """Contracts for deterministic, rights-bound archive inputs."""
+
 from __future__ import annotations
 
 import hashlib
@@ -140,7 +141,9 @@ def _prepared_entries(
             ),
         )
 
-    return prepared("PDF/first.pdf", b"first payload"), prepared("PDF/second.pdf", b"second payload")
+    return prepared("PDF/first.pdf", b"first payload"), prepared(
+        "PDF/second.pdf", b"second payload"
+    )
 
 
 def _spec(
@@ -217,11 +220,14 @@ def test_build_archive_pilot_cli_is_offline_and_deterministic(
         + "\n"
     )
     assert list(temp_parent.iterdir()) == []
-    assert capture_repository_snapshot(
-        REPOSITORY_ROOT,
-        protected_paths=("status.json",),
-        temp_root=None,
-    ) == before
+    assert (
+        capture_repository_snapshot(
+            REPOSITORY_ROOT,
+            protected_paths=("status.json",),
+            temp_root=None,
+        )
+        == before
+    )
 
 
 @pytest.mark.parametrize(
@@ -492,9 +498,7 @@ def test_archive_spec_rejects_malformed_archive_id(archive_id: str) -> None:
         ("period", "p" * 41),
     ),
 )
-def test_archive_spec_rejects_sidecar_incompatible_identity_fields(
-    field: str, value: str
-) -> None:
+def test_archive_spec_rejects_sidecar_incompatible_identity_fields(field: str, value: str) -> None:
     with pytest.raises(ValueError, match=field):
         _spec((), **{field: value})
 
@@ -530,13 +534,16 @@ def test_archive_result_contracts_reject_wrong_types(tmp_path: Path) -> None:
         size=1,
         entries=("PDF/first.pdf",),
     )
-    assert ArchiveInspection(
-        path=tmp_path / "archive.zip",
-        input_fingerprint="a" * 64,
-        output_sha256="b" * 64,
-        size=1,
-        entries=("PDF/first.pdf",),
-    ).entries == build.entries
+    assert (
+        ArchiveInspection(
+            path=tmp_path / "archive.zip",
+            input_fingerprint="a" * 64,
+            output_sha256="b" * 64,
+            size=1,
+            entries=("PDF/first.pdf",),
+        ).entries
+        == build.entries
+    )
     with pytest.raises(ValueError, match="changed"):
         ArchiveMaterialization(
             root=tmp_path,
@@ -667,7 +674,9 @@ def test_deterministic_build_supports_nfc_unicode_payload_paths(
         )
 
 
-@pytest.mark.parametrize("path", ("../escape.pdf", "/absolute.pdf", "PDF\\bad.pdf", "PDF/nested.ZIP"))
+@pytest.mark.parametrize(
+    "path", ("../escape.pdf", "/absolute.pdf", "PDF\\bad.pdf", "PDF/nested.ZIP")
+)
 def test_security_validator_rejects_unsafe_or_nested_member_names(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str
 ) -> None:
@@ -685,7 +694,9 @@ def test_security_validator_rejects_unsafe_or_nested_member_names(
         validate_archive(
             tmp_path / "unsafe.zip",
             expected_fingerprint=build.input_fingerprint,
-            expected_output_sha256=hashlib.sha256((tmp_path / "unsafe.zip").read_bytes()).hexdigest(),
+            expected_output_sha256=hashlib.sha256(
+                (tmp_path / "unsafe.zip").read_bytes()
+            ).hexdigest(),
         )
 
 
@@ -697,7 +708,9 @@ def test_security_validator_rejects_case_or_nfc_collisions(
 ) -> None:
     entries = _prepared_entries(tmp_path, monkeypatch)
     archive_path = tmp_path / "archive.zip"
-    build = build_archive(_spec(entries), archive_path, authorizer=_authorizer(tmp_path, monkeypatch))
+    build = build_archive(
+        _spec(entries), archive_path, authorizer=_authorizer(tmp_path, monkeypatch)
+    )
     with ZipFile(archive_path, "a", compression=ZIP_STORED) as archive:
         source = archive.getinfo("PDF/first.pdf")
         info = ZipInfo(collision, source.date_time)
@@ -767,12 +780,16 @@ def test_security_validator_rejects_mixed_manifest_visibility(
 ) -> None:
     entry, _ = _prepared_entries(tmp_path, monkeypatch)
     archive_path = tmp_path / "archive.zip"
-    build = build_archive(_spec((entry,)), archive_path, authorizer=_authorizer(tmp_path, monkeypatch))
+    build = build_archive(
+        _spec((entry,)), archive_path, authorizer=_authorizer(tmp_path, monkeypatch)
+    )
     with ZipFile(archive_path) as archive:
         manifest = json.loads(archive.read("MANIFEST.json"))
     manifest["visibility"] = "internal"
     tampered = tmp_path / "mixed.zip"
-    _rewrite_archive(archive_path, tampered, replacements={"MANIFEST.json": _canonical_json(manifest)})
+    _rewrite_archive(
+        archive_path, tampered, replacements={"MANIFEST.json": _canonical_json(manifest)}
+    )
 
     with pytest.raises(ArchiveIntegrityError, match="Fingerprint|Sichtbarkeit"):
         validate_archive(
@@ -787,7 +804,9 @@ def test_security_validator_rejects_encrypted_flag(
 ) -> None:
     entry, _ = _prepared_entries(tmp_path, monkeypatch)
     archive_path = tmp_path / "archive.zip"
-    build = build_archive(_spec((entry,)), archive_path, authorizer=_authorizer(tmp_path, monkeypatch))
+    build = build_archive(
+        _spec((entry,)), archive_path, authorizer=_authorizer(tmp_path, monkeypatch)
+    )
     _set_encrypted_flag(archive_path)
 
     with pytest.raises(ArchiveSecurityError, match="verschlüsselt"):
@@ -816,7 +835,9 @@ def test_security_validator_rejects_unexpected_member_metadata(
 ) -> None:
     entry, _ = _prepared_entries(tmp_path, monkeypatch)
     archive_path = tmp_path / "archive.zip"
-    build = build_archive(_spec((entry,)), archive_path, authorizer=_authorizer(tmp_path, monkeypatch))
+    build = build_archive(
+        _spec((entry,)), archive_path, authorizer=_authorizer(tmp_path, monkeypatch)
+    )
 
     def mutate(info: ZipInfo) -> None:
         if info.filename == entry.path:
@@ -854,7 +875,9 @@ def test_security_validator_rejects_path_swap_after_hash(
 ) -> None:
     entry, _ = _prepared_entries(tmp_path, monkeypatch)
     archive_path = tmp_path / "archive.zip"
-    build = build_archive(_spec((entry,)), archive_path, authorizer=_authorizer(tmp_path, monkeypatch))
+    build = build_archive(
+        _spec((entry,)), archive_path, authorizer=_authorizer(tmp_path, monkeypatch)
+    )
     replacement = tmp_path / "replacement.zip"
     replacement.write_bytes(archive_path.read_bytes())
     original_zip_file = archive_module.ZipFile
@@ -883,7 +906,9 @@ def test_security_validator_rejects_growth_after_hash_over_limit(
 ) -> None:
     entry, _ = _prepared_entries(tmp_path, monkeypatch)
     archive_path = tmp_path / "archive.zip"
-    build = build_archive(_spec((entry,)), archive_path, authorizer=_authorizer(tmp_path, monkeypatch))
+    build = build_archive(
+        _spec((entry,)), archive_path, authorizer=_authorizer(tmp_path, monkeypatch)
+    )
     original_size = archive_path.stat().st_size
     original_zip_file = archive_module.ZipFile
     grown = False
@@ -912,7 +937,9 @@ def test_security_validator_rejects_duplicate_member(
 ) -> None:
     entry, _ = _prepared_entries(tmp_path, monkeypatch)
     archive_path = tmp_path / "archive.zip"
-    build = build_archive(_spec((entry,)), archive_path, authorizer=_authorizer(tmp_path, monkeypatch))
+    build = build_archive(
+        _spec((entry,)), archive_path, authorizer=_authorizer(tmp_path, monkeypatch)
+    )
     with pytest.warns(UserWarning, match="Duplicate name"):
         with ZipFile(archive_path, "a") as archive:
             archive.writestr(archive.getinfo(entry.path), b"duplicate")
@@ -932,11 +959,23 @@ def test_security_builder_and_validator_enforce_size_limits(
     spec = _spec(entries)
     authorizer = _authorizer(tmp_path, monkeypatch)
     with pytest.raises(ArchiveSecurityError, match="Anzahl"):
-        build_archive(spec, tmp_path / "count.zip", authorizer=authorizer, limits=ArchiveLimits(max_entries=1))
+        build_archive(
+            spec, tmp_path / "count.zip", authorizer=authorizer, limits=ArchiveLimits(max_entries=1)
+        )
     with pytest.raises(ArchiveSecurityError, match="Mitglied"):
-        build_archive(spec, tmp_path / "member.zip", authorizer=authorizer, limits=ArchiveLimits(max_member_bytes=10))
+        build_archive(
+            spec,
+            tmp_path / "member.zip",
+            authorizer=authorizer,
+            limits=ArchiveLimits(max_member_bytes=10),
+        )
     with pytest.raises(ArchiveSecurityError, match="Gesamt"):
-        build_archive(spec, tmp_path / "total.zip", authorizer=authorizer, limits=ArchiveLimits(max_total_bytes=20))
+        build_archive(
+            spec,
+            tmp_path / "total.zip",
+            authorizer=authorizer,
+            limits=ArchiveLimits(max_total_bytes=20),
+        )
 
     archive_path = tmp_path / "archive.zip"
     build = build_archive(spec, archive_path, authorizer=authorizer)
@@ -1062,7 +1101,9 @@ def test_security_validator_rejects_bad_crc_without_extraction(
 ) -> None:
     entry, _ = _prepared_entries(tmp_path, monkeypatch)
     archive_path = tmp_path / "archive.zip"
-    build = build_archive(_spec((entry,)), archive_path, authorizer=_authorizer(tmp_path, monkeypatch))
+    build = build_archive(
+        _spec((entry,)), archive_path, authorizer=_authorizer(tmp_path, monkeypatch)
+    )
     payload = archive_path.read_bytes().replace(b"first payload", b"First payload", 1)
     assert payload != archive_path.read_bytes()
     archive_path.write_bytes(payload)
@@ -1437,7 +1478,9 @@ def test_materialization_stage_failure_preserves_old_bundle_and_ledger(
             authorizer=_authorizer(tmp_path, monkeypatch),
         )
 
-    assert {path.name: path.read_bytes() for path in first.root.iterdir() if path.is_file()} == before
+    assert {
+        path.name: path.read_bytes() for path in first.root.iterdir() if path.is_file()
+    } == before
     assert len(ledger.events) == event_count
 
 
@@ -1495,7 +1538,9 @@ def test_materialization_noop_rechecks_current_rights(
             authorizer=authorizer,
         )
 
-    assert {path.name: path.read_bytes() for path in first.root.iterdir() if path.is_file()} == before
+    assert {
+        path.name: path.read_bytes() for path in first.root.iterdir() if path.is_file()
+    } == before
     assert ledger.events == []
 
 
@@ -1601,7 +1646,9 @@ def test_materialization_second_record_failure_preserves_old_bundle_and_ledger(
             authorizer=_authorizer(tmp_path, monkeypatch),
         )
 
-    assert {path.name: path.read_bytes() for path in first.root.iterdir() if path.is_file()} == before
+    assert {
+        path.name: path.read_bytes() for path in first.root.iterdir() if path.is_file()
+    } == before
     assert ledger.events == []
 
 
@@ -1621,9 +1668,7 @@ def test_materialization_post_commit_cleanup_failure_keeps_new_bundle_and_ledger
     ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
     real_remove_tree_at = staging_module.remove_tree_at
 
-    def fail_backup_cleanup(
-        parent_fd: int, name: str, *, require_sentinel: bool = True
-    ) -> None:
+    def fail_backup_cleanup(parent_fd: int, name: str, *, require_sentinel: bool = True) -> None:
         if name == ".out.backup":
             raise OSError("injected post-commit cleanup failure")
         real_remove_tree_at(parent_fd, name, require_sentinel=require_sentinel)

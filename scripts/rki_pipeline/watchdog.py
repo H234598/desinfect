@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Pure internal-watchdog planning and status projections."""
+
 from __future__ import annotations
 
 import argparse
@@ -107,9 +108,7 @@ def _observed_clock(value: object, name: str, *, now: datetime) -> datetime | No
     return clock
 
 
-def _pipeline_clocks(
-    status: dict[str, Any], *, now: datetime
-) -> dict[str, datetime | None]:
+def _pipeline_clocks(status: dict[str, Any], *, now: datetime) -> dict[str, datetime | None]:
     return {
         field: _observed_clock(status["pipeline"][field], field, now=now)
         for field, _label in _PIPELINE_CLOCKS
@@ -141,8 +140,7 @@ def _commit_text(
     repeated: bool,
 ) -> tuple[str, str]:
     fault = any(
-        cause.startswith("last_successful_run")
-        or cause.startswith("last_successful_write")
+        cause.startswith("last_successful_run") or cause.startswith("last_successful_write")
         for cause in causes
     )
     title = (

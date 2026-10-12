@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Validate rule-based traceability for all 40 MUST and 169 V2 IDs."""
+
 from __future__ import annotations
 
 import json

@@ -66,13 +66,19 @@ def test_berlin_period_boundaries_have_stable_epochs() -> None:
     month = period_ref(TaskKind.MONTH, "2026-07")
     year = period_ref(TaskKind.YEAR, "2025")
     assert (week.start, week.end, week.source_date_epoch) == (
-        date(2025, 12, 22), date(2025, 12, 28), 1766962800
+        date(2025, 12, 22),
+        date(2025, 12, 28),
+        1766962800,
     )
     assert (month.start, month.end, month.source_date_epoch) == (
-        date(2026, 7, 1), date(2026, 7, 31), 1785535200
+        date(2026, 7, 1),
+        date(2026, 7, 31),
+        1785535200,
     )
     assert (year.start, year.end, year.source_date_epoch) == (
-        date(2025, 1, 1), date(2025, 12, 31), 1767222000
+        date(2025, 1, 1),
+        date(2025, 12, 31),
+        1767222000,
     )
 
 
@@ -165,9 +171,7 @@ _DECISION_SHA256 = "d" * 64
 
 def _rights_entry_lines(source_id: str, source_sha256: str) -> tuple[str, ...]:
     handle = source_id.removeprefix("rki:")
-    canonical_url = (
-        f"https://edoc.rki.de/bitstream/handle/{handle}/source.pdf?sequence=1"
-    )
+    canonical_url = f"https://edoc.rki.de/bitstream/handle/{handle}/source.pdf?sequence=1"
     return (
         f"  - source_id: {source_id}",
         f"    canonical_url: {canonical_url}",
@@ -361,9 +365,7 @@ def test_plan_selects_current_documents_and_separates_formats(tmp_path: Path) ->
         for entry in archive.spec.entries
     )
     assert {
-        entry.path.split("/", 1)[0]
-        for archive in period.archives
-        for entry in archive.spec.entries
+        entry.path.split("/", 1)[0] for archive in period.archives for entry in archive.spec.entries
     } == {"Markdown", "PDF"}
 
 
@@ -542,9 +544,7 @@ def test_year_archive_contains_payloads_not_month_zips(tmp_path: Path) -> None:
     )
 
 
-def _prepared_for_graph(
-    tmp_path: Path, graph: ManifestGraph
-) -> dict[str, PreparedObject]:
+def _prepared_for_graph(tmp_path: Path, graph: ManifestGraph) -> dict[str, PreparedObject]:
     return {
         reference["relative_path"]: PreparedObject(
             artifact_id=reference["artifact_id"],
@@ -740,9 +740,7 @@ def _period_builds(
                 "decisions:",
                 *(
                     line
-                    for item in {
-                        (entry.source_id, entry.source_sha256) for entry in prepared
-                    }
+                    for item in {(entry.source_id, entry.source_sha256) for entry in prepared}
                     for line in _rights_entry_lines(*item)
                 ),
                 "",
@@ -784,9 +782,7 @@ def _month_period(tmp_path: Path, *, markdown: bool = True):
     return plan_period_archives(**_plan_inputs(tmp_path, markdown=markdown)).periods[0]
 
 
-def _month_aggregation(
-    tmp_path: Path, *, markdown: bool = True, weeks: tuple[str, ...] = ()
-):
+def _month_aggregation(tmp_path: Path, *, markdown: bool = True, weeks: tuple[str, ...] = ()):
     inputs = _plan_inputs(tmp_path, markdown=markdown)
     inputs["due_tasks"] = (
         due(TaskKind.MONTH, "2026-07"),
@@ -802,7 +798,9 @@ def _month_from(aggregation):
 def _with_month(aggregation, month):
     replacement = replace(
         aggregation,
-        periods=tuple(month if plan.period.kind is TaskKind.MONTH else plan for plan in aggregation.periods),
+        periods=tuple(
+            month if plan.period.kind is TaskKind.MONTH else plan for plan in aggregation.periods
+        ),
     )
     return replace(
         replacement,
@@ -992,11 +990,7 @@ def test_period_manifest_rejects_archive_build_drift(
         drifted = dict(builds)
         drifted[archive_id] = replace(
             build,
-            **{
-                field: (
-                    "f" * 64 if field != "size" else build.size + 1
-                )
-            },
+            **{field: ("f" * 64 if field != "size" else build.size + 1)},
         )
         with pytest.raises(PeriodManifestError, match=field):
             render_period_manifest(period, drifted)
@@ -1211,7 +1205,9 @@ def _materialize_authorizer(
         encoding="utf-8",
     )
     monkeypatch.setattr(rights, "DEFAULT_REGISTER_PATH", register)
-    authorizer = RightsStorageAuthorizer(rights.load_rights_authority(), rights.load_rights_policy())
+    authorizer = RightsStorageAuthorizer(
+        rights.load_rights_authority(), rights.load_rights_policy()
+    )
     decisions = {
         (decision.source_id, decision.source_sha256): decision
         for decision in rights.load_authority_register(authorizer.authority).entries
@@ -1220,9 +1216,7 @@ def _materialize_authorizer(
     for item in prepared:
         prepared_by_id[item.artifact_id] = replace(
             item,
-            decision_sha256=decisions[
-                (item.source_id, item.source_sha256)
-            ].decision_sha256,
+            decision_sha256=decisions[(item.source_id, item.source_sha256)].decision_sha256,
         )
     periods = []
     for period in plan.periods:
@@ -1347,17 +1341,19 @@ def test_period_archive_positive_authorization_precedes_first_write(
         backend: object = None,
     ) -> None:
         del self
-        events.append((
-            "authorize",
+        events.append(
             (
-                operation,
-                rights_actions_for_storage_operation(
+                "authorize",
+                (
                     operation,
-                    backend=backend,
-                    visibility=subject.visibility,
+                    rights_actions_for_storage_operation(
+                        operation,
+                        backend=backend,
+                        visibility=subject.visibility,
+                    ),
                 ),
-            ),
-        ))
+            )
+        )
 
     def track_write(*args: object, **kwargs: object):
         events.append(("write", None))
@@ -1424,9 +1420,10 @@ def test_inspect_period_publication_validates_manifest_and_bundles(
     assert type(inspection) is PeriodPublicationInspection
     assert inspection.period.value == "2026-W28"
     assert inspection.manifest["kind"] == "week"
-    assert inspection.manifest_sha256 == hashlib.sha256(
-        stable_json_dumps(inspection.manifest).encode("utf-8")
-    ).hexdigest()
+    assert (
+        inspection.manifest_sha256
+        == hashlib.sha256(stable_json_dumps(inspection.manifest).encode("utf-8")).hexdigest()
+    )
 
 
 def test_inspect_period_publication_rejects_bundle_path_swap_after_validation(
@@ -1613,7 +1610,9 @@ def test_month_only_rebuild_preserves_and_links_valid_published_week(
         ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
         authorizer=weekly_authorizer,
     )
-    weekly_zip = next(item.build.path for item in first.archives if item.archive_id.endswith("-pdf"))
+    weekly_zip = next(
+        item.build.path for item in first.archives if item.archive_id.endswith("-pdf")
+    )
     weekly_bytes = weekly_zip.read_bytes()
 
     monthly_inputs = _plan_inputs(tmp_path)
@@ -1838,7 +1837,9 @@ def test_materialize_rejects_forged_period_plan_contract(
     plan, authorizer, _first, _ledger = _materialize_fixture(tmp_path, monkeypatch)
     period = plan.periods[0]
     if mutation == "manifest":
-        forged_period = replace(period, manifest_path="rki/Bulletins/Manifeste/Archive/year/2026.json")
+        forged_period = replace(
+            period, manifest_path="rki/Bulletins/Manifeste/Archive/year/2026.json"
+        )
     else:
         archive = period.archives[0]
         if mutation == "entry":
@@ -1847,7 +1848,9 @@ def test_materialize_rejects_forged_period_plan_contract(
             spec = replace(archive.spec, period="2026-06")
         else:
             spec = replace(archive.spec, source_date_epoch=archive.spec.source_date_epoch + 1)
-        forged_period = replace(period, archives=(replace(archive, spec=spec), *period.archives[1:]))
+        forged_period = replace(
+            period, archives=(replace(archive, spec=spec), *period.archives[1:])
+        )
     forged = replace(plan, periods=(forged_period,))
     forged = replace(
         forged,
@@ -1883,7 +1886,9 @@ def test_materialize_resolves_relative_target_to_absolute_final_paths(
 
     assert result.root == (tmp_path / "relative-products").resolve()
     assert result.root.is_dir()
-    assert all(path.is_absolute() and path.exists() for path in result.index_paths + result.manifest_paths)
+    assert all(
+        path.is_absolute() and path.exists() for path in result.index_paths + result.manifest_paths
+    )
 
 
 def test_materialize_records_final_events_after_durable_cleanup_failure(
@@ -2069,7 +2074,10 @@ def test_aggregate_cli_plan_is_deterministic_and_read_only(
         "2025",
     ]
     assert first == second
-    assert capture_repository_snapshot(ROOT, protected_paths=("status.json",), temp_root=None) == before
+    assert (
+        capture_repository_snapshot(ROOT, protected_paths=("status.json",), temp_root=None)
+        == before
+    )
 
 
 def test_aggregate_cli_fixture_rejects_stale_authority_source(
@@ -2162,9 +2170,10 @@ def test_aggregate_cli_rejects_unknown_or_effectful_switches(
 ) -> None:
     """Catches output, repository, backend, network, and token escape hatches."""
 
-    assert cli.main(
-        ["aggregate", "--as-of", "2026-01-01T05:00:00Z", "--mode", "plan", argument, "x"]
-    ) == 2
+    assert (
+        cli.main(["aggregate", "--as-of", "2026-01-01T05:00:00Z", "--mode", "plan", argument, "x"])
+        == 2
+    )
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "aggregate:" in captured.err
@@ -2178,9 +2187,7 @@ def test_aggregate_cli_redacts_oserror_paths(
 
     monkeypatch.setattr(aggregation_module, "_cli_fixture", fail_fixture)
 
-    assert cli.main(
-        ["aggregate", "--as-of", "2026-01-01T05:00:00Z", "--mode", "plan"]
-    ) == 2
+    assert cli.main(["aggregate", "--as-of", "2026-01-01T05:00:00Z", "--mode", "plan"]) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "aggregate: lokaler Ein-/Ausgabefehler\n"

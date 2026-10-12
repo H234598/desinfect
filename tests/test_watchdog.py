@@ -140,9 +140,7 @@ def test_missing_and_stale_clocks_are_reported_in_stable_order() -> None:
         "last_successful_run_stale",
         "last_successful_write_missing",
     )
-    assert plan.commit_title == (
-        "chore(wachhund): 45 Tage ohne erfolgreichen Schreiblauf erkannt"
-    )
+    assert plan.commit_title == ("chore(wachhund): 45 Tage ohne erfolgreichen Schreiblauf erkannt")
     assert "Trigger: internal-watchdog" in plan.commit_body
     assert "Nächste Fälligkeit: 2026-10-18T04:31:12Z" in plan.commit_body
 
@@ -409,9 +407,7 @@ def test_watchdog_cli_reports_invalid_status_without_traceback(
     status_path = tmp_path / "status.json"
     status_path.write_text("{}\n", encoding="utf-8")
 
-    result = watchdog_main(
-        ["--as-of", DUE, "--mode", "plan", "--status", str(status_path)]
-    )
+    result = watchdog_main(["--as-of", DUE, "--mode", "plan", "--status", str(status_path)])
 
     captured = capsys.readouterr()
     assert result == 1
@@ -427,9 +423,7 @@ def test_watchdog_cli_reports_invalid_utf8_without_traceback(
     status_path = tmp_path / "status.json"
     status_path.write_bytes(b"\xff")
 
-    result = watchdog_main(
-        ["--as-of", DUE, "--mode", "plan", "--status", str(status_path)]
-    )
+    result = watchdog_main(["--as-of", DUE, "--mode", "plan", "--status", str(status_path)])
 
     captured = capsys.readouterr()
     assert result == 1

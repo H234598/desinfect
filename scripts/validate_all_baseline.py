@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Run every P00 baseline validator without external dependencies."""
+
 from __future__ import annotations
 
 import sys
@@ -26,7 +27,9 @@ REQUIRED_P07_RECONCILIATION_PATHS = {
 def validate_p07_reconciliation_paths() -> None:
     """Require the complete P07.3 operator and offline-test surface."""
     missing = sorted(
-        relative for relative in REQUIRED_P07_RECONCILIATION_PATHS if not (ROOT / relative).is_file()
+        relative
+        for relative in REQUIRED_P07_RECONCILIATION_PATHS
+        if not (ROOT / relative).is_file()
     )
     if missing:
         raise ValueError(f"P07.3-Reconciliation-Dateien fehlen: {missing}")

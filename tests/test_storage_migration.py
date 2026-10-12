@@ -1,4 +1,5 @@
 """TDD contract for deterministic, resumable, non-destructive migrations."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
@@ -39,7 +40,11 @@ class MigrationClient:
     def head(self, key: str):
         self.calls.append(("head", key))
         value = self.objects.get(key)
-        return None if value is None else {name: data for name, data in value.items() if name != "payload"}
+        return (
+            None
+            if value is None
+            else {name: data for name, data in value.items() if name != "payload"}
+        )
 
     def put(
         self,
@@ -195,12 +200,15 @@ def test_materialize_and_apply_are_idempotent_and_never_delete_source(
 
     after = plan_migration(source, target)
     assert after.entries[0].state is MigrationState.UNCHANGED
-    assert materialize_migration(
-        after,
-        source,
-        temp_root=temp_root,
-        ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root),
-    ) == ()
+    assert (
+        materialize_migration(
+            after,
+            source,
+            temp_root=temp_root,
+            ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=temp_root),
+        )
+        == ()
+    )
     apply_migration(
         after,
         (),
@@ -376,7 +384,7 @@ def test_legacy_reference_is_plannable_but_export_is_blocked(
             ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path),
         )
 
-    assert not any(call[0] == "get" for call in source_client.calls[len(before_calls):])
+    assert not any(call[0] == "get" for call in source_client.calls[len(before_calls) :])
 
 
 def two_seeded_client() -> MigrationClient:

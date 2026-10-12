@@ -1,4 +1,5 @@
 """P09.4 contracts for bounded Cloudflare validation and deployment."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -107,10 +108,16 @@ def test_manual_main_deploy_runs_staging_before_production() -> None:
     jobs = workflow()["jobs"]
     staging = jobs["deploy_staging"]
     production = jobs["deploy_production"]
-    assert staging["if"] == "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'"
+    assert (
+        staging["if"]
+        == "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'"
+    )
     assert staging["environment"] == {"name": "cloudflare-watchdog-staging"}
     assert production["needs"] == ["validate", "deploy_staging"]
-    assert production["if"] == "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_production"
+    assert (
+        production["if"]
+        == "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_production"
+    )
     assert production["environment"] == {"name": "cloudflare-watchdog-production"}
     assert "--env staging" in named_step(staging, "Deploy staging without cron")["run"]
     assert '--env=""' in named_step(production, "Deploy production with cron")["run"]
@@ -130,7 +137,9 @@ def test_deploy_uses_locked_cli_and_checks_exact_health_version() -> None:
     for name in ("deploy_staging", "deploy_production"):
         health = named_step(jobs[name], "Verify deployed health and version through VPN")
         assert health["env"]["EXPECTED_VERSION"] == "${{ github.sha }}"
-        assert health["env"]["WATCHDOG_HEALTH_URL"] == "${{ secrets.CLOUDFLARE_WATCHDOG_HEALTH_URL }}"
+        assert (
+            health["env"]["WATCHDOG_HEALTH_URL"] == "${{ secrets.CLOUDFLARE_WATCHDOG_HEALTH_URL }}"
+        )
         assert health["run"] == (
             'sh scripts/verify_cloudflare_health_via_vpn.sh --url "$WATCHDOG_HEALTH_URL" '
             '--expected-version "$EXPECTED_VERSION"'
@@ -176,7 +185,11 @@ def test_deploy_runs_vpn_only_for_exact_version_health_verification() -> None:
         assert install["run"].strip() == expected_install
         assert verify["env"] == expected_env
         assert verify["run"] == expected_verify
-        assert steps.index(install) > steps.index(named_step(jobs[name], "Deploy staging without cron") if name == "deploy_staging" else named_step(jobs[name], "Deploy production with cron"))
+        assert steps.index(install) > steps.index(
+            named_step(jobs[name], "Deploy staging without cron")
+            if name == "deploy_staging"
+            else named_step(jobs[name], "Deploy production with cron")
+        )
 
 
 def _write_executable(path: Path, source: str) -> None:
@@ -232,7 +245,7 @@ def _vpn_test_environment(
         )
     _write_executable(
         fake_bin / "sudo",
-        "#!/bin/sh\nif test \"${1:-}\" = -n; then shift; fi\nexec \"$@\"\n",
+        '#!/bin/sh\nif test "${1:-}" = -n; then shift; fi\nexec "$@"\n',
     )
     _write_executable(
         fake_bin / "sleep",
@@ -599,7 +612,9 @@ def test_vpn_health_retries_single_dns_or_tls_failure_line_with_safe_details(
 
     result = _run_vpn_health(
         tmp_path,
-        health_category_sequence=",".join((failure_category, failure_category, failure_category, "ok")),
+        health_category_sequence=",".join(
+            (failure_category, failure_category, failure_category, "ok")
+        ),
         provisioning_deadline_seconds="10",
         provisioning_retry_interval_seconds="7",
         monotonic_seconds_sequence="0,0,0,0,0,0,0",
@@ -673,9 +688,7 @@ def test_vpn_health_rejects_duplicate_category_field_in_one_failure_line(tmp_pat
 def test_vpn_health_cleanup_polling_waits_for_a_delayed_term_exit(tmp_path: Path) -> None:
     """Catches fake retry sleep making cleanup kill a daemon before its TERM grace period."""
 
-    environment = _vpn_test_environment(
-        tmp_path, health_failures="vpn-de.premiumize.me.ovpn"
-    )
+    environment = _vpn_test_environment(tmp_path, health_failures="vpn-de.premiumize.me.ovpn")
     graceful_marker = tmp_path / "graceful-term-exit"
     _write_executable(
         tmp_path / "bin" / "openvpn-daemon",
@@ -944,7 +957,10 @@ def test_vpn_health_stops_for_a_live_pid_with_wrong_identity(tmp_path: Path) -> 
             except ProcessLookupError:
                 pass
         deadline = time.monotonic() + 1
-        while any(Path(f"/proc/{raw_pid}").exists() for raw_pid in wrong_pids) and time.monotonic() < deadline:
+        while (
+            any(Path(f"/proc/{raw_pid}").exists() for raw_pid in wrong_pids)
+            and time.monotonic() < deadline
+        ):
             time.sleep(0.01)
         assert not any(Path(f"/proc/{raw_pid}").exists() for raw_pid in wrong_pids)
 
@@ -979,7 +995,9 @@ def test_vpn_health_kills_term_ignoring_daemon_before_next_country(tmp_path: Pat
         assert not Path(f"/proc/{pid}").exists()
 
 
-def test_vpn_health_routes_resolved_ipv4_and_ipv6_target_addresses_through_tun(tmp_path: Path) -> None:
+def test_vpn_health_routes_resolved_ipv4_and_ipv6_target_addresses_through_tun(
+    tmp_path: Path,
+) -> None:
     """Catches readiness that verifies a surrogate address instead of the health target."""
 
     result = _run_vpn_health(tmp_path)
@@ -1131,7 +1149,9 @@ class FakeConnections:
         self.outcomes = outcomes
         self.calls = multiprocessing.Value("i", 0)
 
-    def __call__(self, host: str, port: int | None = None, timeout: float | None = None) -> FakeConnection:
+    def __call__(
+        self, host: str, port: int | None = None, timeout: float | None = None
+    ) -> FakeConnection:
         assert host == "watchdog.example"
         assert port is None
         assert timeout == health.REQUEST_TIMEOUT_SECONDS
@@ -1144,9 +1164,7 @@ class FakeConnections:
 def healthy_response(version: str = "abc123") -> FakeResponse:
     return FakeResponse(
         200,
-        json.dumps(
-            {"service": "desinfect-watchdog", "status": "ok", "version": version}
-        ).encode(),
+        json.dumps({"service": "desinfect-watchdog", "status": "ok", "version": version}).encode(),
     )
 
 
@@ -1156,7 +1174,9 @@ def test_health_check_rejects_non_https_or_non_healthz_url() -> None:
             health.verify_health(url, "abc123")
 
 
-def test_health_resolves_distinct_ipv4_and_ipv6_target_addresses(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_health_resolves_distinct_ipv4_and_ipv6_target_addresses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Catches target-route checks that omit an address family or use a surrogate."""
 
     def addresses(host: str, port: int, *, type: int) -> list[tuple[object, ...]]:
@@ -1369,7 +1389,9 @@ def test_health_check_cli_safely_reports_process_start_oserror(
     assert capsys.readouterr().err == "health check failed: category=http\n"
 
 
-def test_health_check_cli_logs_only_safe_failure_details(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_health_check_cli_logs_only_safe_failure_details(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     error = health.HealthCheckError(
         "health check failed: category=http http_status=301 location_hostname=awsas.de"
     )
@@ -1378,7 +1400,10 @@ def test_health_check_cli_logs_only_safe_failure_details(monkeypatch: pytest.Mon
         raise error
 
     monkeypatch.setattr(health, "verify_health", fail)
-    assert health.main(["--url", "https://watchdog.example/healthz", "--expected-version", "abc123"]) == 1
+    assert (
+        health.main(["--url", "https://watchdog.example/healthz", "--expected-version", "abc123"])
+        == 1
+    )
     assert capsys.readouterr().err == f"{error}\n"
 
 
@@ -1397,7 +1422,9 @@ def test_health_check_deadline_covers_blocking_dns(monkeypatch: pytest.MonkeyPat
     assert time.monotonic() - started < 0.5
 
 
-def test_health_check_deadline_covers_trickling_response_read(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_health_check_deadline_covers_trickling_response_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class SlowResponse(FakeResponse):
         def read(self) -> bytes:
             time.sleep(0.75)
@@ -1415,7 +1442,9 @@ def test_health_check_deadline_covers_trickling_response_read(monkeypatch: pytes
     assert time.monotonic() - started < 0.5
 
 
-def test_health_check_reaps_term_ignoring_child_before_return(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_health_check_reaps_term_ignoring_child_before_return(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     child_pid = multiprocessing.Value("i", 0)
 
     class TermIgnoringResponse(FakeResponse):
@@ -1443,9 +1472,12 @@ def test_health_check_reaps_term_ignoring_child_before_return(monkeypatch: pytes
 
 def test_health_check_cli_redacts_malformed_port(capsys: pytest.CaptureFixture[str]) -> None:
     secret = "secret-token"
-    assert health.main(
-        ["--url", f"https://watchdog.example:{secret}/healthz", "--expected-version", "abc123"]
-    ) == 1
+    assert (
+        health.main(
+            ["--url", f"https://watchdog.example:{secret}/healthz", "--expected-version", "abc123"]
+        )
+        == 1
+    )
     assert capsys.readouterr().err == "health check failed: category=url\n"
 
 
@@ -1670,7 +1702,9 @@ def test_validator_rejects_missing_vpn_hardening_invariant(tmp_path: Path) -> No
     root = contract_copy(tmp_path)
     path = root / "scripts" / "verify_cloudflare_health_via_vpn.sh"
     path.write_text(
-        path.read_text(encoding="utf-8").replace("--auth-retry nointeract", "--auth-retry interact"),
+        path.read_text(encoding="utf-8").replace(
+            "--auth-retry nointeract", "--auth-retry interact"
+        ),
         encoding="utf-8",
     )
 

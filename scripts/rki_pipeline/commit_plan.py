@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Deterministic commit messages and content-addressed staged-tree contracts."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -64,7 +65,10 @@ class CommitPlan:
     tree_sha256: str
 
     def __post_init__(self) -> None:
-        if type(self.expected_base_sha) is not str or _SHA40.fullmatch(self.expected_base_sha) is None:
+        if (
+            type(self.expected_base_sha) is not str
+            or _SHA40.fullmatch(self.expected_base_sha) is None
+        ):
             raise CommitPlanError("expected_base_sha muss lowercase 40-hex sein")
         if type(self.entries) is not tuple or not self.entries:
             raise CommitPlanError("CommitPlan benötigt mindestens einen TreeEntry")
@@ -82,7 +86,9 @@ class CommitPlan:
             raise CommitPlanError("CommitPlan enthält ungültige task_id")
         if _SHA256.fullmatch(self.dispatch_plan_sha256) is None:
             raise CommitPlanError("dispatch_plan_sha256 muss lowercase 64-hex sein")
-        if _SHA256.fullmatch(self.tree_sha256) is None or self.tree_sha256 != compute_tree_sha256(self.entries):
+        if _SHA256.fullmatch(self.tree_sha256) is None or self.tree_sha256 != compute_tree_sha256(
+            self.entries
+        ):
             raise CommitPlanError("tree_sha256 stimmt nicht mit den Einträgen überein")
         expected_subject = f"chore(rki): apply {len(self.task_ids)} scheduled task(s)"
         if self.subject != expected_subject:
@@ -128,7 +134,9 @@ class CommitPlan:
             raise CommitPlanError("Unbekannte CommitPlan-Version")
         raw_entries = payload["entries"]
         raw_tasks = payload["task_ids"]
-        if not isinstance(raw_entries, list) or not all(isinstance(value, dict) for value in raw_entries):
+        if not isinstance(raw_entries, list) or not all(
+            isinstance(value, dict) for value in raw_entries
+        ):
             raise CommitPlanError("entries muss eine Objektliste sein")
         if not isinstance(raw_tasks, list) or not all(type(value) is str for value in raw_tasks):
             raise CommitPlanError("task_ids muss eine Stringliste sein")
@@ -162,7 +170,12 @@ def compute_tree_sha256(entries: Iterable[TreeEntry]) -> str:
 
 
 def render_body(task_ids: tuple[str, ...], dispatch_plan_sha256: str) -> str:
-    lines = ["Tasks:", *(f"- {task_id}" for task_id in task_ids), "", f"Dispatch-Plan-SHA256: {dispatch_plan_sha256}"]
+    lines = [
+        "Tasks:",
+        *(f"- {task_id}" for task_id in task_ids),
+        "",
+        f"Dispatch-Plan-SHA256: {dispatch_plan_sha256}",
+    ]
     return "\n".join(lines)
 
 

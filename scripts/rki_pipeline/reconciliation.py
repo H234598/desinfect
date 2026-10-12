@@ -1,4 +1,5 @@
 """Deterministic reconciliation findings and report contract."""
+
 from __future__ import annotations
 
 import argparse
@@ -313,9 +314,7 @@ def reconcile_storage(
 
     references = _manifest_storage_references(graph)
     complete_references = (
-        references
-        if complete_graph is None
-        else _manifest_storage_references(complete_graph)
+        references if complete_graph is None else _manifest_storage_references(complete_graph)
     )
     checked_adapters = _storage_adapters(adapters)
     findings: list[ReconciliationFinding] = []
@@ -344,13 +343,11 @@ def reconcile_storage(
     inventory_ids: set[str] = set()
     by_artifact_id = {reference.artifact_id: reference for reference in references}
     by_backend_path = {
-        (reference.storage_backend, reference.relative_path): reference
-        for reference in references
+        (reference.storage_backend, reference.relative_path): reference for reference in references
     }
     complete_artifact_ids = {reference.artifact_id for reference in complete_references}
     complete_backend_paths = {
-        (reference.storage_backend, reference.relative_path)
-        for reference in complete_references
+        (reference.storage_backend, reference.relative_path) for reference in complete_references
     }
     for backend, adapter in checked_adapters.items():
         try:
@@ -414,13 +411,16 @@ def reconcile_rights(
             persisted_state = source["rights"]["state"]
         except (KeyError, TypeError) as exc:
             raise ReconciliationIntegrityError("Source-Rechteverknüpfung ist ungültig") from exc
-        if not all(type(value) is str for value in (
-            source_id,
-            source_sha256,
-            bitstream_id,
-            persisted_hash,
-            persisted_state,
-        )):
+        if not all(
+            type(value) is str
+            for value in (
+                source_id,
+                source_sha256,
+                bitstream_id,
+                persisted_hash,
+                persisted_state,
+            )
+        ):
             raise ReconciliationIntegrityError("Source-Rechteverknüpfung ist ungültig")
         subject_id = source_subject_id(*owner_key)
         try:
@@ -432,11 +432,7 @@ def reconcile_rights(
             )
             register = load_authority_register(authority)
             decision = next(
-                (
-                    entry
-                    for entry in register.entries
-                    if entry.approval_key == approval_key
-                ),
+                (entry for entry in register.entries if entry.approval_key == approval_key),
                 None,
             )
         except (AttributeError, RightsPolicyError) as exc:
@@ -524,7 +520,9 @@ def reconcile_periods(
             publication_date = document["publication_date"]
             paths = document["paths"]
         except KeyError as exc:
-            raise ReconciliationIntegrityError("Dokumentperiodenverknüpfung ist unvollständig") from exc
+            raise ReconciliationIntegrityError(
+                "Dokumentperiodenverknüpfung ist unvollständig"
+            ) from exc
         if not all(type(value) is str for value in (document_id, bitstream_id, source_id)):
             raise ReconciliationIntegrityError("Dokumentperiodenidentität ist ungültig")
         if type(paths) is not dict:
@@ -574,14 +572,10 @@ def reconcile_periods(
             )
             continue
         except FileNotFoundError:
-            findings.extend(
-                _period_findings(FindingCode.MISSING_LOCAL, owners[key], relative_path)
-            )
+            findings.extend(_period_findings(FindingCode.MISSING_LOCAL, owners[key], relative_path))
             continue
         except (ArchiveError, PeriodManifestError):
-            findings.extend(
-                _period_findings(FindingCode.CHANGED, owners[key], relative_path)
-            )
+            findings.extend(_period_findings(FindingCode.CHANGED, owners[key], relative_path))
             continue
         expected_plan = expected_plans.get(key)
         matches = (
@@ -590,9 +584,7 @@ def reconcile_periods(
             else _period_membership_matches(inspection.manifest, period, expected[key])
         )
         if not matches:
-            findings.extend(
-                _period_findings(FindingCode.CHANGED, owners[key], relative_path)
-            )
+            findings.extend(_period_findings(FindingCode.CHANGED, owners[key], relative_path))
     return tuple(sorted(findings, key=lambda item: item.key))
 
 
@@ -692,10 +684,7 @@ def _expected_period_plans(
     bitstream_ids = {document["bitstream_id"] for document in documents}
     document_ids = {document["document_id"] for document in documents}
     paths = {
-        path
-        for document in documents
-        for path in document["paths"].values()
-        if type(path) is str
+        path for document in documents for path in document["paths"].values() if type(path) is str
     }
     sources = tuple(
         source for source in graph.sources if source.get("bitstream_id") in bitstream_ids
@@ -1036,7 +1025,10 @@ def _claims_downloadable_content(record: ArtifactRecord) -> bool:
 
 
 def _metadata_drifts(local: dict[str, object], remote: ArtifactRecord) -> bool:
-    if any(local[local_field] != getattr(remote, remote_field) for local_field, remote_field in _METADATA_FIELDS):
+    if any(
+        local[local_field] != getattr(remote, remote_field)
+        for local_field, remote_field in _METADATA_FIELDS
+    ):
         return True
     if local.get("rights_evidence") != {
         "label": remote.rights.label,
@@ -1095,11 +1087,7 @@ def _source_finding(
 
 
 def _validate_clock_and_scope(as_of: datetime, from_year: int, to_year: int) -> None:
-    if (
-        type(as_of) is not datetime
-        or as_of.tzinfo is None
-        or as_of.utcoffset() != timedelta(0)
-    ):
+    if type(as_of) is not datetime or as_of.tzinfo is None or as_of.utcoffset() != timedelta(0):
         raise ValueError("as_of muss UTC-aware sein")
     if as_of.microsecond != 0:
         raise ValueError("as_of muss auf ganze Sekunden begrenzt sein")
@@ -1392,22 +1380,20 @@ def plan_reconciliation(
             findings_by_key[item.key] = item
 
     open_subjects = {
-        item.subject_id
-        for item in findings_by_key.values()
-        if item.code is not FindingCode.OK
+        item.subject_id for item in findings_by_key.values() if item.code is not FindingCode.OK
     }
     for source_id, bitstream_id in _current_source_projection(scoped_catalog):
         subject_id = source_subject_id(source_id, bitstream_id)
         if subject_id not in open_subjects:
-            item = _source_finding(FindingCode.OK, subject_id, "Quelle stimmt mit allen Prüfungen überein")
+            item = _source_finding(
+                FindingCode.OK, subject_id, "Quelle stimmt mit allen Prüfungen überein"
+            )
             if item.key in findings_by_key:
                 raise ReconciliationIntegrityError("Finding-Key ist doppelt")
             findings_by_key[item.key] = item
 
     source_files = [
-        payload
-        for name, payload in catalog.rendered.files
-        if name == "Quellen/manifest.jsonl"
+        payload for name, payload in catalog.rendered.files if name == "Quellen/manifest.jsonl"
     ]
     if len(source_files) != 1:
         raise ReconciliationIntegrityError("Quellenmanifest fehlt oder ist doppelt")
@@ -1438,22 +1424,18 @@ def materialize_reconciliation(
         raise ReconciliationIntegrityError("Ledger-temp_root stimmt nicht überein")
     if result.conclusion == "blocked":
         if result.successful_at is not None:
-            raise ReconciliationIntegrityError("Blockiertes Ergebnis darf keinen Erfolgstermin haben")
+            raise ReconciliationIntegrityError(
+                "Blockiertes Ergebnis darf keinen Erfolgstermin haben"
+            )
         return ReconciliationMaterialization(result, None, False)
     if result.conclusion != "success" or result.successful_at is None:
         raise ReconciliationIntegrityError("Reconciliation-Ergebnis ist nicht materialisierbar")
-    if (
-        result.successful_at.tzinfo is None
-        or result.successful_at.utcoffset() != timedelta(0)
-    ):
+    if result.successful_at.tzinfo is None or result.successful_at.utcoffset() != timedelta(0):
         raise ReconciliationIntegrityError("Erfolgszeitpunkt muss UTC-aware sein")
     payload = _reconciliation_report_payload(result)
     root = temp_root.resolve()
     timestamp = result.successful_at.strftime("%Y%m%dT%H%M%SZ")
-    target = root / (
-        "rki/Bulletins/Manifeste/Reconciliation/"
-        f"reconciliation-{timestamp}.json"
-    )
+    target = root / (f"rki/Bulletins/Manifeste/Reconciliation/reconciliation-{timestamp}.json")
     changed = _write_immutable_report(target, root=root, payload=payload, ledger=ledger)
     return ReconciliationMaterialization(result, target, changed)
 
@@ -1563,9 +1545,11 @@ def _read_report_bytes(parent_fd: int, name: str) -> bytes | None:
             descriptor = -1
             payload = handle.read()
         final = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-        if (
-            (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns)
-            != (initial.st_dev, initial.st_ino, initial.st_size, initial.st_mtime_ns)
+        if (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns) != (
+            initial.st_dev,
+            initial.st_ino,
+            initial.st_size,
+            initial.st_mtime_ns,
         ):
             raise ReconciliationIntegrityError("Reconciliation-Bericht änderte sich beim Lesen")
         return payload
@@ -1656,7 +1640,11 @@ def _fixture_payload(root: Path) -> dict[str, object]:
                 os.close(descriptor)
             final = os.stat("fixture.json", dir_fd=root_fd, follow_symlinks=False)
             compared_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
-            if any(getattr(value, field) != getattr(initial, field) for value in (opened_final, final) for field in compared_fields):
+            if any(
+                getattr(value, field) != getattr(initial, field)
+                for value in (opened_final, final)
+                for field in compared_fields
+            ):
                 raise FixtureValidationError("Fixture-Datei änderte sich beim Lesen")
             if set(os.listdir(root_fd)) != {"fixture.json"}:
                 raise FixtureValidationError("Fixture-Verzeichnis änderte sich beim Lesen")
@@ -1680,7 +1668,11 @@ def _fixture_payload(root: Path) -> dict[str, object]:
     except (FixtureValidationError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise FixtureValidationError("Fixture-JSON ist ungültig") from exc
     if type(value) is not dict or set(value) != {
-        "schema_version", "as_of", "scope", "source", "payload"
+        "schema_version",
+        "as_of",
+        "scope",
+        "source",
+        "payload",
     }:
         raise FixtureValidationError("Fixture-Felder sind ungültig")
     if value["schema_version"] != "1.0.0" or value["as_of"] != _FIXTURE_AS_OF:
@@ -1725,9 +1717,7 @@ def _fixture_authorizer(
     source_id: str,
     source_sha256: str,
     canonical_url: str,
-) -> tuple[
-    RightsStorageAuthorizer, RightsAuthority, RightsPolicy, RightsDecision
-]:
+) -> tuple[RightsStorageAuthorizer, RightsAuthority, RightsPolicy, RightsDecision]:
     register = root / "rights.yml"
     register.write_text(
         "\n".join(

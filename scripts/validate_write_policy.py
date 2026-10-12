@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Validate automatic-write policy, CODEOWNERS coverage, and optionally the index."""
+
 from __future__ import annotations
 
 import argparse
@@ -56,14 +57,8 @@ def validate(*, check_index: bool = False) -> None:
     patterns = {pattern for pattern, _owners in rules}
     missing = sorted(CRITICAL_OWNER_PATHS - patterns)
     if missing:
-        raise ValueError(
-            "CODEOWNERS deckt geschützte Pfade nicht explizit ab: "
-            f"{missing}"
-        )
-    if not any(
-        pattern == "*" and "@H234598" in rule_owners
-        for pattern, rule_owners in rules
-    ):
+        raise ValueError(f"CODEOWNERS deckt geschützte Pfade nicht explizit ab: {missing}")
+    if not any(pattern == "*" and "@H234598" in rule_owners for pattern, rule_owners in rules):
         raise ValueError(
             "@H234598 muss initialer globaler CODEOWNER in einer exakten *-Regel bleiben"
         )

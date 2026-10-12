@@ -1,4 +1,5 @@
 """Contracts for the read-only dispatcher API and CLI."""
+
 from __future__ import annotations
 
 import json
@@ -94,7 +95,8 @@ def test_dispatcher_parser_has_no_output_file_switch() -> None:
     parser = build_parser()
     assert "--output" not in parser.format_help()
     subparsers = next(
-        action for action in parser._actions  # noqa: SLF001
+        action
+        for action in parser._actions  # noqa: SLF001
         if action.__class__.__name__ == "_SubParsersAction"
     )
     assert "--output" not in subparsers.choices["daily"].format_help()

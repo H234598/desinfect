@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Materialize the reviewed synthetic P06 PDF conversion fixture."""
+
 from __future__ import annotations
 
 import argparse
@@ -44,14 +45,9 @@ FIXTURE_SHA256 = "4665c3b8cfa6de8d9792a8defb977bfd200465b513575419e0a88541000f5b
 FIXTURE_BYTES = 979
 SOURCE_ID = "rki:176904/900000001"
 DOCUMENT_ID = "rki-176904-900000001-v1"
-BITSTREAM_URL = (
-    "https://edoc.rki.de/bitstream/handle/176904/900000001/source.pdf?sequence=1"
-)
+BITSTREAM_URL = "https://edoc.rki.de/bitstream/handle/176904/900000001/source.pdf?sequence=1"
 BITSTREAM_ID = bitstream_identity(BITSTREAM_URL).bitstream_id
-LOGICAL_KEY = (
-    "Jahre/2026/Markdown/2026-08-03_gesamtausgabe_"
-    f"{DOCUMENT_ID}_{BITSTREAM_ID}.md"
-)
+LOGICAL_KEY = f"Jahre/2026/Markdown/2026-08-03_gesamtausgabe_{DOCUMENT_ID}_{BITSTREAM_ID}.md"
 EXIT_FAILED = 3
 EXIT_NEEDS_REVIEW = 4
 

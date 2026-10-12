@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Command-line interface for strict run status and public projection."""
+
 from __future__ import annotations
 
 import argparse
@@ -115,18 +116,13 @@ def main(argv: list[str] | None = None) -> int:
             if args.recovery_level or args.recovery_action:
                 recovery = {
                     "level": args.recovery_level or "manual_intervention",
-                    "action": (
-                        args.recovery_action
-                        or "Manuelle Prüfung erforderlich"
-                    ),
+                    "action": (args.recovery_action or "Manuelle Prüfung erforderlich"),
                     "resume_phase": args.resume_phase,
                     "block_next_run": args.block_next_run,
                     "acknowledged": False,
                 }
             completed_phases = (
-                None
-                if args.completed_phases is None
-                else csv_values(args.completed_phases)
+                None if args.completed_phases is None else csv_values(args.completed_phases)
             )
             payload = update_run(
                 source,

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Validate P05 scheduling, transaction, writer, and workflow invariants."""
+
 from __future__ import annotations
 
 import json
@@ -109,9 +110,7 @@ def _validate_files() -> None:
 
 def _validate_requirements() -> None:
     index = json.loads(
-        (ROOT / "docs" / "requirements" / "requirement-index.json").read_text(
-            encoding="utf-8"
-        )
+        (ROOT / "docs" / "requirements" / "requirement-index.json").read_text(encoding="utf-8")
     )
     known = set(index["must_ids"]) | set(index["v2_ids"])
     required = {
@@ -218,7 +217,10 @@ def _validate_workflows() -> None:
     dispatcher_steps = _steps(dispatcher, "plan")
     _validate_pinned_actions(dispatcher_steps, dispatcher_path.name)
     pipeline_call = dispatcher["jobs"].get("pipeline")
-    if not isinstance(pipeline_call, dict) or pipeline_call.get("uses") != "./.github/workflows/rki-pipeline.yml":
+    if (
+        not isinstance(pipeline_call, dict)
+        or pipeline_call.get("uses") != "./.github/workflows/rki-pipeline.yml"
+    ):
         raise P05ValidationError("Dispatcher muss den wiederverwendbaren Pipelineworkflow aufrufen")
     dispatcher_text = dispatcher_path.read_text(encoding="utf-8")
     if re.search(r"\bgit\s+(?:commit|push)\b", dispatcher_text):
@@ -242,7 +244,10 @@ def _validate_workflows() -> None:
     if not validation < token < writer:
         raise P05ValidationError("GitHub-App-Token muss nach Validierung und vor Writer entstehen")
     token_step = steps[token]
-    if token_step.get("uses") != "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1":
+    if (
+        token_step.get("uses")
+        != "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1"
+    ):
         raise P05ValidationError("Wachhund-Tokenaction driftet vom geprüften Voll-SHA")
     expected_token_scope = {
         "client-id": "${{ vars.WACHHUND_APP_CLIENT_ID }}",
@@ -300,7 +305,10 @@ def _validate_workflows() -> None:
     if incident_step.get("if") != enabled or incident_step.get("continue-on-error") is not True:
         raise P05ValidationError("Rolling Issue darf den fachlichen Pipeline-Exit nicht verändern")
     incident_env = incident_step.get("env")
-    if not isinstance(incident_env, dict) or incident_env.get("ACTIONS_TOKEN") != "${{ github.token }}":
+    if (
+        not isinstance(incident_env, dict)
+        or incident_env.get("ACTIONS_TOKEN") != "${{ github.token }}"
+    ):
         raise P05ValidationError("Rolling Issue braucht nur read-only Actions-Historie")
     pipeline_text = pipeline_path.read_text(encoding="utf-8")
     for forbidden in ("--force", "--force-with-lease", "GITHUB_TOKEN"):
@@ -328,7 +336,10 @@ def _validate_workflows() -> None:
     if '[[ "$CONFIRM_APPLY" != "APPLY" ]]' not in backfill_path.read_text(encoding="utf-8"):
         raise P05ValidationError("Backfill apply benötigt die literale APPLY-Bestätigung")
     backfill_pipeline = backfill["jobs"].get("pipeline")
-    if not isinstance(backfill_pipeline, dict) or backfill_pipeline.get("uses") != "./.github/workflows/rki-pipeline.yml":
+    if (
+        not isinstance(backfill_pipeline, dict)
+        or backfill_pipeline.get("uses") != "./.github/workflows/rki-pipeline.yml"
+    ):
         raise P05ValidationError("Backfill muss denselben Pipelineworkflow verwenden")
 
 

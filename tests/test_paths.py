@@ -1,4 +1,5 @@
 """Canonical document-path contract."""
+
 from __future__ import annotations
 
 from hashlib import sha256
@@ -33,9 +34,7 @@ def test_article_paths_use_publication_month() -> None:
         publication_date="2000-01-01",
     )
     assert paths.pdf.startswith("Einzelartikel/2000/01/PDF/2000-01-01_einzelartikel_")
-    assert paths.markdown.startswith(
-        "Einzelartikel/2000/01/Markdown/2000-01-01_einzelartikel_"
-    )
+    assert paths.markdown.startswith("Einzelartikel/2000/01/Markdown/2000-01-01_einzelartikel_")
 
 
 @pytest.mark.parametrize(

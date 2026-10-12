@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Audit Cloudflare redirects and optionally correct one verified zone redirect."""
+
 from __future__ import annotations
 
 import argparse
@@ -354,9 +355,7 @@ def _read_entrypoint(
 def _zone_audit(
     client: CloudflareClient, zone_id: str
 ) -> tuple[dict[str, object] | None, list[AuditFinding]]:
-    value = _read_entrypoint(
-        client, "zones", zone_id, ZONE_PHASE, "read-zone-single-redirects"
-    )
+    value = _read_entrypoint(client, "zones", zone_id, ZONE_PHASE, "read-zone-single-redirects")
     if value is None:
         return None, []
     ruleset = _zone_ruleset(value)
@@ -588,7 +587,9 @@ def apply_verified_exception(
     entrypoint = f"/zones/{report.zone_id}/rulesets/phases/{ZONE_PHASE}/entrypoint"
     preflight_envelope = client.request("GET", entrypoint, operation="reload-zone-single-redirect")
     preflight = _zone_ruleset(_result(preflight_envelope, "reloaded zone redirect ruleset"))
-    if preflight["id"] != ruleset_id or _ruleset_semantics(preflight) != _ruleset_semantics(audited):
+    if preflight["id"] != ruleset_id or _ruleset_semantics(preflight) != _ruleset_semantics(
+        audited
+    ):
         raise RoutingAuditError("audited zone redirect preimage changed")
     path = f"/zones/{report.zone_id}/rulesets/{ruleset_id}/rules/{rule_id}"
     dry_run = client.request(

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Git-LFS tracking, pointer/object integrity, budgets, and local adapter."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -56,9 +57,7 @@ def _missing_parent_directories(path: Path, *, root: Path) -> tuple[Path, ...]:
         try:
             parent.relative_to(root)
         except ValueError as exc:
-            raise LfsIntegrityError(
-                "Rollback-Pfad liegt außerhalb des Repositoryroots"
-            ) from exc
+            raise LfsIntegrityError("Rollback-Pfad liegt außerhalb des Repositoryroots") from exc
         if parent.exists() or parent.is_symlink():
             break
         missing.append(parent)
@@ -104,9 +103,7 @@ class LfsPointer:
 
     def to_text(self) -> str:
         return (
-            "version https://git-lfs.github.com/spec/v1\n"
-            f"oid sha256:{self.oid}\n"
-            f"size {self.size}\n"
+            f"version https://git-lfs.github.com/spec/v1\noid sha256:{self.oid}\nsize {self.size}\n"
         )
 
 
@@ -252,15 +249,15 @@ class LfsStorageAdapter:
         try:
             self.repository_root = Path(repository_root).resolve(strict=True)
         except OSError as exc:
-            raise LfsIntegrityError(f"Repositoryroot ist nicht auflösbar: {repository_root}") from exc
+            raise LfsIntegrityError(
+                f"Repositoryroot ist nicht auflösbar: {repository_root}"
+            ) from exc
         if not self.repository_root.is_dir():
             raise LfsIntegrityError(f"Repositoryroot ist kein Verzeichnis: {repository_root}")
         self.config = config
         self.artifact_root = normalize_posix_path(config.artifact_root)
         if type(authorizer) is not RightsStorageAuthorizer:
-            raise LfsIntegrityError(
-                "authorizer muss ein exakter RightsStorageAuthorizer sein"
-            )
+            raise LfsIntegrityError("authorizer muss ein exakter RightsStorageAuthorizer sein")
         self.authorizer = authorizer
 
     def authorize(
@@ -308,9 +305,7 @@ class LfsStorageAdapter:
         payload = path.read_bytes()
         measured_hash = hashlib.sha256(payload).hexdigest()
         if (len(payload), measured_hash) != (prepared.size, prepared.sha256):
-            raise LfsIntegrityError(
-                "Vorbereitetes LFS-Objekt besitzt falsche Größe/SHA-256"
-            )
+            raise LfsIntegrityError("Vorbereitetes LFS-Objekt besitzt falsche Größe/SHA-256")
         return payload
 
     @staticmethod
@@ -398,7 +393,9 @@ class LfsStorageAdapter:
             public_reference=None,
         )
 
-    def materialize(self, intent: StorageIntent, *, temp_root: Path, ledger: EffectLedger) -> PreparedObject:
+    def materialize(
+        self, intent: StorageIntent, *, temp_root: Path, ledger: EffectLedger
+    ) -> PreparedObject:
         if ledger.mode is not RunMode.MATERIALIZE:
             raise LfsIntegrityError("LFS-Materialisierung benötigt RunMode materialize")
         self.authorize(intent, operation="materialize")
@@ -410,7 +407,12 @@ class LfsStorageAdapter:
         target = Path(temp_root) / normalize_posix_path(intent.logical_key)
         self.authorize(intent, operation="materialize")
         atomic_write_bytes(target, payload, allowed_root=Path(temp_root))
-        ledger.record(EffectKind.TEMP_FILE, target.absolute().as_posix(), sha256=intent.sha256, size=intent.size)
+        ledger.record(
+            EffectKind.TEMP_FILE,
+            target.absolute().as_posix(),
+            sha256=intent.sha256,
+            size=intent.size,
+        )
         return PreparedObject(
             artifact_id=intent.artifact_id,
             logical_key=intent.logical_key,
@@ -427,7 +429,9 @@ class LfsStorageAdapter:
             rights_state=intent.rights_state,
         )
 
-    def export(self, reference: StorageReference, *, temp_root: Path, ledger: EffectLedger) -> PreparedObject:
+    def export(
+        self, reference: StorageReference, *, temp_root: Path, ledger: EffectLedger
+    ) -> PreparedObject:
         if ledger.mode is not RunMode.MATERIALIZE:
             raise LfsIntegrityError("LFS-Export benötigt RunMode materialize")
         if reference.storage_backend is not StorageBackend.LFS:
@@ -494,9 +498,7 @@ class LfsStorageAdapter:
                 rights_state=prepared.rights_state,
             )
             if (existing.sha256, existing.size) != (prepared.sha256, prepared.size):
-                raise LfsIntegrityError(
-                    f"Vorhandenes LFS-Ziel besitzt anderen Inhalt: {relative}"
-                )
+                raise LfsIntegrityError(f"Vorhandenes LFS-Ziel besitzt anderen Inhalt: {relative}")
             self.authorize(prepared, operation="apply")
             return existing
 
@@ -582,7 +584,9 @@ class LfsStorageAdapter:
                     "LFS-Zwischeneffekt konnte nicht sicher zurückgerollt werden"
                 ) from cleanup_failure
             raise
-        ledger.record(EffectKind.REPOSITORY_FILE, relative, sha256=prepared.sha256, size=prepared.size)
+        ledger.record(
+            EffectKind.REPOSITORY_FILE, relative, sha256=prepared.sha256, size=prepared.size
+        )
         ledger.record(EffectKind.LFS, relative, sha256=prepared.sha256, size=prepared.size)
         return reference
 
@@ -654,9 +658,7 @@ class LfsStorageAdapter:
             if path.is_symlink():
                 raise LfsIntegrityError(f"Symlink im LFS-Artefaktbestand: {path}")
             relative = path.relative_to(root)
-            is_canonical_markdown = (
-                path.suffix == ".md" and "Markdown" in relative.parts
-            )
+            is_canonical_markdown = path.suffix == ".md" and "Markdown" in relative.parts
             if not path.is_file() or (
                 path.suffix not in {".pdf", ".zip"} and not is_canonical_markdown
             ):

@@ -1,4 +1,5 @@
 """Local temporary-repository tests for the single-commit Git writer."""
+
 from __future__ import annotations
 
 import subprocess
@@ -96,13 +97,16 @@ def test_writer_handles_colliding_git_pathspec_names_independently(
     )
 
     assert result.paths == paths
-    assert git(
-        repository,
-        "ls-tree",
-        "HEAD",
-        "--",
-        ":(literal)content/generated-data/a[1].txt",
-    ).split()[0] == "100755"
+    assert (
+        git(
+            repository,
+            "ls-tree",
+            "HEAD",
+            "--",
+            ":(literal)content/generated-data/a[1].txt",
+        ).split()[0]
+        == "100755"
+    )
 
 
 def test_writer_adds_only_literal_plan_path_after_preflight(

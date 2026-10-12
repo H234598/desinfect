@@ -82,9 +82,7 @@ _RECONCILIATION_SOURCE_SHA256 = "a" * 64
 _RECONCILIATION_BITSTREAM_URL = (
     "https://edoc.rki.de/bitstream/handle/176904/900000001/source.pdf?sequence=1"
 )
-_RECONCILIATION_BITSTREAM_ID = bitstream_identity(
-    _RECONCILIATION_BITSTREAM_URL
-).bitstream_id
+_RECONCILIATION_BITSTREAM_ID = bitstream_identity(_RECONCILIATION_BITSTREAM_URL).bitstream_id
 _RECONCILIATION_DOCUMENT_ID = "rki-176904-900000001-v1"
 
 
@@ -265,7 +263,10 @@ def _markdown_only_period_fixture(
     markdown_path = document["paths"]["markdown"]
     markdown_graph = ManifestGraph(
         sources=graph.sources,
-        documents=(*graph.documents[:-1], {**document, "paths": {"pdf": None, "markdown": markdown_path}}),
+        documents=(
+            *graph.documents[:-1],
+            {**document, "paths": {"pdf": None, "markdown": markdown_path}},
+        ),
         conversions=graph.conversions,
         storage_references=tuple(
             reference
@@ -274,11 +275,10 @@ def _markdown_only_period_fixture(
         ),
     )
     for kind, value in (("week", "2026-W28"), ("month", "2026-07"), ("year", "2026")):
+
         def remove_pdf(manifest: dict[str, object]) -> None:
             manifest["archives"] = [
-                archive
-                for archive in manifest["archives"]
-                if archive["kind"] != f"{kind}-pdf"
+                archive for archive in manifest["archives"] if archive["kind"] != f"{kind}-pdf"
             ]
             for row in manifest["documents"]:
                 row["pdf_artifact_id"] = None
@@ -373,7 +373,10 @@ def test_period_completeness_emits_one_canonical_finding_per_affected_period(
     findings = reconcile_periods(partial_graph, root)
 
     assert [(item.code, item.subject_id) for item in findings] == [
-        (FindingCode.MISSING_LOCAL, source_subject_id(partial["source_id"], partial["bitstream_id"])),
+        (
+            FindingCode.MISSING_LOCAL,
+            source_subject_id(partial["source_id"], partial["bitstream_id"]),
+        ),
         (FindingCode.MISSING_LOCAL, source_subject_id(second["source_id"], second["bitstream_id"])),
     ]
     result = build_reconciliation_result(
@@ -446,21 +449,22 @@ def test_period_completeness_classifies_missing_and_changed_publications(
         elif mutation == "corrupt-bundle":
             (bundle / "archive.zip").write_bytes(b"corrupt")
         else:
+
             def mismatch(current: dict[str, object]) -> None:
                 current["archives"][0]["output_sha256"] = "0" * 64
 
             _rewrite_period_manifest(week, mismatch)
     elif mutation in {"wrong-membership", "month-week-link"}:
+
         def change_membership(manifest: dict[str, object]) -> None:
             manifest["documents"][0]["document_id"] = "rki-176904-900000099-v1"
 
         target = (
-            _period_manifest(root, "month", "2026-07")
-            if mutation == "wrong-membership"
-            else week
+            _period_manifest(root, "month", "2026-07") if mutation == "wrong-membership" else week
         )
         _rewrite_period_manifest(target, change_membership)
     else:
+
         def remove_month_link(manifest: dict[str, object]) -> None:
             manifest["month_manifests"] = []
 
@@ -468,11 +472,15 @@ def test_period_completeness_classifies_missing_and_changed_publications(
 
     findings = reconcile_periods(graph, root)
 
-    assert [(item.code, item.subject_kind, item.subject_id, item.relative_path) for item in findings] == [
+    assert [
+        (item.code, item.subject_kind, item.subject_id, item.relative_path) for item in findings
+    ] == [
         (
             code,
             SubjectKind.PERIOD,
-            source_subject_id(graph.documents[-1]["source_id"], graph.documents[-1]["bitstream_id"]),
+            source_subject_id(
+                graph.documents[-1]["source_id"], graph.documents[-1]["bitstream_id"]
+            ),
             relative_path,
         )
     ]
@@ -499,9 +507,7 @@ def test_period_expected_document_rows_reject_coherent_manifest_tampering(
             row["doi"] = "10.1234/coherent-tamper"
         else:
             row["publication_date"] = "2026-08-10"
-            manifest["month_manifests"] = [
-                "rki/Bulletins/Manifeste/Archive/month/2026-08.json"
-            ]
+            manifest["month_manifests"] = ["rki/Bulletins/Manifeste/Archive/month/2026-08.json"]
 
     _rewrite_period_manifest(year, tamper)
 
@@ -760,10 +766,13 @@ def test_storage_reconciliation_matches_legacy_lfs_inventory_by_path(
         authorizer=storage_rights.authorizer,
     )
 
-    assert reconcile_storage(
-        storage_graph(reference, decision_sha256=decision_sha256),
-        {StorageBackend.LFS: adapter},
-    ) == ()
+    assert (
+        reconcile_storage(
+            storage_graph(reference, decision_sha256=decision_sha256),
+            {StorageBackend.LFS: adapter},
+        )
+        == ()
+    )
 
 
 def test_storage_duplicate_inventory_identity_fails_closed() -> None:
@@ -785,12 +794,15 @@ def _rights_authority(
 
     register = tmp_path / "rights-register.yml"
     approved = state is RightsState.APPROVED
-    mode = "materialized" if approved else (
-        "remove_all" if state is RightsState.TAKEDOWN else "origin_link"
+    mode = (
+        "materialized"
+        if approved
+        else ("remove_all" if state is RightsState.TAKEDOWN else "origin_link")
     )
     actions = (
         "[cache, extract_text, fetch, hash, index_text, ocr, publish, thumbnail]"
-        if approved else "[]"
+        if approved
+        else "[]"
     )
     attribution = (
         "    attribution:\n"
@@ -803,7 +815,8 @@ def _rights_authority(
         "      origin_url: https://edoc.rki.de/handle/176904/900000001\n"
         "      prior_change_history: []\n"
         "      current_change_notice: Unchanged synthetic fixture\n"
-        if approved else "    attribution: null\n"
+        if approved
+        else "    attribution: null\n"
     )
     register.write_text(
         "schema_version: 2\n"
@@ -896,11 +909,14 @@ def test_rights_unchanged_approved_decision_has_no_finding(
     assert decision.decision_sha256 is not None
     reference = storage_reference(decision_sha256=decision.decision_sha256)
 
-    assert reconcile_rights(
-        storage_graph(reference, decision_sha256=decision.decision_sha256),
-        authority=authority,
-        policy=policy,
-    ) == ()
+    assert (
+        reconcile_rights(
+            storage_graph(reference, decision_sha256=decision.decision_sha256),
+            authority=authority,
+            policy=policy,
+        )
+        == ()
+    )
 
 
 def test_rights_removed_current_decision_marks_source_and_storage_changed(
@@ -1114,6 +1130,7 @@ def test_result_rejects_fractional_utc_timestamp() -> None:
             findings=(finding(FindingCode.OK, "source-a"),),
         )
 
+
 def test_result_rejects_duplicate_finding_keys() -> None:
     item = finding(FindingCode.OK, "source-a")
 
@@ -1236,9 +1253,10 @@ def test_plan_reconciliation_composes_empty_consistent_snapshot(tmp_path: Path) 
     assert result.conclusion == "success"
     assert result.counts.unresolved == 0
     assert result.successful_at == _RECONCILIATION_AS_OF
-    assert result.report["source_manifest_sha256"] == hashlib.sha256(
-        dict(catalog.rendered.files)["Quellen/manifest.jsonl"]
-    ).hexdigest()
+    assert (
+        result.report["source_manifest_sha256"]
+        == hashlib.sha256(dict(catalog.rendered.files)["Quellen/manifest.jsonl"]).hexdigest()
+    )
 
 
 def test_plan_reconciliation_rejects_duplicate_component_finding_keys(
@@ -1268,14 +1286,20 @@ def test_plan_reconciliation_rejects_duplicate_component_finding_keys(
         relative_path="rki/Bulletins/Manifeste/Archive/year/2026.json",
         message="period missing",
     )
-    monkeypatch.setattr(reconciliation, "compare_remote_sources", lambda *_args, **_kwargs: (remote_finding,))
+    monkeypatch.setattr(
+        reconciliation, "compare_remote_sources", lambda *_args, **_kwargs: (remote_finding,)
+    )
     monkeypatch.setattr(
         reconciliation,
         "reconcile_storage",
         lambda *_args, **_kwargs: (storage_finding, storage_finding),
     )
-    monkeypatch.setattr(reconciliation, "reconcile_rights", lambda *_args, **_kwargs: (rights_finding,))
-    monkeypatch.setattr(reconciliation, "reconcile_periods", lambda *_args, **_kwargs: (period_finding,))
+    monkeypatch.setattr(
+        reconciliation, "reconcile_rights", lambda *_args, **_kwargs: (rights_finding,)
+    )
+    monkeypatch.setattr(
+        reconciliation, "reconcile_periods", lambda *_args, **_kwargs: (period_finding,)
+    )
 
     with pytest.raises(ReconciliationIntegrityError, match="doppelt"):
         plan_reconciliation(
@@ -1368,7 +1392,9 @@ def test_plan_suppresses_ok_for_findings_from_every_authority(
     ]
 
 
-def _successful_reconciliation_result(as_of: datetime = _RECONCILIATION_AS_OF) -> ReconciliationResult:
+def _successful_reconciliation_result(
+    as_of: datetime = _RECONCILIATION_AS_OF,
+) -> ReconciliationResult:
     return build_reconciliation_result(
         as_of=as_of,
         from_year=1996,
@@ -1384,7 +1410,9 @@ def test_materialize_reconciliation_writes_valid_immutable_report(tmp_path: Path
 
     materialization = materialize_reconciliation(result, temp_root=tmp_path, ledger=ledger)
 
-    expected = tmp_path / "rki/Bulletins/Manifeste/Reconciliation/reconciliation-20260804T040506Z.json"
+    expected = (
+        tmp_path / "rki/Bulletins/Manifeste/Reconciliation/reconciliation-20260804T040506Z.json"
+    )
     assert materialization == ReconciliationMaterialization(result, expected, True)
     validate_document("reconciliation-report", json.loads(expected.read_bytes()))
     assert expected.read_bytes() == stable_json_dumps(result.report).encode("utf-8") + b"\n"
@@ -1480,7 +1508,9 @@ def test_materialize_reconciliation_rolls_back_atomic_write_error(
 
     monkeypatch.setattr(reconciliation, "atomic_write_bytes", reject)
     with pytest.raises(OSError, match="injected"):
-        materialize_reconciliation(_successful_reconciliation_result(), temp_root=tmp_path, ledger=ledger)
+        materialize_reconciliation(
+            _successful_reconciliation_result(), temp_root=tmp_path, ledger=ledger
+        )
 
     assert old.read_bytes() == b"prior report"
     assert not (old.parent / "reconciliation-20260804T040506Z.json").exists()
@@ -1505,7 +1535,9 @@ def test_materialize_reconciliation_removes_report_after_postwrite_error(
 
     monkeypatch.setattr(reconciliation, "atomic_write_bytes", write_then_fail)
     with pytest.raises(OSError, match="post-write"):
-        materialize_reconciliation(_successful_reconciliation_result(), temp_root=tmp_path, ledger=ledger)
+        materialize_reconciliation(
+            _successful_reconciliation_result(), temp_root=tmp_path, ledger=ledger
+        )
 
     assert old.read_bytes() == b"prior report"
     assert not (old.parent / "reconciliation-20260804T040506Z.json").exists()
@@ -1536,10 +1568,14 @@ def test_materialize_reconciliation_preserves_concurrent_different_report(
 
     monkeypatch.setattr(reconciliation.os, "link", create_conflict)
     with pytest.raises(ReconciliationIntegrityError, match="unveränderlich") as caught:
-        materialize_reconciliation(_successful_reconciliation_result(), temp_root=tmp_path, ledger=ledger)
+        materialize_reconciliation(
+            _successful_reconciliation_result(), temp_root=tmp_path, ledger=ledger
+        )
 
     assert isinstance(caught.value.__cause__, FileExistsError)
-    target = tmp_path / "rki/Bulletins/Manifeste/Reconciliation/reconciliation-20260804T040506Z.json"
+    target = (
+        tmp_path / "rki/Bulletins/Manifeste/Reconciliation/reconciliation-20260804T040506Z.json"
+    )
     assert target.read_bytes() == b"concurrent different report"
     assert ledger.events == []
 
@@ -1561,7 +1597,9 @@ def test_materialize_reconciliation_rejects_mismatched_temp_root(tmp_path: Path)
     ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path / "other")
 
     with pytest.raises(ReconciliationIntegrityError, match="temp_root"):
-        materialize_reconciliation(_successful_reconciliation_result(), temp_root=tmp_path, ledger=ledger)
+        materialize_reconciliation(
+            _successful_reconciliation_result(), temp_root=tmp_path, ledger=ledger
+        )
 
 
 def test_materialize_reconciliation_rejects_symlinked_report_directory(tmp_path: Path) -> None:
@@ -1573,7 +1611,9 @@ def test_materialize_reconciliation_rejects_symlinked_report_directory(tmp_path:
     ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=tmp_path)
 
     with pytest.raises(ValueError, match="Symlink"):
-        materialize_reconciliation(_successful_reconciliation_result(), temp_root=tmp_path, ledger=ledger)
+        materialize_reconciliation(
+            _successful_reconciliation_result(), temp_root=tmp_path, ledger=ledger
+        )
 
     assert ledger.events == []
 
@@ -1630,20 +1670,22 @@ def remote_catalog(*records: ArtifactRecord) -> LoadedManifestCatalog:
         if record.pdf_url is None or record.sha256 is None:
             raise ValueError("remote_catalog erfordert pdf_url und sha256")
         identity = bitstream_identity(record.pdf_url)
-        entries.append({
-            "source_id": record.source_id,
-            "canonical_url": identity.canonical_url,
-            "version_or_bitstream": identity.bitstream_id,
-            "source_sha256": record.sha256,
-            "state": "unknown",
-            "mode": "origin_link",
-            "allowed_actions": [],
-            "components_state": "unknown",
-            "attribution": None,
-            "basis": "Synthetic fixture; no external publication rights claim",
-            "reviewed_by": None,
-            "reviewed_at": None,
-        })
+        entries.append(
+            {
+                "source_id": record.source_id,
+                "canonical_url": identity.canonical_url,
+                "version_or_bitstream": identity.bitstream_id,
+                "source_sha256": record.sha256,
+                "state": "unknown",
+                "mode": "origin_link",
+                "allowed_actions": [],
+                "components_state": "unknown",
+                "attribution": None,
+                "basis": "Synthetic fixture; no external publication rights claim",
+                "reviewed_by": None,
+                "reviewed_at": None,
+            }
+        )
     with TemporaryDirectory(prefix="reconciliation-rights-") as temporary:
         register_path = Path(temporary) / "rights.yml"
         register_path.write_text(
@@ -1755,7 +1797,9 @@ def test_remote_bitstream_identity_replacement_is_bounded_changed(tmp_path: Path
     assert [(item.code, item.subject_id) for item in findings] == [
         (
             FindingCode.CHANGED,
-            source_subject_id(matching.source_id, bitstream_identity(matching.pdf_url).bitstream_id),
+            source_subject_id(
+                matching.source_id, bitstream_identity(matching.pdf_url).bitstream_id
+            ),
         )
     ]
 
@@ -1793,8 +1837,12 @@ def test_remote_partial_bitstream_replacement_preserves_exact_match_and_changes_
         candidate_loader=loader,
     )
 
-    first_subject = source_subject_id(first.source_id, bitstream_identity(first.pdf_url).bitstream_id)
-    second_subject = source_subject_id(second.source_id, bitstream_identity(second.pdf_url).bitstream_id)
+    first_subject = source_subject_id(
+        first.source_id, bitstream_identity(first.pdf_url).bitstream_id
+    )
+    second_subject = source_subject_id(
+        second.source_id, bitstream_identity(second.pdf_url).bitstream_id
+    )
     assert calls == [replacement.pdf_url]
     assert [(item.code, item.subject_id) for item in result.findings] == [
         (FindingCode.CHANGED, second_subject),
@@ -1812,7 +1860,10 @@ def test_remote_only_record_is_new() -> None:
     findings = compare_remote_sources(catalog, (remote,))
 
     assert [(item.code, item.subject_id) for item in findings] == [
-        (FindingCode.NEW, source_subject_id(remote.source_id, bitstream_identity(remote.pdf_url).bitstream_id)),
+        (
+            FindingCode.NEW,
+            source_subject_id(remote.source_id, bitstream_identity(remote.pdf_url).bitstream_id),
+        ),
     ]
 
 

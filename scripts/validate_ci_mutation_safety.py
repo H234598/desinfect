@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Enforce safe Git writers, payload checks, and blocking audits in CI."""
+
 from __future__ import annotations
 
 import argparse
@@ -174,11 +175,27 @@ def writer_issues(step: StepBlock, path: str) -> list[SafetyIssue]:
     anchor = mutations[0]
     issues: list[SafetyIssue] = []
     if not any(staged_diff(line, True) for line in lines):
-        issues.append(SafetyIssue(path, anchor, "CIW001", "Git-Writer braucht einen staged No-op-Guard mit --quiet."))
-    if not any(GIT_STATUS.search(line) and ("--short" in line or "--porcelain" in line) for line in lines):
-        issues.append(SafetyIssue(path, anchor, "CIW002", "Git-Writer muss git status --short/--porcelain ausgeben."))
-    if not any(staged_diff(line, False) and ("--name-status" in line or "--stat" in line) for line in lines):
-        issues.append(SafetyIssue(path, anchor, "CIW003", "Git-Writer muss staged --name-status/--stat ausgeben."))
+        issues.append(
+            SafetyIssue(
+                path, anchor, "CIW001", "Git-Writer braucht einen staged No-op-Guard mit --quiet."
+            )
+        )
+    if not any(
+        GIT_STATUS.search(line) and ("--short" in line or "--porcelain" in line) for line in lines
+    ):
+        issues.append(
+            SafetyIssue(
+                path, anchor, "CIW002", "Git-Writer muss git status --short/--porcelain ausgeben."
+            )
+        )
+    if not any(
+        staged_diff(line, False) and ("--name-status" in line or "--stat" in line) for line in lines
+    ):
+        issues.append(
+            SafetyIssue(
+                path, anchor, "CIW003", "Git-Writer muss staged --name-status/--stat ausgeben."
+            )
+        )
     return issues
 
 
@@ -186,24 +203,59 @@ def payload_issues(step: StepBlock, path: str) -> list[SafetyIssue]:
     text = step.text
     if not PAYLOAD_MARKER.search(text) or "sha256sum" not in text.lower():
         return []
-    line = next((number for number, value in step.active_lines() if "sha256sum" in value), step.start_line)
-    checks = (
-        (ACTUAL_ASSIGNMENT.search(text) and ACTUAL_OUTPUT.search(text), "CIW004", "Payload muss die berechnete SHA-256 ausgeben."),
-        (EXPECTED_VALUE.search(text) and EXPECTED_OUTPUT.search(text), "CIW005", "Payload muss die erwartete SHA-256 ausgeben."),
-        (FRAGMENT_MARKER.search(text) and FRAGMENT_SIZE.search(text) and FRAGMENT_CHECKSUM.search(text), "CIW006", "Payload muss Größe und SHA-256 jedes Fragments ausgeben."),
-        (ARCHIVE_LISTING.search(text), "CIW007", "Payload-Fehler braucht eine tar -tzf-Diagnose."),
-        (CHECKSUM_COMPARISON.search(text) and NONZERO_EXIT.search(text), "CIW010", "Prüfsummenabweichungen müssen mit Fehlercode enden."),
+    line = next(
+        (number for number, value in step.active_lines() if "sha256sum" in value), step.start_line
     )
-    return [SafetyIssue(path, line, code, message) for condition, code, message in checks if not condition]
+    checks = (
+        (
+            ACTUAL_ASSIGNMENT.search(text) and ACTUAL_OUTPUT.search(text),
+            "CIW004",
+            "Payload muss die berechnete SHA-256 ausgeben.",
+        ),
+        (
+            EXPECTED_VALUE.search(text) and EXPECTED_OUTPUT.search(text),
+            "CIW005",
+            "Payload muss die erwartete SHA-256 ausgeben.",
+        ),
+        (
+            FRAGMENT_MARKER.search(text)
+            and FRAGMENT_SIZE.search(text)
+            and FRAGMENT_CHECKSUM.search(text),
+            "CIW006",
+            "Payload muss Größe und SHA-256 jedes Fragments ausgeben.",
+        ),
+        (ARCHIVE_LISTING.search(text), "CIW007", "Payload-Fehler braucht eine tar -tzf-Diagnose."),
+        (
+            CHECKSUM_COMPARISON.search(text) and NONZERO_EXIT.search(text),
+            "CIW010",
+            "Prüfsummenabweichungen müssen mit Fehlercode enden.",
+        ),
+    )
+    return [
+        SafetyIssue(path, line, code, message)
+        for condition, code, message in checks
+        if not condition
+    ]
 
 
 def audit_issues(step: StepBlock, path: str) -> list[SafetyIssue]:
     issues: list[SafetyIssue] = []
     for number, line in logical_shell_lines(step):
         if AUDIT_BYPASS.search(line):
-            issues.append(SafetyIssue(path, number, "CIW008", "Audit darf nicht per Shell-Bypass entkräftet werden."))
+            issues.append(
+                SafetyIssue(
+                    path, number, "CIW008", "Audit darf nicht per Shell-Bypass entkräftet werden."
+                )
+            )
     if AUDIT.search(step.text) and CONTINUE_ON_ERROR.search(step.text):
-        issues.append(SafetyIssue(path, step.start_line, "CIW009", "Audit-Schritt darf continue-on-error nicht aktivieren."))
+        issues.append(
+            SafetyIssue(
+                path,
+                step.start_line,
+                "CIW009",
+                "Audit-Schritt darf continue-on-error nicht aktivieren.",
+            )
+        )
     return issues
 
 
@@ -219,8 +271,19 @@ def validate_workflow(path: Path, root: Path) -> list[SafetyIssue]:
         issues.extend(audit_issues(step, relative))
         covered.update(range(step.start_line, step.end_line + 1))
     for number, line in enumerate(text.splitlines(), 1):
-        if number not in covered and not line.lstrip().startswith("#") and GIT_MUTATION.search(line):
-            issues.append(SafetyIssue(relative, number, "CIW011", "Git-Mutation liegt außerhalb eines analysierbaren Schritts."))
+        if (
+            number not in covered
+            and not line.lstrip().startswith("#")
+            and GIT_MUTATION.search(line)
+        ):
+            issues.append(
+                SafetyIssue(
+                    relative,
+                    number,
+                    "CIW011",
+                    "Git-Mutation liegt außerhalb eines analysierbaren Schritts.",
+                )
+            )
     return issues
 
 
@@ -233,7 +296,9 @@ def validate_repository(root: Path) -> list[SafetyIssue]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Prüft GitHub-Actions-Workflows auf Variante-B-Sicherheit.")
+    parser = argparse.ArgumentParser(
+        description="Prüft GitHub-Actions-Workflows auf Variante-B-Sicherheit."
+    )
     parser.add_argument("root", nargs="?", type=Path, default=Path.cwd())
     root = parser.parse_args(argv).root.resolve()
     issues = validate_repository(root)
