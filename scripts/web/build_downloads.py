@@ -231,6 +231,7 @@ def _artifact_rows(
     seen_references: set[str] = set()
     seen_artifacts: set[tuple[str, str]] = set()
     seen_kinds: set[str] = set()
+    missing_reference = False
     for reference in storage:
         relative_path = _require_string(reference.get("relative_path"), "relative_path")
         if relative_path == pdf_path:
@@ -263,16 +264,26 @@ def _artifact_rows(
         if identity in seen_artifacts:
             raise DownloadProjectionError("Artefaktidentität ist doppelt")
         seen_artifacts.add(identity)
-        reference_url = _safe_https_url(reference.get("public_reference"), "public_reference")
-        if reference_url in seen_references:
-            raise DownloadProjectionError("public_reference ist doppelt")
-        seen_references.add(reference_url)
+        public_reference = reference.get("public_reference")
+        reference_url = (
+            None
+            if public_reference is None
+            else _safe_https_url(public_reference, "public_reference")
+        )
+        if reference_url is not None:
+            if reference_url in seen_references:
+                raise DownloadProjectionError("public_reference ist doppelt")
+            seen_references.add(reference_url)
         artifact_sha256 = _require_string(reference.get("sha256"), "artifact.sha256")
         if _SHA256.fullmatch(artifact_sha256) is None:
             raise DownloadProjectionError("artifact.sha256 ist ungültig")
         artifact_bytes = reference.get("bytes")
         if type(artifact_bytes) is not int or artifact_bytes < 0:
             raise DownloadProjectionError("artifact.bytes ist ungültig")
+        backend = _backend(reference.get("storage_backend"))
+        if reference_url is None:
+            missing_reference = True
+            continue
         rows.append(
             DownloadRow(
                 source_id=key.source_id,
@@ -290,10 +301,12 @@ def _artifact_rows(
                 artifact_url=reference_url,
                 artifact_sha256=artifact_sha256,
                 artifact_bytes=artifact_bytes,
-                storage_backend=_backend(reference.get("storage_backend")),
+                storage_backend=backend,
                 attribution=attribution,
             )
         )
+    if missing_reference:
+        return ()
     if not rows:
         raise DownloadProjectionError("Materialized Source besitzt keine Storage-Referenz")
     return tuple(rows)
@@ -322,15 +335,14 @@ def project_downloads(
         if identity in documents:
             raise DownloadProjectionError("Dokumentzuordnung ist mehrdeutig")
         documents[identity] = document
-    references: dict[tuple[str, str], list[Mapping[str, object]]] = {}
     references_by_source: dict[str, list[Mapping[str, object]]] = {}
     for raw_reference in graph.storage_references:
         reference = _mapping(raw_reference, "storage_reference")
         source_id = _require_string(reference.get("source_id"), "storage.source_id")
-        document_id = _require_string(reference.get("document_id"), "storage.document_id")
-        references.setdefault((source_id, document_id), []).append(reference)
+        _require_string(reference.get("document_id"), "storage.document_id")
         references_by_source.setdefault(source_id, []).append(reference)
     rows: list[DownloadRow] = []
+    seen_public_references: set[str] = set()
     tombstones: list[DownloadTombstone] = []
     for raw_source in graph.sources:
         source = _mapping(raw_source, "source")
@@ -347,7 +359,33 @@ def project_downloads(
         origin_url = validate_origin_url(
             _require_string(source.get("source_url"), "source_url"), source_id=key.source_id
         )
-        if decision.mode in {PublicationMode.SOURCE_ONLY, PublicationMode.ORIGIN_LINK}:
+        mode = decision.mode
+        if mode is PublicationMode.MATERIALIZED:
+            document = documents.get((key.source_id, key.version_or_bitstream))
+            if document is None:
+                raise DownloadProjectionError("Source besitzt kein eindeutiges Dokument")
+            source_references = tuple(references_by_source.get(key.source_id, ()))
+            artifacts = _artifact_rows(
+                source,
+                document,
+                source_references,
+                key=key,
+                attribution=decision.attribution,
+                decision_sha256=decision.decision_sha256,
+                rights_state=decision.state,
+            )
+            paths = _mapping(document.get("paths"), "document.paths")
+            for reference in source_references:
+                url = reference.get("public_reference")
+                if reference.get("relative_path") in paths.values() and url is not None:
+                    if url in seen_public_references:
+                        raise DownloadProjectionError("public_reference ist global doppelt")
+                    seen_public_references.add(url)
+            if artifacts:
+                rows.extend(artifacts)
+                continue
+            mode = PublicationMode.ORIGIN_LINK
+        if mode in {PublicationMode.SOURCE_ONLY, PublicationMode.ORIGIN_LINK}:
             rows.append(
                 DownloadRow(
                     source_id=key.source_id,
@@ -355,7 +393,7 @@ def project_downloads(
                     publication_date=_publication_date(source.get("publication_date")),
                     approval_key=key,
                     rights_state=decision.state,
-                    mode=decision.mode,
+                    mode=mode,
                     origin_url=origin_url,
                     artifact_kind=None,
                     artifact_id=None,
@@ -368,25 +406,6 @@ def project_downloads(
                 )
             )
             continue
-        document = documents.get((key.source_id, key.version_or_bitstream))
-        if document is None:
-            raise DownloadProjectionError("Source besitzt kein eindeutiges Dokument")
-        source_references = tuple(
-            references.get(
-                (key.source_id, _require_string(document.get("document_id"), "document_id")), ()
-            )
-        )
-        rows.extend(
-            _artifact_rows(
-                source,
-                document,
-                source_references,
-                key=key,
-                attribution=decision.attribution,
-                decision_sha256=decision.decision_sha256,
-                rights_state=decision.state,
-            )
-        )
     rows.sort(
         key=lambda row: (
             -date.fromisoformat(row.publication_date).toordinal(),
@@ -444,8 +463,9 @@ def _row_fragment(row: DownloadRow, *, include_attribution: bool) -> str:
     title = html.escape(row.title, quote=True)
     origin = validate_origin_url(row.origin_url, source_id=row.source_id)
     publication_date = html.escape(_publication_date(row.publication_date), quote=True)
-    parts = ['<article class="download">', f"<h3>{title}</h3>"]
+    parts = ['<article class="download">']
     if row.mode in {PublicationMode.SOURCE_ONLY, PublicationMode.MATERIALIZED}:
+        parts.append(f"<h3>{title}</h3>")
         parts.append(f"<p>Erscheinungsdatum: {publication_date}</p>")
     if row.mode is PublicationMode.MATERIALIZED:
         if (
@@ -464,12 +484,24 @@ def _row_fragment(row: DownloadRow, *, include_attribution: bool) -> str:
         parts.append(
             f'<p><a href="{html.escape(artifact_url, quote=True)}" rel="noopener noreferrer">{text}</a></p>'
         )
+        parts.append(
+            f"<p>Artifact-SHA-256: {html.escape(row.artifact_sha256, quote=True)} · "
+            f"Bytes: {row.artifact_bytes} · "
+            f"Backend: {html.escape(row.storage_backend.value, quote=True)}</p>"
+        )
         license_url = validate_license_url(
             row.attribution.license_url, license_notice=row.attribution.license_notice
         )
         if include_attribution:
             parts.append(
+                '<div class="download-attribution"><h4>Attribution dieser Quelle</h4>'
+                f"<p>Urheber: {html.escape(', '.join(row.attribution.creators), quote=True)}</p>"
+                f"<p>Zuschreibungsempfänger: {html.escape(', '.join(row.attribution.attribution_parties), quote=True)}</p>"
                 f'<p>{html.escape(row.attribution.copyright_notice, quote=True)} · <a href="{html.escape(license_url, quote=True)}" rel="noopener noreferrer">{html.escape(row.attribution.license_notice, quote=True)}</a></p>'
+                f"<p>Haftungshinweis: {html.escape(row.attribution.disclaimer_notice, quote=True)}</p>"
+                f"<p>Frühere Änderungen: {html.escape('; '.join(row.attribution.prior_change_history), quote=True)}</p>"
+                f"<p>Aktueller Änderungsvermerk: {html.escape(row.attribution.current_change_notice, quote=True)}</p>"
+                "</div>"
             )
         if row.rights_state is not RightsState.APPROVED:
             raise DownloadProjectionError(
@@ -512,15 +544,15 @@ def render_download_page(source: str, inputs: DownloadInputs) -> str:
         raise DownloadProjectionError("inputs muss exakter DownloadInputs sein")
     fragment = _status_fragment(inputs.public_status)
     if inputs.rows:
-        attributed: set[ApprovalKey] = set()
-        rows: list[str] = []
+        groups: dict[ApprovalKey, list[DownloadRow]] = {}
         for row in inputs.rows:
-            include_attribution = (
-                row.mode is PublicationMode.MATERIALIZED and row.approval_key not in attributed
-            )
-            rows.append(_row_fragment(row, include_attribution=include_attribution))
-            if row.mode is PublicationMode.MATERIALIZED:
-                attributed.add(row.approval_key)
+            groups.setdefault(row.approval_key, []).append(row)
+        rows: list[str] = []
+        for group in groups.values():
+            rows.append('<section class="download-source">')
+            for index, row in enumerate(group):
+                rows.append(_row_fragment(row, include_attribution=index == 0))
+            rows.append("</section>")
         fragment += '<section class="downloads"><h2>Downloads</h2>' + "".join(rows) + "</section>"
     else:
         fragment += '<section class="downloads"><h2>Downloads</h2><p>Keine öffentlichen Downloads verfügbar.</p></section>'

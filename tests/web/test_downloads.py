@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from html.parser import HTMLParser
 import json
+import re
 from dataclasses import replace
 from pathlib import Path
 import shutil
@@ -556,6 +557,20 @@ def test_materialized_row_renders_exact_rights_mode_and_availability(fixture_reg
     assert "Verfügbarkeit: Download verfügbar." in rendered
 
 
+def test_materialized_metadata_is_per_artifact_without_independent_source_hash(fixture_register):
+    register, policy, decision = fixture_register
+    inputs = project_downloads(_graph(decision), register=register, policy=policy)
+    rendered = render_download_page(DOWNLOAD_MARKER, inputs)
+    parser = _PublishedDownloadParser()
+    parser.feed(rendered)
+    visible = " ".join(parser.text)
+    assert SOURCE_SHA256 not in rendered
+    for sha256, size in (("d" * 64, 12), ("e" * 64, 23)):
+        assert f"Artifact-SHA-256: {sha256}" in visible
+        assert f"Bytes: {size}" in visible
+    assert visible.count("Backend: object") == 2
+
+
 def test_canonical_rights_validation_rejects_publish_with_blocked_components() -> None:
     approved = _decision()
     with pytest.raises(RightsPolicyError, match="components_state"):
@@ -608,7 +623,6 @@ def test_remove_all_has_no_row_or_public_presence(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "public_reference",
     (
-        None,
         "http://downloads.example.test/object.pdf",
         "//downloads.example.test/object.pdf",
         "https://user@downloads.example.test/object.pdf",
@@ -619,8 +633,8 @@ def test_remove_all_has_no_row_or_public_presence(tmp_path: Path) -> None:
         "version https://git-lfs.github.com/spec/v1",
     ),
 )
-def test_materialized_rejects_missing_or_unsafe_public_reference(
-    fixture_register, public_reference: str | None
+def test_materialized_rejects_unsafe_public_reference(
+    fixture_register, public_reference: str
 ) -> None:
     register, policy, decision = fixture_register
     with pytest.raises(DownloadProjectionError):
@@ -629,6 +643,91 @@ def test_materialized_rejects_missing_or_unsafe_public_reference(
             register=register,
             policy=policy,
         )
+
+
+def test_missing_public_reference_downgrades_only_its_approval_key(tmp_path: Path) -> None:
+    first = _decision()
+    second = _decision(
+        source_id="rki:176904/8",
+        bitstream_url="https://edoc.rki.de/bitstream/handle/176904/8/second.pdf",
+        source_sha256="3" * 64,
+    )
+    register, policy, _ = _fixture_register(tmp_path, first, second)
+    graph = _with_sibling_bitstream(_graph(first), second)
+    graph = _storage_change(graph, 0, public_reference=None)
+    inputs = project_downloads(graph, register=register, policy=policy)
+    own = [row for row in inputs.rows if row.approval_key == first.approval_key]
+    assert len(own) == 1
+    assert own[0].mode is PublicationMode.ORIGIN_LINK
+    assert own[0].attribution is None
+    assert own[0].artifact_url is None
+    assert own[0].artifact_sha256 is None
+    assert (
+        len(
+            [
+                row
+                for row in inputs.rows
+                if row.approval_key == second.approval_key
+                and row.mode is PublicationMode.MATERIALIZED
+            ]
+        )
+        == 2
+    )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"public_reference": "https://downloads.example.test/unsafe?token=x"},
+        {"sha256": "not-a-hash"},
+        {"bytes": -1},
+        {"storage_backend": "unknown"},
+        {"decision_sha256": "f" * 64},
+        {"visibility": "internal"},
+        {"document_id": "foreign-document"},
+        {"source_sha256": "f" * 64},
+    ),
+)
+def test_missing_reference_never_masks_other_invalid_artifacts(fixture_register, changes):
+    register, policy, decision = fixture_register
+    graph = _storage_change(_graph(decision), 0, public_reference=None)
+    graph = _storage_change(graph, 1, **changes)
+    with pytest.raises(DownloadProjectionError):
+        project_downloads(graph, register=register, policy=policy)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"sha256": "not-a-hash"},
+        {"bytes": -1},
+        {"storage_backend": "unknown"},
+        {"decision_sha256": "f" * 64},
+        {"visibility": "internal"},
+        {"document_id": "foreign-document"},
+        {"source_sha256": "f" * 64},
+    ),
+)
+def test_missing_reference_itself_still_requires_valid_artifact(fixture_register, changes):
+    register, policy, decision = fixture_register
+    graph = _storage_change(_graph(decision), 0, public_reference=None, **changes)
+    with pytest.raises(DownloadProjectionError):
+        project_downloads(graph, register=register, policy=policy)
+
+
+def test_missing_reference_does_not_hide_cross_key_duplicate_target(tmp_path: Path) -> None:
+    first = _decision()
+    second = _decision(
+        source_id="rki:176904/8",
+        bitstream_url="https://edoc.rki.de/bitstream/handle/176904/8/second.pdf",
+        source_sha256="3" * 64,
+    )
+    register, policy, _ = _fixture_register(tmp_path, first, second)
+    graph = _with_sibling_bitstream(_graph(first), second)
+    graph = _storage_change(graph, 0, public_reference=None)
+    graph = _storage_change(graph, 2, public_reference="https://downloads.example.test/object.md")
+    with pytest.raises(DownloadProjectionError, match="doppelt"):
+        project_downloads(graph, register=register, policy=policy)
 
 
 def test_materialized_rejects_duplicate_public_reference(fixture_register) -> None:
@@ -1020,7 +1119,7 @@ def test_nonmaterialized_downgrade_strips_payload_secrets(
             ManifestGraph((source,), graph.documents, (), storage), register=register, policy=policy
         ),
     )
-    assert "Permitted bibliography title" in rendered
+    assert ("Permitted bibliography title" in rendered) is (mode is PublicationMode.SOURCE_ONLY)
     for secret in (
         "BODY_SECRET",
         "OCR_SECRET",
@@ -1312,7 +1411,11 @@ def test_nonmaterialized_strict_tree_never_leaks_payload_or_storage_tokens(
     )
     if mode is PublicationMode.ORIGIN_LINK:
         assert "https://edoc.rki.de/handle/176904/900000001" in parser.hrefs
-        _assert_public_tokens_absent(html, search, (SOURCE_ONLY_BIBLIOGRAPHY_DATE,))
+        assert "Veröffentlichungsmodus: Origin-Link." in " ".join(parser.text)
+        assert "Rechtestatus: Ungeklärt." in " ".join(parser.text)
+        _assert_public_tokens_absent(
+            html, search, (SOURCE_ONLY_TITLE_TOKEN, SOURCE_ONLY_BIBLIOGRAPHY_DATE)
+        )
     if mode is PublicationMode.REMOVE_ALL:
         _assert_public_tokens_absent(
             html,
@@ -1333,6 +1436,26 @@ def test_materialized_real_strict_tree_proves_full_safe_link_conjunction(
     )
     visible = " ".join(parser.text)
 
+    source_hash = _strict_decision(PublicationMode.MATERIALIZED).approval_key.source_sha256
+    for reference in references:
+        assert f"Artifact-SHA-256: {reference['sha256']}" in visible
+        assert f"Bytes: {reference['bytes']}" in visible
+        assert f"Backend: {reference['storage_backend']}" in visible
+        assert reference["sha256"] not in search
+        article = next(
+            article
+            for article in re.findall(r'<article class="download">(.*?)</article>', html, re.S)
+            if f'href="{reference["public_reference"]}"' in article
+        )
+        assert f"Artifact-SHA-256: {reference['sha256']}" in article
+        assert f"Bytes: {reference['bytes']}" in article
+        assert f"Backend: {reference['storage_backend']}" in article
+    assert "PDF herunterladen" in visible
+    assert "Quell-Markdown herunterladen" in visible
+    assert source_hash not in search
+    assert any(reference["sha256"] != source_hash for reference in references)
+    _assert_public_tokens_absent(html, search, (BODY_TOKEN, OCR_TOKEN, TOKEN_QUERY))
+
     assert "https://downloads.example.test/materialized-0" in parser.hrefs
     assert "https://downloads.example.test/materialized-1" in parser.hrefs
     assert f"Erscheinungsdatum: {SOURCE_ONLY_BIBLIOGRAPHY_DATE}" in visible
@@ -1350,7 +1473,7 @@ def test_materialized_real_strict_tree_proves_full_safe_link_conjunction(
         tuple(
             reference[field]
             for reference in references
-            for field in ("sha256", "relative_path", "storage_object_id")
+            for field in ("relative_path", "storage_object_id")
         ),
     )
 

@@ -7,7 +7,6 @@ from collections.abc import Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 import hashlib
-import html
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -607,9 +606,13 @@ def _attribution_only_revision(previous: RightsDecision, current: RightsDecision
         or previous.basis != current.basis
         or previous.attribution is None
         or current.attribution is None
-        or previous.attribution == current.attribution
     ):
         return False
+    if previous.attribution == current.attribution:
+        return (previous.reviewed_by, previous.reviewed_at) != (
+            current.reviewed_by,
+            current.reviewed_at,
+        )
     return current.attribution.prior_change_history == (
         *previous.attribution.prior_change_history,
         previous.attribution.current_change_notice,
@@ -1002,16 +1005,6 @@ def render_docs_tree(
                     "<!-- DESINFECT:DOWNLOADS -->", "<!-- DESINFECT_DOWNLOADS -->"
                 )
                 rendered = render_download_page(rendered, download_inputs)
-                creators = tuple(
-                    creator
-                    for row in download_inputs.rows
-                    if row.attribution is not None
-                    for creator in row.attribution.creators
-                )
-                if creators:
-                    rendered += (
-                        "\n\n<p>Urheber: " + html.escape(", ".join(creators), quote=True) + "</p>\n"
-                    )
             write_generated_markdown(stage / page.relative_path, rendered, stage=stage)
         for page in excluded_pages:
             write_generated_markdown(

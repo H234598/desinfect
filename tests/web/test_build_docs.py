@@ -8,6 +8,8 @@ from collections import Counter
 from copy import deepcopy
 from dataclasses import FrozenInstanceError, replace
 import hashlib
+import html
+import re
 from pathlib import Path, PurePosixPath
 import os
 import shutil
@@ -2791,6 +2793,277 @@ def test_remove_all_takedown_omits_every_public_trace(repo: Path) -> None:
         assert forbidden not in public
 
 
+def test_complete_attribution_is_escaped_and_bound_to_each_approval_key(repo: Path) -> None:
+    from tests.web.test_downloads import _PublishedDownloadParser
+
+    first, second, *_ = _write_two_bitstream_publication_manifests(repo)
+    captured = build_docs_module.capture_publication_inputs(repo)
+    graph = build_docs_module._structural_manifest_graph(dict(captured.manifest_files))
+    decisions = []
+    sources = []
+    tokens_by_key = {}
+    for index, previous in enumerate((first, second)):
+        prefix = f"ATTR-{index}-"
+        tokens = tuple(
+            prefix + field + '<script>&"'
+            for field in ("CREATOR", "PARTY", "COPYRIGHT", "DISCLAIMER", "PRIOR", "CURRENT")
+        )
+        attribution = replace(
+            previous.attribution,
+            creators=(tokens[0],),
+            attribution_parties=(tokens[1],),
+            copyright_notice=tokens[2],
+            disclaimer_notice=tokens[3],
+            prior_change_history=(tokens[4],),
+            current_change_notice=tokens[5],
+        )
+        draft = replace(previous, attribution=attribution, decision_sha256=None)
+        decision = replace(draft, decision_sha256=decision_sha256(draft))
+        decisions.append(decision)
+        tokens_by_key[decision.approval_key] = tokens
+        source = deepcopy(
+            next(
+                source
+                for source in graph.sources
+                if source["bitstream_id"] == decision.approval_key.version_or_bitstream
+            )
+        )
+        source["title"] = prefix + "TITLE"
+        _embed_decision(source, decision)
+        sources.append(source)
+    storage = tuple(
+        {
+            **reference,
+            "decision_sha256": next(
+                decision.decision_sha256
+                for decision in decisions
+                if decision.approval_key.version_or_bitstream
+                == next(
+                    document["bitstream_id"]
+                    for document in graph.documents
+                    if reference["relative_path"] in document["paths"].values()
+                )
+            ),
+        }
+        for reference in graph.storage_references
+    )
+    graph = replace(
+        graph,
+        sources=tuple(sorted(sources, key=lambda source: source["bitstream_id"])),
+        storage_references=storage,
+    )
+    _write_register_decisions(repo, tuple(decisions))
+    for relative, payload in render_manifest_catalog(graph).files:
+        (repo / "rki/Bulletins/Manifeste" / relative).write_bytes(payload)
+    build_site(repo, check=True, dry_run=False, strict=True, force=False, site_url=None)
+    raw = (repo / "site/Downloads/index.html").read_text(encoding="utf-8")
+    search = (repo / "site/search/search_index.json").read_text(encoding="utf-8")
+    parser = _PublishedDownloadParser()
+    parser.feed(raw)
+    visible = " ".join(parser.text)
+    for tokens in tokens_by_key.values():
+        for token in (*tokens[1:], tokens[0]):
+            assert token in visible
+            assert raw.count(html.escape(token, quote=True)) == 1
+            assert token not in search
+    groups = re.findall(r'<section class="download-source">(.*?)</section>', raw, re.S)
+    assert len(groups) == 2
+    for decision in decisions:
+        tokens = tokens_by_key[decision.approval_key]
+        group = next(group for group in groups if html.escape(tokens[0], quote=True) in group)
+        for token in tokens:
+            assert html.escape(token, quote=True) in group
+        assert group.count('href="https://creativecommons.org/licenses/by/4.0/"') == 1
+        own_refs = [ref for ref in storage if ref["decision_sha256"] == decision.decision_sha256]
+        for ref in own_refs:
+            assert ref["public_reference"] in group
+        for other, other_tokens in tokens_by_key.items():
+            if other != decision.approval_key:
+                assert all(html.escape(token, quote=True) not in group for token in other_tokens)
+
+    previous = decisions[0]
+    old = previous.attribution
+    new_tokens = tuple(
+        f'D2-{field}<script>&"'
+        for field in ("CREATOR", "PARTY", "COPYRIGHT", "DISCLAIMER", "CURRENT")
+    )
+    attribution = replace(
+        old,
+        creators=(new_tokens[0],),
+        attribution_parties=(new_tokens[1],),
+        copyright_notice=new_tokens[2],
+        disclaimer_notice=new_tokens[3],
+        prior_change_history=(*old.prior_change_history, old.current_change_notice),
+        current_change_notice=new_tokens[4],
+    )
+    draft = replace(previous, attribution=attribution, decision_sha256=None)
+    current = replace(draft, decision_sha256=decision_sha256(draft))
+    _write_register_decisions(repo, (current, decisions[1]))
+    build_site(repo, check=True, dry_run=False, strict=True, force=True, site_url=None)
+    quarantined = (repo / "site/Downloads/index.html").read_text(encoding="utf-8")
+    quarantined += (repo / "site/search/search_index.json").read_text(encoding="utf-8")
+    for token in (*tokens_by_key[previous.approval_key], *new_tokens):
+        assert html.escape(token, quote=True) not in quarantined
+    for token in tokens_by_key[decisions[1].approval_key]:
+        assert html.escape(token, quote=True) in quarantined
+    for ref in storage:
+        if ref["decision_sha256"] == previous.decision_sha256:
+            assert ref["public_reference"] not in quarantined
+    refreshed_sources = tuple(deepcopy(source) for source in graph.sources)
+    for source in refreshed_sources:
+        if source["bitstream_id"] == current.approval_key.version_or_bitstream:
+            _embed_decision(source, current)
+    refreshed_storage = tuple(
+        {**ref, "decision_sha256": current.decision_sha256}
+        if ref["decision_sha256"] == previous.decision_sha256
+        else ref
+        for ref in storage
+    )
+    refreshed_graph = replace(
+        graph, sources=refreshed_sources, storage_references=refreshed_storage
+    )
+    for relative, payload in render_manifest_catalog(refreshed_graph).files:
+        (repo / "rki/Bulletins/Manifeste" / relative).write_bytes(payload)
+    build_site(repo, check=True, dry_run=False, strict=True, force=True, site_url=None)
+    refreshed = (repo / "site/Downloads/index.html").read_text(encoding="utf-8")
+    for token in (*new_tokens, *old.prior_change_history, old.current_change_notice):
+        assert refreshed.count(html.escape(token, quote=True)) == 1
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"reviewed_at": "2026-08-02T00:00:00Z"},
+        {"reviewed_by": "Second fixture reviewer"},
+        {"reviewed_at": "2026-08-02T00:00:00Z", "reviewed_by": "Second fixture reviewer"},
+    ),
+)
+def test_review_provenance_only_revision_quarantines_then_refreshes(repo: Path, changes) -> None:
+    first = _install_approved_publication(repo)
+    build_site(repo, check=True, dry_run=False, strict=True, force=False, site_url=None)
+    draft = replace(first, **changes, decision_sha256=None)
+    current = replace(draft, decision_sha256=decision_sha256(draft))
+    assert current.attribution == first.attribution
+    assert current.decision_sha256 != first.decision_sha256
+    _write_register(repo, current)
+    build_site(repo, check=True, dry_run=False, strict=True, force=True, site_url=None)
+    public = (repo / "site/Downloads/index.html").read_text(encoding="utf-8")
+    public += (repo / "site/search/search_index.json").read_text(encoding="utf-8")
+    for forbidden in (
+        "approved-0",
+        "approved-1",
+        "D1 Creator",
+        "D1 Copyright",
+        "D1 Disclaimer",
+        "Robert Koch-Institut",
+        "Originalgetreue Bereitstellung.",
+        "Synthetic bulletin",
+    ):
+        assert forbidden not in public
+    assert 'href="https://edoc.rki.de/handle/176904/900000001"' in public
+    _write_publication_manifests(repo, current)
+    build_site(repo, check=True, dry_run=False, strict=True, force=True, site_url=None)
+    refreshed = (repo / "site/Downloads/index.html").read_text(encoding="utf-8")
+    assert "https://downloads.example.test/approved-0" in refreshed
+    assert "D1 Creator" in refreshed
+    assert "D1 Disclaimer" in refreshed
+
+
+@pytest.mark.parametrize("missing", ("pdf", "markdown", "both"))
+def test_missing_public_reference_safely_rebuilds_and_preserves_other_bitstream(
+    repo: Path, missing
+):
+    first, second, first_ids, second_ids = _write_two_bitstream_publication_manifests(repo)
+    _write_register_decisions(repo, (first, second))
+    build_site(repo, check=True, dry_run=False, strict=True, force=False, site_url=None)
+    captured = build_docs_module.capture_publication_inputs(repo)
+    graph = build_docs_module._structural_manifest_graph(dict(captured.manifest_files))
+    first_refs = [ref for ref in graph.storage_references if ref["artifact_id"] in first_ids]
+    second_refs = [ref for ref in graph.storage_references if ref["artifact_id"] in second_ids]
+    storage = tuple(
+        {**ref, "public_reference": None}
+        if ref["artifact_id"] in first_ids
+        and (missing == "both" or (missing == "pdf") == (ref["conversion_id"] is None))
+        else ref
+        for ref in graph.storage_references
+    )
+    changed = replace(graph, storage_references=storage)
+    for relative, payload in render_manifest_catalog(changed).files:
+        (repo / "rki/Bulletins/Manifeste" / relative).write_bytes(payload)
+    build_docs_module._structural_manifest_graph(
+        dict(build_docs_module.capture_publication_inputs(repo).manifest_files)
+    )
+    build_site(repo, check=True, dry_run=False, strict=True, force=True, site_url=None)
+    raw = (repo / "site/Downloads/index.html").read_text(encoding="utf-8")
+    search = (repo / "site/search/search_index.json").read_text(encoding="utf-8")
+    for ref in first_refs:
+        assert ref["public_reference"] not in raw + search
+    for ref in second_refs:
+        assert ref["public_reference"] in raw
+        assert ref["public_reference"] not in search
+    fallback = next(
+        group
+        for group in re.findall(r'<section class="download-source">(.*?)</section>', raw, re.S)
+        if "Veröffentlichungsmodus: Origin-Link." in group
+    )
+    for forbidden in (
+        "Artifact-SHA-256",
+        "Bytes:",
+        "Backend:",
+        "download-attribution",
+        "D1 Creator",
+        "D1 Copyright",
+        "D1 Disclaimer",
+        "Synthetic bulletin",
+    ):
+        assert forbidden not in fallback
+    assert 'href="https://edoc.rki.de/handle/176904/900000001"' in fallback
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"basis": "Changed rights basis"},
+        {"allowed_actions": (RightsAction.FETCH, RightsAction.PUBLISH)},
+    ),
+)
+def test_review_provenance_does_not_allow_other_lateral_or_permissive_drift(repo: Path, changes):
+    previous = _install_approved_publication(repo)
+    build_site(repo, check=True, dry_run=False, strict=True, force=False, site_url=None)
+    before = _generated_tree_hashes(repo)
+    draft = replace(previous, **changes, reviewed_at="2026-08-02T00:00:00Z", decision_sha256=None)
+    current = replace(draft, decision_sha256=decision_sha256(draft))
+    _write_register(repo, current)
+    with pytest.raises(SiteBuildError, match="lateral oder permissiv"):
+        build_site(repo, check=True, dry_run=False, strict=True, force=True, site_url=None)
+    assert _generated_tree_hashes(repo) == before
+
+
+def test_missing_reference_with_present_unsafe_url_keeps_strict_site_unchanged(repo: Path):
+    _install_approved_publication(repo)
+    build_site(repo, check=True, dry_run=False, strict=True, force=False, site_url=None)
+    before = _generated_tree_hashes(repo)
+    graph = build_docs_module._structural_manifest_graph(
+        dict(build_docs_module.capture_publication_inputs(repo).manifest_files)
+    )
+    storage = tuple(
+        {
+            **ref,
+            "public_reference": None
+            if index == 0
+            else "https://downloads.example.test/unsafe?token=blocked",
+        }
+        for index, ref in enumerate(graph.storage_references)
+    )
+    for relative, payload in render_manifest_catalog(
+        replace(graph, storage_references=storage)
+    ).files:
+        (repo / "rki/Bulletins/Manifeste" / relative).write_bytes(payload)
+    with pytest.raises(SiteBuildError, match="public_reference"):
+        build_site(repo, check=True, dry_run=False, strict=True, force=True, site_url=None)
+    assert _generated_tree_hashes(repo) == before
+
+
 def test_attribution_drift_replaces_live_d1_with_safe_fallback(repo: Path) -> None:
     _install_approved_publication(repo)
     build_site(repo, check=True, dry_run=False, strict=True, force=False, site_url=None)
@@ -2809,6 +3082,8 @@ def test_attribution_drift_replaces_live_d1_with_safe_fallback(repo: Path) -> No
 
     for forbidden in (
         old_href,
+        "Synthetic bulletin",
+        "1996-03-22",
         "D1 Creator",
         "D1 Copyright",
         "D2 Creator",
