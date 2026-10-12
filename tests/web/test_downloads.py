@@ -51,7 +51,7 @@ BITSTREAM_ID = bitstream_identity(BITSTREAM_URL).bitstream_id
 DOCUMENT_ID = "rki-176904-7-v1"
 CONVERSION_ID = "conv-" + "c" * 64
 SOURCE_ONLY_TITLE_TOKEN = "SOURCE-ONLY-TITLE-4BC451"
-SOURCE_ONLY_BIBLIOGRAPHY_TOKEN = "SOURCE-ONLY-BIBLIOGRAPHY-78D6AF"
+SOURCE_ONLY_BIBLIOGRAPHY_DATE = "1996-03-22"
 BODY_TOKEN = "BODY-SECRET-9E127A"
 OCR_TOKEN = "OCR-SECRET-6C40E1"
 TOKEN_QUERY = "token=TOKEN-SECRET-861B3F"
@@ -239,9 +239,28 @@ def _strict_decision(mode: PublicationMode) -> RightsDecision:
 def _write_strict_publication(
     repo: Path,
     mode: PublicationMode,
+    *,
+    mutation: str | None = None,
 ) -> tuple[RightsDecision, tuple[dict[str, object], ...]]:
     decision = _strict_decision(mode)
     payload = _decision_payload(decision)
+    if mutation == "publish_action":
+        draft = replace(
+            decision,
+            allowed_actions=(),
+            attribution=None,
+            decision_sha256=None,
+        )
+        decision = replace(draft, decision_sha256=decision_sha256(draft))
+        payload = _decision_payload(decision)
+    elif mutation == "publication_mode":
+        payload["mode"] = PublicationMode.SOURCE_ONLY.value
+    elif mutation == "components_state":
+        payload["components_state"] = ComponentsState.BLOCKED.value
+    elif mutation == "attribution":
+        attribution = payload["attribution"]
+        assert isinstance(attribution, dict)
+        attribution["creators"] = []
     (repo / "research/rights-register.yml").write_text(
         yaml.safe_dump(
             {"schema_version": 2, "decisions": [payload]},
@@ -253,7 +272,8 @@ def _write_strict_publication(
 
     source = deepcopy(_source())
     source.update(
-        title=f"{SOURCE_ONLY_TITLE_TOKEN} {SOURCE_ONLY_BIBLIOGRAPHY_TOKEN}",
+        title=SOURCE_ONLY_TITLE_TOKEN,
+        publication_date=SOURCE_ONLY_BIBLIOGRAPHY_DATE,
         etag=BODY_TOKEN,
         decision_sha256=decision.decision_sha256,
     )
@@ -272,6 +292,10 @@ def _write_strict_publication(
         "version_or_bitstream": decision.approval_key.version_or_bitstream,
         "source_sha256": decision.approval_key.source_sha256,
     }
+    if mutation == "decision_hash":
+        source["decision_sha256"] = "f" * 64
+    elif mutation == "bitstream_identity":
+        source["bitstream_id"] = "rki-bitstream-" + "f" * 64
 
     references = tuple(deepcopy(reference) for reference in _storage())
     for index, reference in enumerate(references):
@@ -282,21 +306,34 @@ def _write_strict_publication(
             rights_state=decision.state.value,
             visibility="public",
             public_reference=(
-                "https://downloads.example.test/materialized.pdf"
+                f"https://downloads.example.test/materialized-{index}"
                 if mode is PublicationMode.MATERIALIZED
                 else OLD_DOWNLOAD_HREF
                 if index == 0
                 else f"https://downloads.example.test/private?{TOKEN_QUERY}"
             ),
         )
+    if mutation == "provenance_state":
+        references[0]["provenance_state"] = "superseded"
+    elif mutation == "visibility":
+        references[0]["visibility"] = "internal"
+    elif mutation == "storage_decision_hash":
+        references[0]["decision_sha256"] = "f" * 64
+    elif mutation == "storage_rights_state":
+        references[0]["rights_state"] = RightsState.INTERNAL_ONLY.value
+    elif mutation == "storage_source_hash":
+        references[0]["source_sha256"] = "f" * 64
+    elif mutation == "storage_join":
+        references[0]["document_id"] = "rki-176904-900000002-v1"
+    elif mutation == "storage_backend":
+        references[0]["storage_backend"] = "lfs"
+    elif mutation == "public_reference":
+        references[0]["public_reference"] = (
+            "https://downloads.example.test/materialized-0?token=secret"
+        )
     document = deepcopy(_document())
-    if mode is PublicationMode.MATERIALIZED:
-        document["paths"]["markdown"] = None
-        selected = references[:1]
-        conversions: tuple[dict[str, object], ...] = ()
-    else:
-        selected = tuple(sorted(references, key=lambda item: item["artifact_id"]))
-        conversions = (deepcopy(_conversion()),)
+    selected = tuple(sorted(references, key=lambda item: item["artifact_id"]))
+    conversions = (deepcopy(_conversion()),)
     graph = ManifestGraph((source,), (document,), conversions, selected)
     rendered = render_manifest_catalog(graph)
     root = repo / "rki/Bulletins/Manifeste"
@@ -309,7 +346,7 @@ def _write_strict_publication(
 
 def _build_strict_download_tree(
     repo: Path, mode: PublicationMode
-) -> tuple[_PublishedDownloadParser, str, tuple[dict[str, object], ...]]:
+) -> tuple[_PublishedDownloadParser, str, str, tuple[dict[str, object], ...]]:
     _decision_value, references = _write_strict_publication(repo, mode)
     build_site(
         repo,
@@ -324,7 +361,23 @@ def _build_strict_download_tree(
     parser.feed(html)
     parser.close()
     search = json.loads((repo / "site/search/search_index.json").read_text(encoding="utf-8"))
-    return parser, json.dumps(search, ensure_ascii=False, sort_keys=True), references
+    return parser, html, json.dumps(search, ensure_ascii=False, sort_keys=True), references
+
+
+def _assert_public_tokens_absent(html: str, search: str, forbidden: tuple[object, ...]) -> None:
+    public = html + search
+    for token in forbidden:
+        assert str(token) not in public
+
+
+def _site_snapshot(repo: Path) -> dict[str, bytes | None]:
+    root = repo / "site"
+    snapshot: dict[str, bytes | None] = {}
+    for path in sorted(root.rglob("*")):
+        assert not path.is_symlink()
+        assert path.is_file() or path.is_dir()
+        snapshot[path.relative_to(root).as_posix()] = path.read_bytes() if path.is_file() else None
+    return snapshot
 
 
 @pytest.fixture
@@ -1148,8 +1201,22 @@ def test_operations_docs_cover_download_build_matrix_and_accessibility_boundary(
         "Teilpreview",
         "Rollback",
         "Source-Purity",
+        "Der integrierte `build_site()`-Vollbuild veröffentlicht Docs und Site als koordinierte Transaktion.",
+        "Scheitert diese Transaktion, bleiben beide alten vollständigen Zielbäume aktiv.",
+        "`build_docs()` ist ein separater Docs-only-Flow",
     ):
         assert required in build_doc
+    assert (
+        "ein bereits vollständig veröffentlichter neuer Docs-Baum kann daneben bestehen"
+        not in build_doc
+    )
+    for obsolete in (
+        "keine gemeinsame Transaktion über beide Ziele",
+        "Normalbuild publiziert zuerst",
+        "Beide Ziele sind getrennte atomare Transaktionen",
+        "Docs und Site bleiben zwei getrennte atomare Veröffentlichungen",
+    ):
+        assert obsolete not in build_doc
     for required in (
         "## Downloads, Status und Rechte",
         "Betriebsbereit",
@@ -1168,18 +1235,53 @@ def test_operations_docs_cover_download_build_matrix_and_accessibility_boundary(
         assert required in ux_doc
 
 
+@pytest.mark.parametrize(
+    "injected",
+    (
+        f'<div data-secret="{BODY_TOKEN}"></div>',
+        f"<!-- {BODY_TOKEN} -->",
+        f'<meta name="secret" content="{BODY_TOKEN}">',
+        f'<script type="application/json">"{BODY_TOKEN}"</script>',
+    ),
+)
+def test_leak_guard_covers_raw_html_attributes_and_comments(
+    strict_repo: Path, injected: str
+) -> None:
+    page = strict_repo / "content/Downloads.md"
+    page.write_text(page.read_text(encoding="utf-8") + "\n" + injected, encoding="utf-8")
+    _parser, html, search, _references = _build_strict_download_tree(
+        strict_repo, PublicationMode.ORIGIN_LINK
+    )
+
+    with pytest.raises(AssertionError):
+        _assert_public_tokens_absent(html, search, (BODY_TOKEN,))
+
+
+@pytest.mark.parametrize("value", ("1996-02-30", "19960322", "1996-W12-5", "<script>"))
+def test_renderer_rejects_invalid_or_noncanonical_publication_date(
+    fixture_register, value: str
+) -> None:
+    register, policy, decision = fixture_register
+    inputs = project_downloads(_graph(decision), register=register, policy=policy)
+    inputs = replace(inputs, rows=(replace(inputs.rows[0], publication_date=value),))
+
+    with pytest.raises(DownloadProjectionError, match="publication_date"):
+        render_download_page(f"<main>{DOWNLOAD_MARKER}</main>", inputs)
+
+
 def test_source_only_is_visible_but_absent_from_real_strict_search_tree(
     strict_repo: Path,
 ) -> None:
-    parser, search, _references = _build_strict_download_tree(
+    parser, html, search, _references = _build_strict_download_tree(
         strict_repo, PublicationMode.SOURCE_ONLY
     )
     visible = " ".join(parser.text)
 
     assert SOURCE_ONLY_TITLE_TOKEN in visible
-    assert SOURCE_ONLY_BIBLIOGRAPHY_TOKEN in visible
-    assert SOURCE_ONLY_TITLE_TOKEN not in search
-    assert SOURCE_ONLY_BIBLIOGRAPHY_TOKEN not in search
+    assert f"Erscheinungsdatum: {SOURCE_ONLY_BIBLIOGRAPHY_DATE}" in visible
+    _assert_public_tokens_absent(
+        "", search, (SOURCE_ONLY_TITLE_TOKEN, SOURCE_ONLY_BIBLIOGRAPHY_DATE)
+    )
     index = json.loads(search)
     assert all(not document["location"].startswith("Downloads/") for document in index["docs"])
 
@@ -1192,37 +1294,44 @@ def test_nonmaterialized_strict_tree_never_leaks_payload_or_storage_tokens(
     strict_repo: Path,
     mode: PublicationMode,
 ) -> None:
-    parser, search, references = _build_strict_download_tree(strict_repo, mode)
-    html = " ".join((*parser.text, *parser.hrefs, *parser.srcs))
-    public = html + search
-    for forbidden in (
-        references[0]["sha256"],
-        BODY_TOKEN,
-        OCR_TOKEN,
-        references[0]["relative_path"],
-        references[0]["storage_object_id"],
-        TOKEN_QUERY,
-        OLD_DOWNLOAD_HREF,
-    ):
-        assert forbidden not in public
+    parser, html, search, references = _build_strict_download_tree(strict_repo, mode)
+    _assert_public_tokens_absent(
+        html,
+        search,
+        (
+            BODY_TOKEN,
+            OCR_TOKEN,
+            TOKEN_QUERY,
+            OLD_DOWNLOAD_HREF,
+            *(
+                reference[field]
+                for reference in references
+                for field in ("sha256", "relative_path", "storage_object_id")
+            ),
+        ),
+    )
     if mode is PublicationMode.REMOVE_ALL:
-        for forbidden in (
-            "https://edoc.rki.de/handle/176904/900000001",
-            SOURCE_ONLY_TITLE_TOKEN,
-            SOURCE_ONLY_BIBLIOGRAPHY_TOKEN,
-        ):
-            assert forbidden not in public
+        _assert_public_tokens_absent(
+            html,
+            search,
+            (
+                "https://edoc.rki.de/handle/176904/900000001",
+                SOURCE_ONLY_TITLE_TOKEN,
+                SOURCE_ONLY_BIBLIOGRAPHY_DATE,
+            ),
+        )
 
 
 def test_materialized_real_strict_tree_proves_full_safe_link_conjunction(
     strict_repo: Path,
 ) -> None:
-    parser, search, references = _build_strict_download_tree(
+    parser, html, search, references = _build_strict_download_tree(
         strict_repo, PublicationMode.MATERIALIZED
     )
     visible = " ".join(parser.text)
 
-    assert "https://downloads.example.test/materialized.pdf" in parser.hrefs
+    assert "https://downloads.example.test/materialized-0" in parser.hrefs
+    assert "https://downloads.example.test/materialized-1" in parser.hrefs
     assert "Rechtestatus: Freigegeben." in visible
     assert "Veröffentlichungsmodus: Materialisiert." in visible
     assert "Verfügbarkeit: Download verfügbar." in visible
@@ -1231,24 +1340,102 @@ def test_materialized_real_strict_tree_proves_full_safe_link_conjunction(
     assert len(parser.statuses) == 1
     assert parser.statuses[0]["aria-live"] == "polite"
     assert parser.statuses[0]["aria-labelledby"] == "publication-status-title"
-    assert references[0]["storage_backend"] == "object"
-    for forbidden in (
-        references[0]["sha256"],
-        references[0]["relative_path"],
-        references[0]["storage_object_id"],
-    ):
-        assert forbidden not in " ".join((*parser.text, *parser.hrefs, search))
+    _assert_public_tokens_absent(
+        html,
+        search,
+        tuple(
+            reference[field]
+            for reference in references
+            for field in ("sha256", "relative_path", "storage_object_id")
+        ),
+    )
 
 
-def test_unsafe_license_url_aborts_strict_build_before_html_publication(
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "decision_hash",
+        "publish_action",
+        "publication_mode",
+        "components_state",
+        "attribution",
+        "provenance_state",
+        "visibility",
+        "storage_decision_hash",
+        "storage_rights_state",
+        "storage_source_hash",
+        "storage_join",
+        "storage_backend",
+        "public_reference",
+        "bitstream_identity",
+    ),
+)
+def test_materialized_strict_build_rejects_each_broken_safety_link_before_publication(
     strict_repo: Path,
+    mutation: str,
 ) -> None:
     _write_strict_publication(strict_repo, PublicationMode.MATERIALIZED)
+    build_site(
+        strict_repo,
+        check=True,
+        dry_run=False,
+        strict=True,
+        force=False,
+        site_url=None,
+    )
+    before = _site_snapshot(strict_repo)
+
+    _write_strict_publication(
+        strict_repo,
+        PublicationMode.MATERIALIZED,
+        mutation=mutation,
+    )
+
+    with pytest.raises(SiteBuildError):
+        build_site(
+            strict_repo,
+            check=True,
+            dry_run=False,
+            strict=True,
+            force=True,
+            site_url=None,
+        )
+    assert _site_snapshot(strict_repo) == before
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "javascript:alert(1)",
+        "http://creativecommons.org/licenses/by/4.0/",
+        "https://user@creativecommons.org/licenses/by/4.0/",
+        "https://creativecommons.org:443/licenses/by/4.0/",
+        "https://creativecommons.org/licenses/by/4.0/?token=x",
+        "https://creativecommons.org/licenses/by/4.0/#terms",
+        "https://creativecommons.org/licenses/by/4.0/%0a",
+        "https://creativecommons.org/licenses/by-sa/4.0/",
+        "https://creativecommons.org.evil.test/licenses/by/4.0/",
+    ),
+)
+def test_unsafe_license_url_aborts_strict_build_before_html_publication(
+    strict_repo: Path,
+    value: str,
+) -> None:
+    _write_strict_publication(strict_repo, PublicationMode.MATERIALIZED)
+    build_site(
+        strict_repo,
+        check=True,
+        dry_run=False,
+        strict=True,
+        force=False,
+        site_url=None,
+    )
+    before = _site_snapshot(strict_repo)
     register = strict_repo / "research/rights-register.yml"
     register.write_text(
         register.read_text(encoding="utf-8").replace(
             CANONICAL_LICENSE_URL,
-            "https://creativecommons.org/licenses/by-sa/4.0/",
+            value,
         ),
         encoding="utf-8",
     )
@@ -1259,7 +1446,7 @@ def test_unsafe_license_url_aborts_strict_build_before_html_publication(
             check=True,
             dry_run=False,
             strict=True,
-            force=False,
+            force=True,
             site_url=None,
         )
-    assert not (strict_repo / "site/Downloads/index.html").exists()
+    assert _site_snapshot(strict_repo) == before

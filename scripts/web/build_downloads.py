@@ -102,6 +102,17 @@ def _mapping(value: object, name: str) -> Mapping[str, object]:
     return value
 
 
+def _publication_date(value: object) -> str:
+    raw = _require_string(value, "publication_date")
+    try:
+        parsed = date.fromisoformat(raw)
+    except ValueError as exc:
+        raise DownloadProjectionError("publication_date ist ungültig") from exc
+    if parsed.isoformat() != raw:
+        raise DownloadProjectionError("publication_date ist nicht kanonisch")
+    return raw
+
+
 def _safe_https_url(value: object, name: str) -> str:
     url = _require_string(value, name)
     if (
@@ -266,9 +277,7 @@ def _artifact_rows(
             DownloadRow(
                 source_id=key.source_id,
                 title=_require_string(source.get("title"), "title"),
-                publication_date=_require_string(
-                    source.get("publication_date"), "publication_date"
-                ),
+                publication_date=_publication_date(source.get("publication_date")),
                 approval_key=key,
                 rights_state=rights_state,
                 mode=PublicationMode.MATERIALIZED,
@@ -343,9 +352,7 @@ def project_downloads(
                 DownloadRow(
                     source_id=key.source_id,
                     title=_require_string(source.get("title"), "title"),
-                    publication_date=_require_string(
-                        source.get("publication_date"), "publication_date"
-                    ),
+                    publication_date=_publication_date(source.get("publication_date")),
                     approval_key=key,
                     rights_state=decision.state,
                     mode=decision.mode,
@@ -421,7 +428,7 @@ def _status_fragment(status: Mapping[str, object]) -> str:
     return "".join(parts) + "</section>"
 
 
-def _row_fragment(row: DownloadRow) -> str:
+def _row_fragment(row: DownloadRow, *, include_attribution: bool) -> str:
     if type(row) is not DownloadRow:
         raise DownloadProjectionError("row muss exakter DownloadRow sein")
     if row.mode not in {
@@ -436,7 +443,12 @@ def _row_fragment(row: DownloadRow) -> str:
         raise DownloadProjectionError("row.bitstream_id passt nicht zum ApprovalKey")
     title = html.escape(row.title, quote=True)
     origin = validate_origin_url(row.origin_url, source_id=row.source_id)
-    parts = ['<article class="download">', f"<h3>{title}</h3>"]
+    publication_date = html.escape(_publication_date(row.publication_date), quote=True)
+    parts = [
+        '<article class="download">',
+        f"<h3>{title}</h3>",
+        f"<p>Erscheinungsdatum: {publication_date}</p>",
+    ]
     if row.mode is PublicationMode.MATERIALIZED:
         if (
             row.artifact_url is None
@@ -457,9 +469,10 @@ def _row_fragment(row: DownloadRow) -> str:
         license_url = validate_license_url(
             row.attribution.license_url, license_notice=row.attribution.license_notice
         )
-        parts.append(
-            f'<p>{html.escape(row.attribution.copyright_notice, quote=True)} · <a href="{html.escape(license_url, quote=True)}" rel="noopener noreferrer">{html.escape(row.attribution.license_notice, quote=True)}</a></p>'
-        )
+        if include_attribution:
+            parts.append(
+                f'<p>{html.escape(row.attribution.copyright_notice, quote=True)} · <a href="{html.escape(license_url, quote=True)}" rel="noopener noreferrer">{html.escape(row.attribution.license_notice, quote=True)}</a></p>'
+            )
         if row.rights_state is not RightsState.APPROVED:
             raise DownloadProjectionError(
                 "materialized Row besitzt keinen freigegebenen Rechtezustand"
@@ -501,11 +514,16 @@ def render_download_page(source: str, inputs: DownloadInputs) -> str:
         raise DownloadProjectionError("inputs muss exakter DownloadInputs sein")
     fragment = _status_fragment(inputs.public_status)
     if inputs.rows:
-        fragment += (
-            '<section class="downloads"><h2>Downloads</h2>'
-            + "".join(_row_fragment(row) for row in inputs.rows)
-            + "</section>"
-        )
+        attributed: set[ApprovalKey] = set()
+        rows: list[str] = []
+        for row in inputs.rows:
+            include_attribution = (
+                row.mode is PublicationMode.MATERIALIZED and row.approval_key not in attributed
+            )
+            rows.append(_row_fragment(row, include_attribution=include_attribution))
+            if row.mode is PublicationMode.MATERIALIZED:
+                attributed.add(row.approval_key)
+        fragment += '<section class="downloads"><h2>Downloads</h2>' + "".join(rows) + "</section>"
     else:
         fragment += '<section class="downloads"><h2>Downloads</h2><p>Keine öffentlichen Downloads verfügbar.</p></section>'
     return source.replace(DOWNLOAD_MARKER, fragment)

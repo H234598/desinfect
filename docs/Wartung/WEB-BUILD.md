@@ -1,9 +1,9 @@
 # Reproduzierbarer Webbuild
 
 Dieses Runbook baut die MkDocs-Ausgabe strikt und reproduzierbar. Befehle laufen
-im Repository-Stamm. `build/docs/` und `site/` sind zwei getrennt atomar
-publizierte, durch `.desinfect-generated` markierte Ziele. Der Gesamtlauf ist
-keine gemeinsame Transaktion über beide Ziele.
+im Repository-Stamm. `build/docs/` und `site/` sind durch `.desinfect-generated`
+markierte Ziele. Der integrierte `build_site()`-Vollbuild veröffentlicht beide
+Ziele in einer gemeinsamen koordinierten Transaktion.
 
 ## 1. Voraussetzungen
 
@@ -37,12 +37,13 @@ SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD) \
   --site-url https://h234598.github.io/desinfect/
 ```
 
-Normalbuild publiziert zuerst `build/docs/`, danach `site/`. Jede Phase ersetzt
-nur ihr eigenes Ziel atomar. Scheitert die Docs-Phase, bleiben alte Docs und alte
-Site aktiv. Scheitert nach erfolgreicher Docs-Publikation der MkDocs-Build, die
-Konfigurations- oder Site-Symlinkprüfung oder die spätere Quellhashprüfung,
-bleiben neue vollständige Docs neben alter vollständiger Site bestehen. Kein
-veröffentlichter Zielbaum ist unvollständig.
+Der Normalbuild rendert `build/docs/` in einen Stagingbaum und baut daraus die
+vollständige Strict-Site in einem zweiten Stagingbaum. Erst nach allen Prüfungen
+und der abschließenden Quellhashprüfung werden beide Ziele gemeinsam
+koordiniert ersetzt. Fehler beim Docs-Rendering, MkDocs-Build oder einer
+Prüfung veröffentlichen nichts. Ein Fehler während des Zieltauschs stellt beide
+alten vollständigen Zielbäume wieder her. Kein veröffentlichter Zielbaum ist
+unvollständig.
 
 ## 3. Sichere Vorschau einer ausgewählten Seite
 
@@ -73,12 +74,11 @@ Vollbuilds und vergleichen sortierte SHA-256-Abbildungen aller regulären
 
 ## 5. Fehlerpfad
 
-Docs-Phasenfehler veröffentlichen nichts und behalten beide alten vollständigen
-Ziele. Nach erfolgreicher Docs-Publikation können Fehler im MkDocs-Build, in der
-Konfigurations- oder Site-Symlinkprüfung sowie bei der späteren
-Quellhashprüfung neue vollständige `build/docs/` neben alter vollständiger
-`site/` hinterlassen. Beide Ziele sind getrennte atomare Transaktionen; kein
-unvollständiger Baum wird veröffentlicht. Quellpfade nicht manuell löschen.
+Fehler vor der koordinierten Veröffentlichung behalten beide alten vollständigen
+Ziele. Dazu gehören Fehler beim Docs-Rendering, MkDocs-Build, bei der
+Konfigurations- oder Site-Symlinkprüfung und bei der abschließenden
+Quellhashprüfung. Fehler während des koordinierten Zieltauschs restaurieren
+beide alten vollständigen Zielbäume. Quellpfade nicht manuell löschen.
 
 Stale Backups zuerst inspizieren:
 
@@ -100,7 +100,7 @@ SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD) \
 
 ## 6. Recovery
 
-Pages-Deployment stoppen und alten vollständigen `site/`-Baum behalten. Blieb
+Pages-Deployment stoppen und die alten vollständigen `build/docs/`- und `site/`-Bäume behalten. Blieb
 wegen fehlgeschlagener Bereinigung ein validiertes Backup zurück, zuerst
 Staging-Fehlerkontext und Sentinel prüfen:
 
@@ -162,12 +162,17 @@ nichts. `git status --short` muss danach für kanonische Quellen leer bleiben.
 
 ## 9. Atomizität, Rollback und Diagnose
 
-Docs und Site bleiben zwei getrennte atomare Veröffentlichungen. `build/docs/` wird zuerst
-vollständig gestaged, validiert und ersetzt. Danach baut MkDocs aus einem festgehaltenen
-Docs-Baum eine vollständige Site und ersetzt `site/` atomar. Ein später Sitefehler rollt
-nicht die bereits vollständigen neuen Docs zurück; die vorherige vollständige Site bleibt
-aktiv. Ein Fehler innerhalb einer Stagingtransaktion stellt das jeweilige sentinel-geprüfte
-alte Ziel wieder her.
+Der integrierte Vollbuild behandelt Docs und Site als eine koordinierte
+Veröffentlichung. Zuerst wird der Docs-Stagingbaum vollständig gerendert und
+validiert. MkDocs baut daraus die vollständige Site in einen eigenen
+Stagingbaum. Nach der abschließenden Driftkontrolle werden beide Ziele ersetzt.
+Ein Fehler vor diesem Zieltausch lässt beide alten Ziele unverändert; ein
+Fehler während des Zieltauschs restauriert beide sentinel-geprüften alten Ziele.
+
+Ein ausdrücklich separat ausgeführtes `build_docs()` veröffentlicht dagegen nur
+`build/docs/` in einer eigenen atomaren Transaktion. Dieser Docs-only-Flow baut
+und veröffentlicht keine Site; er ist nicht die Docs-Phase des integrierten
+Vollbuilds.
 
 Diagnose bleibt read-only gegenüber `content/`, `config/`, `web/`, `mkdocs.yml`,
 `status.json` und `research/`. Erlaubt sind Logs, Hashvergleiche, `git diff`,
@@ -213,8 +218,13 @@ immer ein Fehler. Diese Fälle werden nicht als leerer Korpus umgedeutet.
 
 ### Vollbuild und Teilpreview
 
-Der Vollbuild rendert die Downloadprojektion serverseitig und publiziert vollständige Docs
-und anschließend eine vollständige Strict-Site. Die Seite funktioniert ohne JavaScript.
+Der integrierte `build_site()`-Vollbuild veröffentlicht Docs und Site als koordinierte Transaktion.
+Er rendert die Downloadprojektion serverseitig in gemeinsam koordinierte Stagingbäume und
+tauscht beide Ziele erst nach vollständig erfolgreichem Rendern, Prüfen und abschließender
+Driftkontrolle aus. Die Seite funktioniert ohne JavaScript.
+
+`build_docs()` ist ein separater Docs-only-Flow. Er veröffentlicht ausschließlich
+`build/docs` in einer eigenen atomaren Transaktion und veröffentlicht keine Site.
 
 Ein Teilpreview bleibt ein Dry-run und publiziert nichts:
 
@@ -229,10 +239,10 @@ geprüft.
 
 ### Fehler, Rollback und Takedown
 
-Fehler vor dem atomaren Zieltausch behalten alte vollständige Ziele. Ein fehlgeschlagener
-Site-Build lässt die alte vollständige Site aktiv; ein bereits vollständig veröffentlichter
-neuer Docs-Baum kann daneben bestehen. Diagnose und Rollback folgen den Sentinelregeln aus
-Abschnitt 5 und 6. Keine Backups, Manifeste oder Authority-Dateien manuell löschen.
+Fehler vor oder während des koordinierten Zieltauschs behalten beziehungsweise restaurieren
+die vollständigen Ziele. Scheitert diese Transaktion, bleiben beide alten vollständigen Zielbäume aktiv.
+Diagnose und Rollback folgen den Sentinelregeln aus Abschnitt 5 und 6. Keine Backups,
+Manifeste oder Authority-Dateien manuell löschen.
 
 Bei Downgrade oder Takedown baut der nächste erfolgreiche Lauf die restriktivere Projektion
 und entfernt alte öffentliche Referenzen. Externe Backend- oder Git-Historienbereinigung ist
