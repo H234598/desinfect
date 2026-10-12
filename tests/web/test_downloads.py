@@ -1310,6 +1310,9 @@ def test_nonmaterialized_strict_tree_never_leaks_payload_or_storage_tokens(
             ),
         ),
     )
+    if mode is PublicationMode.ORIGIN_LINK:
+        assert "https://edoc.rki.de/handle/176904/900000001" in parser.hrefs
+        _assert_public_tokens_absent(html, search, (SOURCE_ONLY_BIBLIOGRAPHY_DATE,))
     if mode is PublicationMode.REMOVE_ALL:
         _assert_public_tokens_absent(
             html,
@@ -1332,6 +1335,7 @@ def test_materialized_real_strict_tree_proves_full_safe_link_conjunction(
 
     assert "https://downloads.example.test/materialized-0" in parser.hrefs
     assert "https://downloads.example.test/materialized-1" in parser.hrefs
+    assert f"Erscheinungsdatum: {SOURCE_ONLY_BIBLIOGRAPHY_DATE}" in visible
     assert "Rechtestatus: Freigegeben." in visible
     assert "Veröffentlichungsmodus: Materialisiert." in visible
     assert "Verfügbarkeit: Download verfügbar." in visible

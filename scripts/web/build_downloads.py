@@ -444,11 +444,9 @@ def _row_fragment(row: DownloadRow, *, include_attribution: bool) -> str:
     title = html.escape(row.title, quote=True)
     origin = validate_origin_url(row.origin_url, source_id=row.source_id)
     publication_date = html.escape(_publication_date(row.publication_date), quote=True)
-    parts = [
-        '<article class="download">',
-        f"<h3>{title}</h3>",
-        f"<p>Erscheinungsdatum: {publication_date}</p>",
-    ]
+    parts = ['<article class="download">', f"<h3>{title}</h3>"]
+    if row.mode in {PublicationMode.SOURCE_ONLY, PublicationMode.MATERIALIZED}:
+        parts.append(f"<p>Erscheinungsdatum: {publication_date}</p>")
     if row.mode is PublicationMode.MATERIALIZED:
         if (
             row.artifact_url is None
