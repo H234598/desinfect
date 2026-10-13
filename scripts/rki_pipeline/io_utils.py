@@ -200,6 +200,29 @@ def open_directory_beneath(
         raise
 
 
+def list_directory_fd(directory_fd: int) -> list[str]:
+    """Enumerate a fresh stream anchored to the caller's held directory.
+
+    A duplicate shares the old opening state, which can omit later entries.
+    This is not a snapshot; callers retain their mutation/generation checks.
+    """
+
+    held = os.fstat(directory_fd)
+    if not stat.S_ISDIR(held.st_mode):
+        raise UnsafePathError("Enumerationswurzel ist kein Verzeichnis")
+    descriptor = os.open(".", _DIRECTORY_FLAGS | _NOFOLLOW, dir_fd=directory_fd)
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISDIR(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
+            held.st_dev,
+            held.st_ino,
+        ):
+            raise UnsafePathError("Verzeichnisidentität änderte sich vor der Enumeration")
+        return os.listdir(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def fd_directory_path(descriptor: int) -> Path:
     """Return an FD-backed directory path or fail closed on unsupported hosts."""
 
@@ -382,7 +405,7 @@ def assert_generated_root(path: Path, *, allowed_root: Path | None = None) -> No
 def validate_tree_no_symlinks_fd(directory_fd: int) -> None:
     """Recursively reject every symlink below a held directory descriptor."""
 
-    for name in os.listdir(directory_fd):
+    for name in list_directory_fd(directory_fd):
         metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
         if stat.S_ISLNK(metadata.st_mode):
             raise UnsafePathError(f"Symlink in generiertem Baum ist unzulässig: {name}")
@@ -397,7 +420,7 @@ def validate_tree_no_symlinks_fd(directory_fd: int) -> None:
 def _remove_tree_contents_fd(directory_fd: int) -> None:
     """Recursively remove directory contents without following symlinks."""
 
-    for name in os.listdir(directory_fd):
+    for name in list_directory_fd(directory_fd):
         metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
         if stat.S_ISLNK(metadata.st_mode):
             raise UnsafePathError(f"Symlink in generiertem Baum ist unzulässig: {name}")

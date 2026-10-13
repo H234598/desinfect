@@ -44,6 +44,7 @@ from scripts.rki_pipeline.due_tasks import DueTask, TaskKind
 from scripts.rki_pipeline.io_utils import (
     atomic_write_bytes,
     fsync_directory_fd,
+    list_directory_fd,
     normalize_posix_path,
     open_directory_beneath,
     open_root_directory,
@@ -1646,7 +1647,7 @@ def _fixture_payload(root: Path) -> dict[str, object]:
                 for field in compared_fields
             ):
                 raise FixtureValidationError("Fixture-Datei änderte sich beim Lesen")
-            if set(os.listdir(root_fd)) != {"fixture.json"}:
+            if set(list_directory_fd(root_fd)) != {"fixture.json"}:
                 raise FixtureValidationError("Fixture-Verzeichnis änderte sich beim Lesen")
             root_final = os.fstat(root_fd)
             live_root = os.stat(fixture, follow_symlinks=False)

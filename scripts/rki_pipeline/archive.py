@@ -22,6 +22,7 @@ from scripts.rki_pipeline.io_utils import (
     detect_path_collisions,
     fd_directory_path,
     fsync_directory_fd,
+    list_directory_fd,
     GENERATED_ROOT_SENTINEL,
     normalize_posix_path,
     open_directory_beneath,
@@ -711,7 +712,7 @@ def _inspect_bundle_fd(
     expected_fingerprint: str,
     limits: ArchiveLimits,
 ) -> ArchiveBuild:
-    names = frozenset(os.listdir(bundle_fd))
+    names = frozenset(list_directory_fd(bundle_fd))
     for name in names:
         metadata = os.stat(name, dir_fd=bundle_fd, follow_symlinks=False)
         if not stat.S_ISREG(metadata.st_mode):
@@ -777,7 +778,7 @@ def validate_archive_bundle_fd(
 
     if type(bundle_fd) is not int or not isinstance(display_root, Path):
         raise ValueError("bundle_fd und display_root sind ungültig")
-    names = frozenset(os.listdir(bundle_fd))
+    names = frozenset(list_directory_fd(bundle_fd))
     for name in names:
         metadata = os.stat(name, dir_fd=bundle_fd, follow_symlinks=False)
         if not stat.S_ISREG(metadata.st_mode):

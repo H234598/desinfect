@@ -41,6 +41,7 @@ from scripts.rki_pipeline.conversion.quality import (
 from scripts.rki_pipeline.io_utils import (
     GENERATED_ROOT_SENTINEL,
     assert_generated_root_fd,
+    list_directory_fd,
     open_directory_beneath,
     open_root_directory,
     sha256_bytes,
@@ -240,7 +241,7 @@ def _existing_result(
                     return None
                 try:
                     assert_generated_root_fd(descriptor)
-                    if set(os.listdir(descriptor)) != {
+                    if set(list_directory_fd(descriptor)) != {
                         GENERATED_ROOT_SENTINEL,
                         "document.md",
                         "conversion-manifest.json",

@@ -25,6 +25,7 @@ from scripts.rki_pipeline.io_utils import (
     entry_exists,
     fd_directory_path,
     fsync_directory_fd,
+    list_directory_fd,
     mark_generated_root_fd,
     open_directory_beneath,
     open_root_directory,
@@ -237,7 +238,7 @@ def _directory_generation(directory_fd: int, prefix: str = "") -> tuple[tuple[ob
                     raise StagingConflictError("Zielgeneration änderte sich während der Prüfung")
             finally:
                 os.close(child_fd)
-    if tuple(sorted(os.listdir(directory_fd))) != names or not _metadata_matches(
+    if tuple(sorted(list_directory_fd(directory_fd))) != names or not _metadata_matches(
         root_before, os.fstat(directory_fd)
     ):
         raise StagingConflictError("Zielgeneration änderte sich während der Prüfung")

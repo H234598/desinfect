@@ -39,6 +39,7 @@ from scripts.rki_pipeline.io_utils import (
     assert_generated_root_fd,
     atomic_write_bytes,
     entry_exists,
+    list_directory_fd,
     normalize_posix_path,
     open_directory_beneath,
     open_root_directory,
@@ -1327,7 +1328,7 @@ def _tree_signature_fd(
     if not stat.S_ISDIR(root_before.st_mode):
         raise AggregationError("Aggregationsbaum enthält kein Verzeichnis")
     rows: list[tuple[str, int, int, str]] = []
-    names = tuple(sorted(os.listdir(directory_fd)))
+    names = tuple(sorted(list_directory_fd(directory_fd)))
     metadata_by_name: dict[str, os.stat_result] = {}
     for name in names:
         metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
@@ -1356,7 +1357,7 @@ def _tree_signature_fd(
         if size != metadata.st_size:
             raise AggregationError("Aggregationsdatei änderte sich während der Hash-Prüfung")
         rows.append((relative, stat.S_IMODE(metadata.st_mode), size, digest))
-    if tuple(sorted(os.listdir(directory_fd))) != names or not _same_file_metadata(
+    if tuple(sorted(list_directory_fd(directory_fd))) != names or not _same_file_metadata(
         root_before, os.fstat(directory_fd)
     ):
         raise AggregationError("Aggregationsverzeichnis änderte sich während der Prüfung")
@@ -1626,7 +1627,7 @@ def _copy_tree(source_fd: int, destination_fd: int, *, skip_root_sentinel: bool 
             _copy_regular_file(source_fd, destination_fd, name, metadata)
         else:
             raise AggregationError("Bestehender Aggregationsbaum enthält keinen regulären Eintrag")
-    if tuple(sorted(os.listdir(source_fd))) != names or not _same_file_metadata(
+    if tuple(sorted(list_directory_fd(source_fd))) != names or not _same_file_metadata(
         root_before, os.fstat(source_fd)
     ):
         raise AggregationError("Quellverzeichnis änderte sich während FD-Kopie")
@@ -1798,7 +1799,7 @@ def _load_existing_weekly_references(
                         size=build.size,
                     )
                 )
-        if tuple(sorted(os.listdir(manifest_fd))) != names or not _same_file_metadata(
+        if tuple(sorted(list_directory_fd(manifest_fd))) != names or not _same_file_metadata(
             root_before, os.fstat(manifest_fd)
         ):
             raise AggregationError("Wochenmanifest-Namensraum änderte sich während des Ladens")

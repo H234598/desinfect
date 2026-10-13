@@ -8,6 +8,7 @@ from datetime import date
 import hashlib
 from importlib import import_module
 import json
+import os
 from pathlib import Path
 import shutil
 
@@ -625,6 +626,60 @@ def test_rights_are_rechecked_immediately_before_ocr(
     assert ocr_called is False
     assert ledger.events == []
     assert tuple(tmp_path.rglob("document.md")) == ()
+
+
+@pytest.mark.parametrize("entry_kind", ["regular", "symlink"])
+@pytest.mark.parametrize("timing", ["before_open", "after_sentinel"])
+def test_existing_bundle_rejects_extra_entries_before_first_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entry_kind: str,
+    timing: str,
+) -> None:
+    """Late extras must not turn a changed bundle into a legitimate no-op."""
+
+    service, first, ledger, intent = _materialize(tmp_path, monkeypatch)
+    bundle = first.output_path.parent
+    original_bytes = first.output_path.read_bytes()
+    original_mtime = first.output_path.stat().st_mtime_ns
+    sentinel_check = service.assert_generated_root_fd
+    injected = False
+
+    def add_extra() -> None:
+        if entry_kind == "regular":
+            (bundle / "unexpected").write_bytes(b"unexpected")
+        else:
+            (bundle / "unexpected").symlink_to(tmp_path / "outside")
+
+    def check_then_add(descriptor: int) -> None:
+        nonlocal injected
+        sentinel_check(descriptor)
+        if not injected:
+            assert os.fstat(descriptor).st_ino == bundle.stat().st_ino
+            add_extra()
+            injected = True
+
+    authorizer = _authorizer_and_intent(tmp_path, monkeypatch)[0]
+    if timing == "before_open":
+        add_extra()
+    else:
+        monkeypatch.setattr(service, "assert_generated_root_fd", check_then_add)
+    second_ledger = EffectLedger(RunMode.MATERIALIZE, temp_root=ledger.temp_root)
+    with pytest.raises(service.ConversionIntegrityError, match="unerwartete Einträge"):
+        service.materialize_conversion(
+            intent,
+            bitstream_id=BITSTREAM_ID,
+            temp_root=ledger.temp_root,
+            ledger=second_ledger,
+            authorizer=authorizer,
+            metadata=_metadata(),
+            runtime=_runtime(),
+            runner=_ConversionRunner(b"A" * 80 + b"\f"),
+        )
+    assert timing == "before_open" or injected
+    assert first.output_path.read_bytes() == original_bytes
+    assert first.output_path.stat().st_mtime_ns == original_mtime
+    assert second_ledger.events == []
 
 
 def test_tampered_existing_output_fails_closed_without_rewrite(
