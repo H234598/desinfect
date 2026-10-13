@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Deny-first policy for every automatic repository write operation."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -19,11 +20,7 @@ from scripts.rki_pipeline.io_utils import (
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_POLICY_PATH = ROOT / "config" / "automatic-write-paths.toml"
-_DIRECTORY_FLAGS = (
-    os.O_RDONLY
-    | getattr(os, "O_DIRECTORY", 0)
-    | getattr(os, "O_CLOEXEC", 0)
-)
+_DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 
@@ -53,12 +50,7 @@ class WritePolicy:
 
 
 def _validate_pattern(pattern: str) -> str:
-    if (
-        not isinstance(pattern, str)
-        or not pattern
-        or pattern.startswith("/")
-        or "\\" in pattern
-    ):
+    if not isinstance(pattern, str) or not pattern or pattern.startswith("/") or "\\" in pattern:
         raise WritePolicyError(f"Ungültiges Policy-Muster: {pattern!r}")
     if "\x00" in pattern or any(part == ".." for part in pattern.split("/")):
         raise WritePolicyError(f"Unsicheres Policy-Muster: {pattern!r}")
@@ -73,20 +65,11 @@ def load_policy(path: Path = DEFAULT_POLICY_PATH) -> WritePolicy:
         raise WritePolicyError("Unbekannte Schreibpolicy-Version")
     allow = tuple(_validate_pattern(value) for value in data.get("allow", []))
     deny = tuple(_validate_pattern(value) for value in data.get("deny", []))
-    if (
-        not allow
-        or not deny
-        or len(set(allow)) != len(allow)
-        or len(set(deny)) != len(deny)
-    ):
-        raise WritePolicyError(
-            "Allow-/Deny-Muster müssen eindeutig und nicht leer sein"
-        )
+    if not allow or not deny or len(set(allow)) != len(allow) or len(set(deny)) != len(deny):
+        raise WritePolicyError("Allow-/Deny-Muster müssen eindeutig und nicht leer sein")
     max_operations = data.get("max_operations")
     if type(max_operations) is not int or not 1 <= max_operations <= 100_000:
-        raise WritePolicyError(
-            "max_operations liegt außerhalb des sicheren Bereichs"
-        )
+        raise WritePolicyError("max_operations liegt außerhalb des sicheren Bereichs")
     return WritePolicy(
         allow=allow,
         deny=deny,
@@ -118,8 +101,7 @@ def _open_directory_at(name: str | Path, *, dir_fd: int | None = None) -> int:
 
     if _NOFOLLOW == 0:
         raise WritePolicyError(
-            "Die Plattform unterstützt O_NOFOLLOW nicht; "
-            "automatische Writes bleiben fail-closed"
+            "Die Plattform unterstützt O_NOFOLLOW nicht; automatische Writes bleiben fail-closed"
         )
     try:
         descriptor = os.open(
@@ -129,9 +111,7 @@ def _open_directory_at(name: str | Path, *, dir_fd: int | None = None) -> int:
         )
     except OSError as exc:
         if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
-            raise WritePolicyError(
-                f"Symlink- oder Nicht-Verzeichnis-Komponente: {name}"
-            ) from exc
+            raise WritePolicyError(f"Symlink- oder Nicht-Verzeichnis-Komponente: {name}") from exc
         raise
     metadata = os.fstat(descriptor)
     if not stat.S_ISDIR(metadata.st_mode):
@@ -165,15 +145,10 @@ def _assert_no_filesystem_symlinks(
             except FileNotFoundError:
                 return
             if stat.S_ISLNK(metadata.st_mode):
-                raise WritePolicyError(
-                    f"Filesystem-Symlink ist unzulässig: {relative_path}"
-                )
+                raise WritePolicyError(f"Filesystem-Symlink ist unzulässig: {relative_path}")
             if index < len(parts) - 1:
                 if not stat.S_ISDIR(metadata.st_mode):
-                    raise WritePolicyError(
-                        "Pfadkomponente ist kein Verzeichnis: "
-                        f"{relative_path}"
-                    )
+                    raise WritePolicyError(f"Pfadkomponente ist kein Verzeichnis: {relative_path}")
                 next_fd = _open_directory_at(part, dir_fd=current_fd)
                 os.close(current_fd)
                 current_fd = next_fd
@@ -193,13 +168,10 @@ def _reject_structural_modes(
         ("Nachabbild", operation.git_mode),
     ):
         if mode == "120000" and policy.reject_symlinks:
-            raise WritePolicyError(
-                f"Symlinkänderung im {label} ist unzulässig: {normalized}"
-            )
+            raise WritePolicyError(f"Symlinkänderung im {label} ist unzulässig: {normalized}")
         if mode == "160000" and policy.reject_gitlinks:
             raise WritePolicyError(
-                f"Gitlink/Submoduländerung im {label} ist unzulässig: "
-                f"{normalized}"
+                f"Gitlink/Submoduländerung im {label} ist unzulässig: {normalized}"
             )
 
 
@@ -215,10 +187,7 @@ def validate_operations(
     materialized = tuple(operations)
     if len(materialized) > selected.max_operations:
         raise WritePolicyError("Zu viele automatische Dateioperationen")
-    normalized_paths = [
-        normalize_posix_path(operation.path)
-        for operation in materialized
-    ]
+    normalized_paths = [normalize_posix_path(operation.path) for operation in materialized]
     detect_path_collisions(normalized_paths)
     if len(normalized_paths) != len(set(normalized_paths)):
         raise WritePolicyError("Doppelte automatische Dateioperation")
@@ -230,9 +199,7 @@ def validate_operations(
     ):
         classification = classify_path(normalized, selected)
         if classification != "allowed":
-            raise WritePolicyError(
-                f"Automatischer Pfad ist {classification}: {normalized}"
-            )
+            raise WritePolicyError(f"Automatischer Pfad ist {classification}: {normalized}")
         _reject_structural_modes(operation, normalized, selected)
         if selected.reject_symlinks:
             _assert_no_filesystem_symlinks(repository_root, normalized)
@@ -248,9 +215,7 @@ def _run_git(root: Path, *args: str) -> bytes:
             capture_output=True,
         ).stdout
     except (OSError, subprocess.CalledProcessError) as exc:
-        raise WritePolicyError(
-            f"Git-Prüfung fehlgeschlagen: {' '.join(args)}"
-        ) from exc
+        raise WritePolicyError(f"Git-Prüfung fehlgeschlagen: {' '.join(args)}") from exc
 
 
 def _mode(value: str) -> str | None:

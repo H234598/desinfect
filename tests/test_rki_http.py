@@ -1,4 +1,5 @@
 """Offline security and robots tests for the RKI HTTP boundary."""
+
 from __future__ import annotations
 
 import pytest

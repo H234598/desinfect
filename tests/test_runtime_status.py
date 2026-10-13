@@ -26,19 +26,32 @@ def initial_status() -> dict:
 
 def running_run() -> dict:
     created = new_run(
-        workflow="manual", trigger_source="test", run_mode="apply", storage_backend="lfs",
-        tasks=["weekly_ingest"], run_id="test-1", now=NOW,
+        workflow="manual",
+        trigger_source="test",
+        run_mode="apply",
+        storage_backend="lfs",
+        tasks=["weekly_ingest"],
+        run_id="test-1",
+        now=NOW,
     )
     return update_run(
-        created, expected_revision=1, status="running", phase="validate", now=NOW,
+        created,
+        expected_revision=1,
+        status="running",
+        phase="validate",
+        now=NOW,
         completed_phases=["initialize", "plan", "materialize"],
     )
 
 
 def test_revision_conflict_and_invalid_transition_are_blocked() -> None:
     created = new_run(
-        workflow="manual", trigger_source="test", run_mode="plan", storage_backend="lfs",
-        run_id="test-2", now=NOW,
+        workflow="manual",
+        trigger_source="test",
+        run_mode="plan",
+        storage_backend="lfs",
+        run_id="test-2",
+        now=NOW,
     )
     with pytest.raises(RevisionConflict):
         update_run(created, expected_revision=2, status="running", phase="plan", now=NOW)
@@ -49,8 +62,12 @@ def test_revision_conflict_and_invalid_transition_are_blocked() -> None:
 @pytest.mark.parametrize("trigger_source", ["schedule", "workflow_dispatch"])
 def test_new_run_preserves_dispatch_trigger_and_canonical_task_ids(trigger_source: str) -> None:
     run = new_run(
-        workflow="rki-dispatcher", trigger_source=trigger_source, run_mode="apply",
-        storage_backend="lfs", run_id=f"dispatch-{trigger_source}", now=NOW,
+        workflow="rki-dispatcher",
+        trigger_source=trigger_source,
+        run_mode="apply",
+        storage_backend="lfs",
+        run_id=f"dispatch-{trigger_source}",
+        now=NOW,
         tasks=[
             "week:2026-W30",
             "month:2026-07",
@@ -75,8 +92,12 @@ def test_new_run_preserves_dispatch_trigger_and_canonical_task_ids(trigger_sourc
 def test_new_run_rejects_whitespace_in_task_ids(task_id: str) -> None:
     with pytest.raises(SchemaContractError):
         new_run(
-            workflow="rki-dispatcher", trigger_source="schedule", run_mode="apply",
-            storage_backend="lfs", run_id="dispatch-invalid-task", now=NOW,
+            workflow="rki-dispatcher",
+            trigger_source="schedule",
+            run_mode="apply",
+            storage_backend="lfs",
+            run_id="dispatch-invalid-task",
+            now=NOW,
             tasks=[task_id],
         )
 
@@ -87,16 +108,23 @@ def test_failed_run_does_not_change_success_clocks_and_redacts_secret() -> None:
     current["pipeline"]["last_successful_write_at"] = "2026-07-19T04:31:12Z"
     run = running_run()
     failed = update_run(
-        run, expected_revision=2, status="failed", phase="validate", now=LATER,
+        run,
+        expected_revision=2,
+        status="failed",
+        phase="validate",
+        now=LATER,
         completed_phases=run["completed_phases"],
         error={
-            "class": "validation", "code": "validation.failed",
+            "class": "validation",
+            "code": "validation.failed",
             "message": "token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456 and person@example.org",
             "retryable": False,
         },
         recovery={
-            "level": "manual_intervention", "action": "Prüfe secret=very-secret-value",
-            "resume_phase": "validate", "block_next_run": True,
+            "level": "manual_intervention",
+            "action": "Prüfe secret=very-secret-value",
+            "resume_phase": "validate",
+            "block_next_run": True,
         },
     )
     projected = project_public_status(current, failed, content_changed=False)
@@ -111,11 +139,17 @@ def test_failed_run_does_not_change_success_clocks_and_redacts_secret() -> None:
 def test_successful_write_updates_run_and_write_clocks_only_after_final_success() -> None:
     run = running_run()
     success = update_run(
-        run, expected_revision=2, status="success", phase="verify", now=LATER,
+        run,
+        expected_revision=2,
+        status="success",
+        phase="verify",
+        now=LATER,
         completed_phases=[*run["completed_phases"], "validate", "apply", "verify"],
     )
     projected = project_public_status(
-        initial_status(), success, content_changed=True,
+        initial_status(),
+        success,
+        content_changed=True,
         last_main_commit_at="2026-07-28T07:06:00Z",
     )
     assert projected["pipeline"]["last_successful_run_at"] == LATER

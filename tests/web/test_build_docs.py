@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import contextmanager
+from collections import Counter
+from copy import deepcopy
+from dataclasses import FrozenInstanceError, replace
 import hashlib
+import html
+import re
 from pathlib import Path, PurePosixPath
 import os
 import shutil
+from types import MappingProxyType
 from types import SimpleNamespace
 
 import material
@@ -16,6 +23,17 @@ import yaml
 
 from scripts.rki_pipeline import io_utils
 from scripts.rki_pipeline.io_utils import mark_generated_root, stable_json_dumps
+from scripts.rki_pipeline.manifests import ManifestGraph, render_manifest_catalog
+from scripts.rki_pipeline.rights import (
+    ApprovalKey,
+    ComponentsState,
+    PublicationMode,
+    RightsAction,
+    RightsAttribution,
+    RightsDecision,
+    RightsState,
+    decision_sha256,
+)
 from scripts.rki_pipeline import staging as staging_module
 from scripts.rki_pipeline.staging import StagingError
 import scripts.web.build_site as build_site_module
@@ -27,9 +45,22 @@ from scripts.web.build_docs import (
     docs_preview_session,
     load_publication_config,
     render_docs_tree,
-    snapshot_sources,
+    snapshot_sources as _snapshot_sources,
 )
 from scripts.web.link_types import LinkError
+
+
+def snapshot_sources(
+    repo_root: Path,
+    *,
+    captured: object | None = None,
+) -> object:
+    """Test convenience around production's mandatory bounded capture."""
+
+    active = (
+        build_docs_module.capture_publication_inputs(repo_root) if captured is None else captured
+    )
+    return _snapshot_sources(repo_root, captured=active)
 
 
 @pytest.fixture
@@ -48,6 +79,8 @@ def repo(tmp_path: Path) -> Path:
         if source_path.exists():
             shutil.copy2(source_path, target / name)
     shutil.copy2(source / "status.json", target / "status.json")
+    (target / "research").mkdir()
+    shutil.copy2(source / "research/rights-register.yml", target / "research/rights-register.yml")
     return target
 
 
@@ -446,7 +479,9 @@ def test_build_docs_renders_corpus_rows_without_copying_raw_projection(repo: Pat
 def test_partial_build_without_table_does_not_load_or_project_table_inputs(repo: Path) -> None:
     """Loading unrelated table state during a partial preview makes this fail."""
 
-    (repo / "status.json").write_text("not json", encoding="utf-8")
+    generated = repo / "content/generated-data"
+    generated.mkdir(parents=True)
+    (generated / "corpus-table.json").write_text("not json", encoding="utf-8")
     stage = repo / "stage"
     stage.mkdir()
 
@@ -503,8 +538,10 @@ def test_table_state_source_drift_aborts_and_preserves_old_docs(
     target = repo / relative
     real_load = build_docs_module.load_table_inputs
 
-    def load_then_mutate(root: Path) -> object:
-        result = real_load(root)
+    def load_then_mutate(
+        root: Path, *, captured_status: Mapping[str, object] | None = None
+    ) -> object:
+        result = real_load(root, captured_status=captured_status)
         target.write_bytes(target.read_bytes() + b"\n")
         return result
 
@@ -533,7 +570,7 @@ def test_snapshot_sources_rejects_symlinked_table_state(repo: Path, relative: st
         target.unlink()
     target.symlink_to(repo / "content/index.md")
 
-    with pytest.raises(BuildDocsError, match="source file"):
+    with pytest.raises(BuildDocsError, match="source file|Publikationsinput"):
         snapshot_sources(repo)
 
 
@@ -652,9 +689,9 @@ def test_build_docs_rejects_source_hash_drift_without_replacing_old_docs(
         real_snapshot = build_docs_module.snapshot_sources
         calls = 0
 
-        def snapshot_then_mutate(snapshot_root: Path) -> object:
+        def snapshot_then_mutate(snapshot_root: Path, *, captured: object) -> object:
             nonlocal calls
-            result = real_snapshot(snapshot_root)
+            result = real_snapshot(snapshot_root, captured=captured)
             calls += 1
             if calls == 1:
                 source.write_bytes(original + b"\nmutation\n")
@@ -1387,7 +1424,7 @@ def test_normal_site_build_holds_docs_and_config_across_build_swap(
     assert swapped is True
     assert returncodes == [0]
     assert (old / "keep.txt").read_text(encoding="utf-8") == "old complete tree"
-    assert (moved_build / "docs/index.md").is_file()
+    assert not (moved_build / "docs/index.md").exists()
     assert not list(moved_build.rglob(".mkdocs-build-*.yml"))
     assert not list((moved_build / ".mkdocs-config-preview").iterdir())
     assert not list(outside.iterdir())
@@ -2328,4 +2365,1044 @@ def test_invalid_site_url_is_classified_as_site_build_error(repo: Path) -> None:
             ]
         )
         == 2
+    )
+
+
+_DOWNLOAD_MANIFEST_RELATIVES = (
+    "Quellen/manifest.jsonl",
+    "Dokumente/manifest.jsonl",
+    "Konvertierungen/manifest.jsonl",
+    "Storage/manifest.jsonl",
+    "catalog.json",
+)
+
+
+def _publication_decision(
+    *,
+    mode: PublicationMode = PublicationMode.MATERIALIZED,
+    creator: str = "D1 Creator",
+    copyright_notice: str = "D1 Copyright",
+    disclaimer_notice: str = "D1 Disclaimer",
+    append_change_notice: str = "Originalgetreue Bereitstellung.",
+) -> RightsDecision:
+    from tests.test_manifests import BITSTREAM_ID, BITSTREAM_URL, SOURCE_ID, SOURCE_SHA256
+
+    materialized = mode is PublicationMode.MATERIALIZED
+    takedown = mode is PublicationMode.REMOVE_ALL
+    attribution = (
+        RightsAttribution(
+            creators=(creator,),
+            attribution_parties=("Robert Koch-Institut",),
+            copyright_notice=copyright_notice,
+            license_notice="CC BY 4.0",
+            license_url="https://creativecommons.org/licenses/by/4.0/",
+            disclaimer_notice=disclaimer_notice,
+            origin_url="https://edoc.rki.de/handle/176904/900000001",
+            prior_change_history=()
+            if creator == "D1 Creator"
+            else ("Originalgetreue Bereitstellung.",),
+            current_change_notice=append_change_notice,
+        )
+        if materialized
+        else None
+    )
+    draft = RightsDecision(
+        approval_key=ApprovalKey(SOURCE_ID, BITSTREAM_URL, BITSTREAM_ID, SOURCE_SHA256),
+        state=(
+            RightsState.APPROVED
+            if materialized
+            else RightsState.TAKEDOWN
+            if takedown
+            else RightsState.METADATA_ONLY
+        ),
+        mode=mode,
+        allowed_actions=(RightsAction.PUBLISH,) if materialized else (),
+        components_state=(ComponentsState.CLEARED if materialized else ComponentsState.BLOCKED),
+        attribution=attribution,
+        basis="Reviewed publication fixture",
+        reviewed_by="Fixture reviewer",
+        reviewed_at="2026-08-01T00:00:00Z",
+        decision_sha256=None,
+    )
+    return replace(draft, decision_sha256=decision_sha256(draft))
+
+
+def _decision_payload(decision: RightsDecision) -> dict[str, object]:
+    attribution = decision.attribution
+    return {
+        "source_id": decision.approval_key.source_id,
+        "canonical_url": decision.approval_key.canonical_url,
+        "version_or_bitstream": decision.approval_key.version_or_bitstream,
+        "source_sha256": decision.approval_key.source_sha256,
+        "state": decision.state.value,
+        "mode": decision.mode.value,
+        "allowed_actions": [action.value for action in decision.allowed_actions],
+        "components_state": decision.components_state.value,
+        "attribution": None
+        if attribution is None
+        else {
+            "creators": list(attribution.creators),
+            "attribution_parties": list(attribution.attribution_parties),
+            "copyright_notice": attribution.copyright_notice,
+            "license_notice": attribution.license_notice,
+            "license_url": attribution.license_url,
+            "disclaimer_notice": attribution.disclaimer_notice,
+            "origin_url": attribution.origin_url,
+            "prior_change_history": list(attribution.prior_change_history),
+            "current_change_notice": attribution.current_change_notice,
+        },
+        "basis": decision.basis,
+        "reviewed_by": decision.reviewed_by,
+        "reviewed_at": decision.reviewed_at,
+    }
+
+
+def _write_register(repo: Path, decision: RightsDecision) -> None:
+    (repo / "research/rights-register.yml").write_text(
+        yaml.safe_dump(
+            {"schema_version": 2, "decisions": [_decision_payload(decision)]},
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_register_decisions(repo: Path, decisions: tuple[RightsDecision, ...]) -> None:
+    (repo / "research/rights-register.yml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 2,
+                "decisions": [_decision_payload(decision) for decision in decisions],
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_publication_manifests(repo: Path, decision: RightsDecision) -> None:
+    from tests.test_manifests import _conversion, _document, _source, _storage
+
+    source = _source()
+    source["decision_sha256"] = decision.decision_sha256
+    source["rights"] = {
+        key: value
+        for key, value in _decision_payload(decision).items()
+        if key not in {"source_id", "canonical_url", "version_or_bitstream", "source_sha256"}
+    }
+    source["rights"]["approval_key"] = {
+        "source_id": decision.approval_key.source_id,
+        "canonical_url": decision.approval_key.canonical_url,
+        "version_or_bitstream": decision.approval_key.version_or_bitstream,
+        "source_sha256": decision.approval_key.source_sha256,
+    }
+    storage = []
+    for index, reference in enumerate(_storage()):
+        storage.append(
+            {
+                **reference,
+                "storage_backend": "object",
+                "storage_object_id": f"fixture-object-{index}",
+                "decision_sha256": decision.decision_sha256,
+                "rights_state": decision.state.value,
+                "visibility": "public",
+                "public_reference": f"https://downloads.example.test/approved-{index}",
+            }
+        )
+    graph = ManifestGraph(
+        (source,),
+        (_document(),),
+        (_conversion(),),
+        tuple(sorted(storage, key=lambda item: item["artifact_id"])),
+    )
+    rendered = render_manifest_catalog(graph)
+    root = repo / "rki/Bulletins/Manifeste"
+    for relative, payload in rendered.files:
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+
+
+def _decision_for_manifest_source(
+    source: Mapping[str, object],
+    *,
+    mode: PublicationMode = PublicationMode.MATERIALIZED,
+) -> RightsDecision:
+    base = _publication_decision(mode=mode)
+    draft = replace(
+        base,
+        approval_key=ApprovalKey(
+            source["source_id"],
+            source["bitstream_url"],
+            source["bitstream_id"],
+            source["sha256"],
+        ),
+        decision_sha256=None,
+    )
+    return replace(draft, decision_sha256=decision_sha256(draft))
+
+
+def _embed_decision(source: dict[str, object], decision: RightsDecision) -> None:
+    source["decision_sha256"] = decision.decision_sha256
+    source["rights"] = {
+        key: value
+        for key, value in _decision_payload(decision).items()
+        if key not in {"source_id", "canonical_url", "version_or_bitstream", "source_sha256"}
+    }
+    source["rights"]["approval_key"] = {
+        "source_id": decision.approval_key.source_id,
+        "canonical_url": decision.approval_key.canonical_url,
+        "version_or_bitstream": decision.approval_key.version_or_bitstream,
+        "source_sha256": decision.approval_key.source_sha256,
+    }
+
+
+def _write_two_bitstream_publication_manifests(
+    repo: Path,
+) -> tuple[RightsDecision, RightsDecision, tuple[str, ...], tuple[str, ...]]:
+    from tests.test_manifests import (
+        _conversion,
+        _document,
+        _second_bitstream,
+        _source,
+        _storage,
+    )
+
+    first_source = _source()
+    second_source, second_document, second_storage = _second_bitstream()
+    first_decision = _decision_for_manifest_source(first_source)
+    second_decision = _decision_for_manifest_source(second_source)
+    _embed_decision(first_source, first_decision)
+    _embed_decision(second_source, second_decision)
+    first_storage = tuple(deepcopy(reference) for reference in _storage())
+    storage = (*first_storage, deepcopy(second_storage))
+    first_ids = tuple(reference["artifact_id"] for reference in first_storage)
+    second_ids = (storage[-1]["artifact_id"],)
+    for index, reference in enumerate(storage):
+        owner = first_decision if reference["artifact_id"] in first_ids else second_decision
+        reference.update(
+            storage_backend="object",
+            storage_object_id=f"fixture-two-bitstream-{index}",
+            decision_sha256=owner.decision_sha256,
+            rights_state="approved",
+            visibility="public",
+            public_reference=f"https://downloads.example.test/two-bitstream-{index}",
+        )
+    graph = ManifestGraph(
+        tuple(sorted((first_source, second_source), key=lambda item: item["bitstream_id"])),
+        tuple(
+            sorted(
+                (_document(), second_document),
+                key=lambda item: (item["document_id"], item["bitstream_id"]),
+            )
+        ),
+        (_conversion(),),
+        tuple(sorted(storage, key=lambda item: item["artifact_id"])),
+    )
+    rendered = render_manifest_catalog(graph)
+    root = repo / "rki/Bulletins/Manifeste"
+    for relative, payload in rendered.files:
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+    return first_decision, second_decision, first_ids, second_ids
+
+
+def _install_approved_publication(repo: Path, **changes: str) -> RightsDecision:
+    decision = _publication_decision(**changes)
+    _write_register(repo, decision)
+    _write_publication_manifests(repo, decision)
+    return decision
+
+
+def _generated_tree_hashes(repo: Path) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for root in (repo / "build/docs", repo / "site"):
+        if root.exists():
+            result.update(_sha256_tree(root, repo_root=repo))
+    return result
+
+
+def test_missing_whole_manifest_root_renders_honest_empty_state(repo: Path) -> None:
+    build_site(
+        repo,
+        check=True,
+        dry_run=False,
+        strict=True,
+        force=False,
+        site_url=None,
+    )
+
+    html = (repo / "site/Downloads/index.html").read_text(encoding="utf-8")
+    assert "Noch keine validierten Downloads" in html
+
+
+def test_partial_manifest_root_fails_without_publication(repo: Path) -> None:
+    _old_docs(repo)
+    _old_site(repo)
+    (repo / "rki/Bulletins/Manifeste").mkdir(parents=True)
+    before = _generated_tree_hashes(repo)
+
+    with pytest.raises(SiteBuildError, match="Manifest"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=False,
+            strict=True,
+            force=True,
+            site_url=None,
+        )
+
+    assert _generated_tree_hashes(repo) == before
+
+
+@pytest.mark.parametrize(
+    ("relative", "maximum"),
+    (
+        ("status.json", 256 * 1024),
+        ("research/rights-register.yml", 1024 * 1024),
+        ("config/rights-policy.toml", 64 * 1024),
+    ),
+)
+def test_exact_publication_input_is_bounded_before_hashing(
+    repo: Path, relative: str, maximum: int
+) -> None:
+    (repo / relative).write_bytes(b"x" * (maximum + 1))
+
+    with pytest.raises(BuildDocsError, match="Größenlimit"):
+        build_docs_module.capture_publication_inputs(repo)
+
+
+def test_exact_publication_inputs_are_read_once_and_never_prehashed(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reads: Counter[str] = Counter()
+    prehashed: list[str] = []
+    original_read = build_docs_module.read_bounded_utf8_text_beneath
+    original_hash = build_docs_module.sha256_file
+
+    def tracked_read(root: Path, relative: PurePosixPath, *, max_bytes: int) -> str:
+        reads[relative.as_posix()] += 1
+        return original_read(root, relative, max_bytes=max_bytes)
+
+    def tracked_hash(path: Path) -> str:
+        prehashed.append(Path(path).relative_to(repo).as_posix())
+        return original_hash(path)
+
+    monkeypatch.setattr(build_docs_module, "read_bounded_utf8_text_beneath", tracked_read)
+    monkeypatch.setattr(build_docs_module, "sha256_file", tracked_hash)
+    build_docs_module.capture_publication_inputs(repo)
+
+    assert reads == Counter(
+        {
+            "status.json": 1,
+            "research/rights-register.yml": 1,
+            "config/rights-policy.toml": 1,
+        }
+    )
+    assert not set(reads).intersection(prehashed)
+
+
+def test_bound_publication_sources_are_deeply_immutable(repo: Path) -> None:
+    bound = build_docs_module.bind_publication_sources(repo)
+
+    assert type(bound) is build_docs_module.BoundPublicationSources
+    assert isinstance(bound.source_hashes, MappingProxyType)
+    with pytest.raises(TypeError):
+        bound.source_hashes["status.json"] = "0" * 64
+    with pytest.raises(TypeError):
+        bound.download_inputs.public_status["status"] = "operational"
+    with pytest.raises(FrozenInstanceError):
+        bound.download_inputs = bound.download_inputs
+
+
+def test_snapshot_binds_exact_manifest_and_authority_paths(repo: Path) -> None:
+    decision = _install_approved_publication(repo)
+    captured = build_docs_module.capture_publication_inputs(repo)
+    snapshot = snapshot_sources(repo, captured=captured)
+
+    expected = {
+        "status.json",
+        "research/rights-register.yml",
+        "config/rights-policy.toml",
+        *(f"rki/Bulletins/Manifeste/{relative}" for relative in _DOWNLOAD_MANIFEST_RELATIVES),
+    }
+    assert expected <= set(snapshot)
+    assert decision.decision_sha256 is not None
+
+
+@pytest.mark.parametrize("bad_kind", ("extra", "symlink", "fifo", "oversize"))
+def test_manifest_capture_rejects_noncanonical_structure(
+    repo: Path, tmp_path: Path, bad_kind: str
+) -> None:
+    _install_approved_publication(repo)
+    root = repo / "rki/Bulletins/Manifeste"
+    if bad_kind == "extra":
+        (root / "extra.txt").write_text("extra", encoding="utf-8")
+    elif bad_kind == "symlink":
+        target = root / "catalog.json"
+        target.unlink()
+        target.symlink_to(tmp_path / "outside")
+    elif bad_kind == "fifo":
+        target = root / "catalog.json"
+        target.unlink()
+        os.mkfifo(target)
+    else:
+        (root / "catalog.json").write_bytes(b"x" * (64 * 1024 + 1))
+
+    with pytest.raises(BuildDocsError, match="Manifest"):
+        build_docs_module.capture_publication_inputs(repo)
+
+
+def test_rights_downgrade_publishes_tombstone_instead_of_leaving_old_site(
+    repo: Path,
+) -> None:
+    _install_approved_publication(repo)
+    build_site(repo, check=True, dry_run=False, strict=True, force=False, site_url=None)
+    old_html = (repo / "site/Downloads/index.html").read_text(encoding="utf-8")
+    old_href = "https://downloads.example.test/approved-0"
+    assert old_href in old_html
+
+    _write_register(repo, _publication_decision(mode=PublicationMode.SOURCE_ONLY))
+    build_site(repo, check=True, dry_run=False, strict=True, force=True, site_url=None)
+    html = (repo / "site/Downloads/index.html").read_text(encoding="utf-8")
+    search = (repo / "site/search/search_index.json").read_text(encoding="utf-8")
+
+    assert old_href not in html
+    assert old_href not in search
+    assert "Beim RKI öffnen" in html
+
+
+def test_remove_all_takedown_omits_every_public_trace(repo: Path) -> None:
+    _install_approved_publication(repo)
+    build_site(repo, check=True, dry_run=False, strict=True, force=False, site_url=None)
+    _write_register(repo, _publication_decision(mode=PublicationMode.REMOVE_ALL))
+
+    build_site(repo, check=True, dry_run=False, strict=True, force=True, site_url=None)
+    public = (repo / "site/Downloads/index.html").read_text(encoding="utf-8")
+    public += (repo / "site/search/search_index.json").read_text(encoding="utf-8")
+
+    for forbidden in (
+        "Synthetic bulletin",
+        "https://edoc.rki.de/handle/176904/900000001",
+        "D1 Creator",
+        "https://downloads.example.test/approved-0",
+    ):
+        assert forbidden not in public
+
+
+def test_complete_attribution_is_escaped_and_bound_to_each_approval_key(repo: Path) -> None:
+    from tests.web.test_downloads import _PublishedDownloadParser
+
+    first, second, *_ = _write_two_bitstream_publication_manifests(repo)
+    captured = build_docs_module.capture_publication_inputs(repo)
+    graph = build_docs_module._structural_manifest_graph(dict(captured.manifest_files))
+    decisions = []
+    sources = []
+    tokens_by_key = {}
+    for index, previous in enumerate((first, second)):
+        prefix = f"ATTR-{index}-"
+        tokens = tuple(
+            prefix + field + '<script>&"'
+            for field in ("CREATOR", "PARTY", "COPYRIGHT", "DISCLAIMER", "PRIOR", "CURRENT")
+        )
+        attribution = replace(
+            previous.attribution,
+            creators=(tokens[0],),
+            attribution_parties=(tokens[1],),
+            copyright_notice=tokens[2],
+            disclaimer_notice=tokens[3],
+            prior_change_history=(tokens[4],),
+            current_change_notice=tokens[5],
+        )
+        draft = replace(previous, attribution=attribution, decision_sha256=None)
+        decision = replace(draft, decision_sha256=decision_sha256(draft))
+        decisions.append(decision)
+        tokens_by_key[decision.approval_key] = tokens
+        source = deepcopy(
+            next(
+                source
+                for source in graph.sources
+                if source["bitstream_id"] == decision.approval_key.version_or_bitstream
+            )
+        )
+        source["title"] = prefix + "TITLE"
+        _embed_decision(source, decision)
+        sources.append(source)
+    storage = tuple(
+        {
+            **reference,
+            "decision_sha256": next(
+                decision.decision_sha256
+                for decision in decisions
+                if decision.approval_key.version_or_bitstream
+                == next(
+                    document["bitstream_id"]
+                    for document in graph.documents
+                    if reference["relative_path"] in document["paths"].values()
+                )
+            ),
+        }
+        for reference in graph.storage_references
+    )
+    graph = replace(
+        graph,
+        sources=tuple(sorted(sources, key=lambda source: source["bitstream_id"])),
+        storage_references=storage,
+    )
+    _write_register_decisions(repo, tuple(decisions))
+    for relative, payload in render_manifest_catalog(graph).files:
+        (repo / "rki/Bulletins/Manifeste" / relative).write_bytes(payload)
+    build_site(repo, check=True, dry_run=False, strict=True, force=False, site_url=None)
+    raw = (repo / "site/Downloads/index.html").read_text(encoding="utf-8")
+    search = (repo / "site/search/search_index.json").read_text(encoding="utf-8")
+    parser = _PublishedDownloadParser()
+    parser.feed(raw)
+    visible = " ".join(parser.text)
+    for tokens in tokens_by_key.values():
+        for token in (*tokens[1:], tokens[0]):
+            assert token in visible
+            assert raw.count(html.escape(token, quote=True)) == 1
+            assert token not in search
+    groups = re.findall(r'<section class="download-source">(.*?)</section>', raw, re.S)
+    assert len(groups) == 2
+    for decision in decisions:
+        tokens = tokens_by_key[decision.approval_key]
+        group = next(group for group in groups if html.escape(tokens[0], quote=True) in group)
+        for token in tokens:
+            assert html.escape(token, quote=True) in group
+        assert group.count('href="https://creativecommons.org/licenses/by/4.0/"') == 1
+        own_refs = [ref for ref in storage if ref["decision_sha256"] == decision.decision_sha256]
+        for ref in own_refs:
+            assert ref["public_reference"] in group
+        for other, other_tokens in tokens_by_key.items():
+            if other != decision.approval_key:
+                assert all(html.escape(token, quote=True) not in group for token in other_tokens)
+
+    previous = decisions[0]
+    old = previous.attribution
+    new_tokens = tuple(
+        f'D2-{field}<script>&"'
+        for field in ("CREATOR", "PARTY", "COPYRIGHT", "DISCLAIMER", "CURRENT")
+    )
+    attribution = replace(
+        old,
+        creators=(new_tokens[0],),
+        attribution_parties=(new_tokens[1],),
+        copyright_notice=new_tokens[2],
+        disclaimer_notice=new_tokens[3],
+        prior_change_history=(*old.prior_change_history, old.current_change_notice),
+        current_change_notice=new_tokens[4],
+    )
+    draft = replace(previous, attribution=attribution, decision_sha256=None)
+    current = replace(draft, decision_sha256=decision_sha256(draft))
+    _write_register_decisions(repo, (current, decisions[1]))
+    build_site(repo, check=True, dry_run=False, strict=True, force=True, site_url=None)
+    quarantined = (repo / "site/Downloads/index.html").read_text(encoding="utf-8")
+    quarantined += (repo / "site/search/search_index.json").read_text(encoding="utf-8")
+    for token in (*tokens_by_key[previous.approval_key], *new_tokens):
+        assert html.escape(token, quote=True) not in quarantined
+    for token in tokens_by_key[decisions[1].approval_key]:
+        assert html.escape(token, quote=True) in quarantined
+    for ref in storage:
+        if ref["decision_sha256"] == previous.decision_sha256:
+            assert ref["public_reference"] not in quarantined
+    refreshed_sources = tuple(deepcopy(source) for source in graph.sources)
+    for source in refreshed_sources:
+        if source["bitstream_id"] == current.approval_key.version_or_bitstream:
+            _embed_decision(source, current)
+    refreshed_storage = tuple(
+        {**ref, "decision_sha256": current.decision_sha256}
+        if ref["decision_sha256"] == previous.decision_sha256
+        else ref
+        for ref in storage
+    )
+    refreshed_graph = replace(
+        graph, sources=refreshed_sources, storage_references=refreshed_storage
+    )
+    for relative, payload in render_manifest_catalog(refreshed_graph).files:
+        (repo / "rki/Bulletins/Manifeste" / relative).write_bytes(payload)
+    build_site(repo, check=True, dry_run=False, strict=True, force=True, site_url=None)
+    refreshed = (repo / "site/Downloads/index.html").read_text(encoding="utf-8")
+    for token in (*new_tokens, *old.prior_change_history, old.current_change_notice):
+        assert refreshed.count(html.escape(token, quote=True)) == 1
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"reviewed_at": "2026-08-02T00:00:00Z"},
+        {"reviewed_by": "Second fixture reviewer"},
+        {"reviewed_at": "2026-08-02T00:00:00Z", "reviewed_by": "Second fixture reviewer"},
+    ),
+)
+def test_review_provenance_only_revision_quarantines_then_refreshes(repo: Path, changes) -> None:
+    first = _install_approved_publication(repo)
+    build_site(repo, check=True, dry_run=False, strict=True, force=False, site_url=None)
+    draft = replace(first, **changes, decision_sha256=None)
+    current = replace(draft, decision_sha256=decision_sha256(draft))
+    assert current.attribution == first.attribution
+    assert current.decision_sha256 != first.decision_sha256
+    _write_register(repo, current)
+    build_site(repo, check=True, dry_run=False, strict=True, force=True, site_url=None)
+    public = (repo / "site/Downloads/index.html").read_text(encoding="utf-8")
+    public += (repo / "site/search/search_index.json").read_text(encoding="utf-8")
+    for forbidden in (
+        "approved-0",
+        "approved-1",
+        "D1 Creator",
+        "D1 Copyright",
+        "D1 Disclaimer",
+        "Robert Koch-Institut",
+        "Originalgetreue Bereitstellung.",
+        "Synthetic bulletin",
+    ):
+        assert forbidden not in public
+    assert 'href="https://edoc.rki.de/handle/176904/900000001"' in public
+    _write_publication_manifests(repo, current)
+    build_site(repo, check=True, dry_run=False, strict=True, force=True, site_url=None)
+    refreshed = (repo / "site/Downloads/index.html").read_text(encoding="utf-8")
+    assert "https://downloads.example.test/approved-0" in refreshed
+    assert "D1 Creator" in refreshed
+    assert "D1 Disclaimer" in refreshed
+
+
+@pytest.mark.parametrize("missing", ("pdf", "markdown", "both"))
+def test_missing_public_reference_safely_rebuilds_and_preserves_other_bitstream(
+    repo: Path, missing
+):
+    first, second, first_ids, second_ids = _write_two_bitstream_publication_manifests(repo)
+    _write_register_decisions(repo, (first, second))
+    build_site(repo, check=True, dry_run=False, strict=True, force=False, site_url=None)
+    captured = build_docs_module.capture_publication_inputs(repo)
+    graph = build_docs_module._structural_manifest_graph(dict(captured.manifest_files))
+    first_refs = [ref for ref in graph.storage_references if ref["artifact_id"] in first_ids]
+    second_refs = [ref for ref in graph.storage_references if ref["artifact_id"] in second_ids]
+    storage = tuple(
+        {**ref, "public_reference": None}
+        if ref["artifact_id"] in first_ids
+        and (missing == "both" or (missing == "pdf") == (ref["conversion_id"] is None))
+        else ref
+        for ref in graph.storage_references
+    )
+    changed = replace(graph, storage_references=storage)
+    for relative, payload in render_manifest_catalog(changed).files:
+        (repo / "rki/Bulletins/Manifeste" / relative).write_bytes(payload)
+    build_docs_module._structural_manifest_graph(
+        dict(build_docs_module.capture_publication_inputs(repo).manifest_files)
+    )
+    build_site(repo, check=True, dry_run=False, strict=True, force=True, site_url=None)
+    raw = (repo / "site/Downloads/index.html").read_text(encoding="utf-8")
+    search = (repo / "site/search/search_index.json").read_text(encoding="utf-8")
+    for ref in first_refs:
+        assert ref["public_reference"] not in raw + search
+    for ref in second_refs:
+        assert ref["public_reference"] in raw
+        assert ref["public_reference"] not in search
+    fallback = next(
+        group
+        for group in re.findall(r'<section class="download-source">(.*?)</section>', raw, re.S)
+        if "Veröffentlichungsmodus: Origin-Link." in group
+    )
+    for forbidden in (
+        "Artifact-SHA-256",
+        "Bytes:",
+        "Backend:",
+        "download-attribution",
+        "D1 Creator",
+        "D1 Copyright",
+        "D1 Disclaimer",
+        "Synthetic bulletin",
+    ):
+        assert forbidden not in fallback
+    assert 'href="https://edoc.rki.de/handle/176904/900000001"' in fallback
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"basis": "Changed rights basis"},
+        {"allowed_actions": (RightsAction.FETCH, RightsAction.PUBLISH)},
+    ),
+)
+def test_review_provenance_does_not_allow_other_lateral_or_permissive_drift(repo: Path, changes):
+    previous = _install_approved_publication(repo)
+    build_site(repo, check=True, dry_run=False, strict=True, force=False, site_url=None)
+    before = _generated_tree_hashes(repo)
+    draft = replace(previous, **changes, reviewed_at="2026-08-02T00:00:00Z", decision_sha256=None)
+    current = replace(draft, decision_sha256=decision_sha256(draft))
+    _write_register(repo, current)
+    with pytest.raises(SiteBuildError, match="lateral oder permissiv"):
+        build_site(repo, check=True, dry_run=False, strict=True, force=True, site_url=None)
+    assert _generated_tree_hashes(repo) == before
+
+
+def test_missing_reference_with_present_unsafe_url_keeps_strict_site_unchanged(repo: Path):
+    _install_approved_publication(repo)
+    build_site(repo, check=True, dry_run=False, strict=True, force=False, site_url=None)
+    before = _generated_tree_hashes(repo)
+    graph = build_docs_module._structural_manifest_graph(
+        dict(build_docs_module.capture_publication_inputs(repo).manifest_files)
+    )
+    storage = tuple(
+        {
+            **ref,
+            "public_reference": None
+            if index == 0
+            else "https://downloads.example.test/unsafe?token=blocked",
+        }
+        for index, ref in enumerate(graph.storage_references)
+    )
+    for relative, payload in render_manifest_catalog(
+        replace(graph, storage_references=storage)
+    ).files:
+        (repo / "rki/Bulletins/Manifeste" / relative).write_bytes(payload)
+    with pytest.raises(SiteBuildError, match="public_reference"):
+        build_site(repo, check=True, dry_run=False, strict=True, force=True, site_url=None)
+    assert _generated_tree_hashes(repo) == before
+
+
+def test_attribution_drift_replaces_live_d1_with_safe_fallback(repo: Path) -> None:
+    _install_approved_publication(repo)
+    build_site(repo, check=True, dry_run=False, strict=True, force=False, site_url=None)
+    old_href = "https://downloads.example.test/approved-0"
+
+    current = _publication_decision(
+        creator="D2 Creator",
+        copyright_notice="D2 Copyright",
+        disclaimer_notice="D2 Disclaimer",
+        append_change_notice="Attribution korrigiert",
+    )
+    _write_register(repo, current)
+    build_site(repo, check=True, dry_run=False, strict=True, force=True, site_url=None)
+    public = (repo / "site/Downloads/index.html").read_text(encoding="utf-8")
+    public += (repo / "site/search/search_index.json").read_text(encoding="utf-8")
+
+    for forbidden in (
+        old_href,
+        "Synthetic bulletin",
+        "1996-03-22",
+        "D1 Creator",
+        "D1 Copyright",
+        "D2 Creator",
+        "D2 Copyright",
+        "D2 Disclaimer",
+    ):
+        assert forbidden not in public
+    assert 'href="https://edoc.rki.de/handle/176904/900000001"' in public
+    assert "Beim RKI öffnen" in public
+
+    _write_publication_manifests(repo, current)
+    build_site(repo, check=True, dry_run=False, strict=True, force=True, site_url=None)
+    refreshed = (repo / "site/Downloads/index.html").read_text(encoding="utf-8")
+    assert old_href in refreshed
+    assert "D2 Creator" in refreshed
+
+
+def test_site_and_docs_commit_as_one_rollback_unit(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Failure between site and docs commits restores both previous live trees."""
+
+    old_docs = _old_docs(repo)
+    old_site = _old_site(repo)
+    before = _generated_tree_hashes(repo)
+
+    def valid_runner(
+        repo_root: Path,
+        config_path: Path,
+        *,
+        strict: bool,
+        epoch: int,
+        pass_fds: tuple[int, ...],
+    ) -> int:
+        del repo_root, strict, epoch, pass_fds
+        parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        output = Path(parsed["site_dir"])
+        (output / "index.html").write_text("new index", encoding="utf-8")
+        (output / "404.html").write_text("new 404", encoding="utf-8")
+        return 0
+
+    checkpoints: list[PurePosixPath] = []
+
+    def fail_after_site(relative: PurePosixPath) -> None:
+        checkpoints.append(relative)
+        if relative == PurePosixPath("site"):
+            raise StagingError("injected between site and docs commit")
+
+    monkeypatch.setattr(build_site_module, "run_mkdocs_build", valid_runner)
+    monkeypatch.setattr(
+        staging_module,
+        "_coordinated_publication_checkpoint",
+        fail_after_site,
+        raising=False,
+    )
+
+    with pytest.raises(SiteBuildError, match="between site and docs commit"):
+        build_site(
+            repo,
+            check=True,
+            dry_run=False,
+            strict=True,
+            force=True,
+            site_url=None,
+        )
+
+    assert checkpoints == [PurePosixPath("site")]
+    assert _generated_tree_hashes(repo) == before
+    assert (old_docs / "keep.txt").is_file()
+    assert (old_site / "keep.txt").is_file()
+
+
+@pytest.mark.parametrize(
+    ("relative", "broken"),
+    (
+        (PurePosixPath("rki"), False),
+        (PurePosixPath("rki"), True),
+        (PurePosixPath("rki/Bulletins"), False),
+        (PurePosixPath("rki/Bulletins"), True),
+    ),
+)
+def test_manifest_capture_rejects_symlinked_ancestor(
+    repo: Path,
+    tmp_path: Path,
+    relative: PurePosixPath,
+    broken: bool,
+) -> None:
+    """Present or broken ancestor symlinks cannot masquerade as an absent root."""
+
+    link = repo / relative
+    link.parent.mkdir(parents=True, exist_ok=True)
+    target = tmp_path / f"outside-{'-'.join(relative.parts)}-{broken}"
+    if not broken:
+        target.mkdir()
+    link.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(BuildDocsError, match="Manifest"):
+        build_docs_module.capture_publication_inputs(repo)
+
+
+def test_full_build_reuses_captured_status_for_tables(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Table rendering receives bound status and never invokes its live status loader."""
+
+    reads: Counter[str] = Counter()
+    parser_calls: Counter[str] = Counter()
+    live_status_reads = 0
+    injected_statuses: list[object | None] = []
+    original_status = yaml.safe_load((repo / "status.json").read_text(encoding="utf-8"))
+    real_read = build_docs_module.read_bounded_utf8_text_beneath
+    real_register_parser = build_docs_module.parse_rights_register
+    real_policy_parser = build_docs_module.parse_rights_policy
+    real_status_parser = build_docs_module._strict_status
+    real_table_loader = build_docs_module.load_table_inputs
+    import scripts.web.build_tables as build_tables_module
+
+    real_table_json_loader = build_tables_module._load_json
+
+    def tracked_read(root: Path, relative: PurePosixPath, *, max_bytes: int) -> str:
+        reads[relative.as_posix()] += 1
+        return real_read(root, relative, max_bytes=max_bytes)
+
+    def tracked_register(text: str) -> object:
+        parser_calls["register"] += 1
+        return real_register_parser(text)
+
+    def tracked_policy(text: str) -> object:
+        parser_calls["policy"] += 1
+        return real_policy_parser(text)
+
+    def tracked_status(payload: bytes) -> object:
+        parser_calls["status"] += 1
+        return real_status_parser(payload)
+
+    def tracked_table_json(
+        root: Path,
+        relative: PurePosixPath,
+        *,
+        max_bytes: int,
+        required: bool,
+    ) -> object:
+        nonlocal live_status_reads
+        if relative == PurePosixPath("status.json"):
+            live_status_reads += 1
+        return real_table_json_loader(root, relative, max_bytes=max_bytes, required=required)
+
+    def tracked_table_inputs(root: Path, *, captured_status: object | None = None) -> object:
+        injected_statuses.append(captured_status)
+        if captured_status is None:
+            return real_table_loader(root)
+        return real_table_loader(root, captured_status=captured_status)
+
+    monkeypatch.setattr(build_docs_module, "read_bounded_utf8_text_beneath", tracked_read)
+    monkeypatch.setattr(build_docs_module, "parse_rights_register", tracked_register)
+    monkeypatch.setattr(build_docs_module, "parse_rights_policy", tracked_policy)
+    monkeypatch.setattr(build_docs_module, "_strict_status", tracked_status)
+    monkeypatch.setattr(build_tables_module, "_load_json", tracked_table_json)
+    monkeypatch.setattr(build_docs_module, "load_table_inputs", tracked_table_inputs)
+
+    build_docs(repo, force=False)
+
+    assert reads == Counter(
+        {
+            "status.json": 4,
+            "research/rights-register.yml": 4,
+            "config/rights-policy.toml": 4,
+        }
+    )
+    assert parser_calls == Counter({"register": 1, "policy": 1, "status": 1})
+    assert live_status_reads == 0
+    assert len(injected_statuses) == 1
+    assert injected_statuses[0] == original_status
+
+
+def test_transient_captured_status_restore_still_aborts_full_build(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient captured byte generation cannot evade final source drift checks."""
+
+    old = _old_docs(repo)
+    original = (repo / "status.json").read_bytes()
+    changed = original.replace(b'"status": "not_initialized"', b'"status": "blocked"', 1)
+    assert changed != original
+    real_read = build_docs_module.read_bounded_utf8_text_beneath
+    status_reads = 0
+
+    def transient_read(root: Path, relative: PurePosixPath, *, max_bytes: int) -> str:
+        nonlocal status_reads
+        if relative == PurePosixPath("status.json"):
+            status_reads += 1
+            if status_reads == 2:
+                return changed.decode("utf-8")
+        return real_read(root, relative, max_bytes=max_bytes)
+
+    monkeypatch.setattr(build_docs_module, "read_bounded_utf8_text_beneath", transient_read)
+
+    with pytest.raises(BuildDocsError, match="source-hash drift"):
+        build_docs(repo, force=False)
+
+    assert (repo / "status.json").read_bytes() == original
+    assert (old / "keep.txt").is_file()
+
+
+@pytest.mark.parametrize(
+    "mode",
+    (PublicationMode.SOURCE_ONLY, PublicationMode.ORIGIN_LINK, PublicationMode.REMOVE_ALL),
+)
+def test_restrictive_drift_removes_graph_storage_and_carries_tombstones(
+    repo: Path, mode: PublicationMode
+) -> None:
+    """Every non-materialized effective source loses storage before projection."""
+
+    _install_approved_publication(repo)
+    _write_register(repo, _publication_decision(mode=mode))
+    captured = build_docs_module.capture_publication_inputs(repo)
+    register = build_docs_module.parse_rights_register(
+        captured.rights_register_bytes.decode("utf-8")
+    )
+    policy = build_docs_module.parse_rights_policy(captured.rights_policy_bytes.decode("utf-8"))
+
+    _loaded, graph, _effective_register, tombstones = (
+        build_docs_module.load_publication_manifest_catalog(
+            captured,
+            register=register,
+            policy=policy,
+        )
+    )
+    bound = build_docs_module.bind_publication_sources(repo)
+
+    assert graph.storage_references == ()
+    assert {(item.source_id, item.artifact_id) for item in tombstones} == {
+        (item.source_id, item.artifact_id) for item in bound.download_inputs.tombstones
+    }
+    assert tombstones
+
+
+def test_attribution_quarantine_removes_graph_storage_and_carries_tombstones(repo: Path) -> None:
+    """Attribution-only quarantine also removes stale materialized references."""
+
+    _install_approved_publication(repo)
+    _write_register(
+        repo,
+        _publication_decision(
+            creator="D2 Creator",
+            copyright_notice="D2 Copyright",
+            disclaimer_notice="D2 Disclaimer",
+            append_change_notice="Attribution korrigiert",
+        ),
+    )
+    captured = build_docs_module.capture_publication_inputs(repo)
+    register = build_docs_module.parse_rights_register(
+        captured.rights_register_bytes.decode("utf-8")
+    )
+    policy = build_docs_module.parse_rights_policy(captured.rights_policy_bytes.decode("utf-8"))
+
+    _loaded, graph, _effective_register, tombstones = (
+        build_docs_module.load_publication_manifest_catalog(
+            captured,
+            register=register,
+            policy=policy,
+        )
+    )
+    bound = build_docs_module.bind_publication_sources(repo)
+
+    assert graph.storage_references == ()
+    assert {(item.source_id, item.artifact_id) for item in tombstones} == {
+        (item.source_id, item.artifact_id) for item in bound.download_inputs.tombstones
+    }
+    assert tombstones
+
+
+@pytest.mark.parametrize("first_state", ("source_only", "remove_all", "missing"))
+def test_tombstones_resolve_storage_owner_for_same_document_bitstreams(
+    repo: Path,
+    first_state: str,
+) -> None:
+    """Restricting bitstream A never removes materialized sibling B's exact references."""
+
+    first, second, first_artifacts, second_artifacts = _write_two_bitstream_publication_manifests(
+        repo
+    )
+    current = (
+        (
+            _decision_for_manifest_source(
+                {
+                    "source_id": first.approval_key.source_id,
+                    "bitstream_url": first.approval_key.canonical_url,
+                    "bitstream_id": first.approval_key.version_or_bitstream,
+                    "sha256": first.approval_key.source_sha256,
+                },
+                mode=PublicationMode(first_state),
+            ),
+            second,
+        )
+        if first_state != "missing"
+        else (second,)
+    )
+    _write_register_decisions(repo, current)
+    captured = build_docs_module.capture_publication_inputs(repo)
+    register = build_docs_module.parse_rights_register(
+        captured.rights_register_bytes.decode("utf-8")
+    )
+    policy = build_docs_module.parse_rights_policy(captured.rights_policy_bytes.decode("utf-8"))
+
+    _loaded, graph, _effective_register, tombstones = (
+        build_docs_module.load_publication_manifest_catalog(
+            captured,
+            register=register,
+            policy=policy,
+        )
+    )
+    bound = build_docs_module.bind_publication_sources(repo)
+
+    assert {reference["artifact_id"] for reference in graph.storage_references} == set(
+        second_artifacts
+    )
+    assert {item.artifact_id for item in tombstones} == set(first_artifacts)
+    assert {item.artifact_id for item in bound.download_inputs.tombstones} == set(first_artifacts)
+    assert {row.artifact_id for row in bound.download_inputs.rows if row.artifact_id} == set(
+        second_artifacts
     )

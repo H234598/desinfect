@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Pure UTC period, watermark, catch-up, and backfill task calculation."""
+
 from __future__ import annotations
 
 from calendar import monthrange
@@ -369,9 +370,7 @@ def calculate_due_tasks(
     else:
         raise DueTaskError("last_reconciliation_at muss UTC-String oder null sein")
     if reconciliation_due and limits.max_reconciliations:
-        tasks.append(
-            _task(TaskKind.RECONCILIATION, due_at, "interval_elapsed", due_at)
-        )
+        tasks.append(_task(TaskKind.RECONCILIATION, due_at, "interval_elapsed", due_at))
 
     return tuple(
         sorted(tasks, key=lambda item: (_KIND_ORDER[item.kind], item.period, item.task_id))

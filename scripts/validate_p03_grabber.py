@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Validate P03 parser, source configuration, result contract, and CLI imports offline."""
+
 from __future__ import annotations
 
 import json
@@ -48,9 +49,7 @@ def validate() -> None:
         base_url=config.base_url,
         excluded_handles={"176904/1996"},
     )
-    if links != [
-        ("176904/12345.2", "https://edoc.rki.de/handle/176904/12345.2")
-    ]:
+    if links != [("176904/12345.2", "https://edoc.rki.de/handle/176904/12345.2")]:
         raise ValueError("P03-Listingfixture driftet")
     metadata = parse_item_metadata(
         item_html,
@@ -64,8 +63,7 @@ def validate() -> None:
         metadata.document_id != "rki-176904-12345-v2"
         or [candidate.bitstream_version for candidate in metadata.pdfs] != [1, 2]
         or len({candidate.bitstream_id for candidate in metadata.pdfs}) != 2
-        or len({target_relative_path(metadata, candidate) for candidate in metadata.pdfs})
-        != 2
+        or len({target_relative_path(metadata, candidate) for candidate in metadata.pdfs}) != 2
     ):
         raise ValueError("P03-Metadatenfixture driftet")
 

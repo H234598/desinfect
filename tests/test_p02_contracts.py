@@ -1,4 +1,3 @@
-
 from scripts.validate_p02_contracts import main
 
 

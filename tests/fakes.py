@@ -1,4 +1,5 @@
 """Offline fake HTTP transport used by P03 parser, API, and download tests."""
+
 from __future__ import annotations
 
 from collections import defaultdict

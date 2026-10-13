@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Strict TOML configuration for storage adapters and LFS budgets."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -101,10 +102,15 @@ def load_storage_config(path: Path = DEFAULT_STORAGE_CONFIG) -> StorageConfig:
     lfs = _table(
         data,
         "lfs",
-        frozenset({
-            "artifact_root", "max_run_objects", "max_run_bytes",
-            "warn_total_bytes", "block_total_bytes",
-        }),
+        frozenset(
+            {
+                "artifact_root",
+                "max_run_objects",
+                "max_run_bytes",
+                "warn_total_bytes",
+                "block_total_bytes",
+            }
+        ),
     )
     release = _table(data, "release", frozenset({"tag_prefix", "asset_prefix"}))
     object_table = _table(data, "object", frozenset({"bucket", "namespace"}))

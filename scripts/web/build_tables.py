@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, fields
 import html
 from pathlib import Path, PurePosixPath
@@ -551,16 +552,36 @@ def _require_publication_evidence(
         raise TableBuildError("taxonomy corpus evidence does not reach 2020")
 
 
-def load_table_inputs(repo_root: Path) -> TableInputs:
+def _mutable_json(value: object) -> object:
+    """Convert one immutable captured JSON tree to schema-validator primitives."""
+
+    if isinstance(value, Mapping):
+        return {key: _mutable_json(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_mutable_json(item) for item in value]
+    return value
+
+
+def load_table_inputs(
+    repo_root: Path,
+    *,
+    captured_status: Mapping[str, object] | None = None,
+) -> TableInputs:
     """Load bounded projections and enforce the explicit state matrix."""
 
-    status = _load_json(
-        repo_root,
-        PurePosixPath("status.json"),
-        max_bytes=STATUS_MAX_BYTES,
-        required=True,
-    )
-    assert status is not None
+    if captured_status is None:
+        status = _load_json(
+            repo_root,
+            PurePosixPath("status.json"),
+            max_bytes=STATUS_MAX_BYTES,
+            required=True,
+        )
+        assert status is not None
+    else:
+        mutable_status = _mutable_json(captured_status)
+        if not isinstance(mutable_status, dict):
+            raise TableBuildError("captured status must be an object")
+        status = mutable_status
     _validate_registered("status", status)
     readiness = _load_json(
         repo_root,

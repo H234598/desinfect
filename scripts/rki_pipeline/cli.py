@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Thin domain router for reviewed RKI pipeline CLIs."""
+
 from __future__ import annotations
 
 import sys

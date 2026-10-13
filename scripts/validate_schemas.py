@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Validate the complete P02 schema family and its offline examples."""
+
 from __future__ import annotations
 
 import json
@@ -31,7 +32,9 @@ def validate() -> None:
         schema = load_schema(entry["name"], registry)
         for ref in _refs(schema):
             if not ref.startswith("#/"):
-                raise SchemaContractError(f"{entry['name']}: externe $ref ist in P02 unzulässig: {ref}")
+                raise SchemaContractError(
+                    f"{entry['name']}: externe $ref ist in P02 unzulässig: {ref}"
+                )
     validate_document("status", json.loads((ROOT / "status.json").read_text(encoding="utf-8")))
     validate_document(
         "period-archive-manifest",

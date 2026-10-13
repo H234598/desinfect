@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Versioned immutable dispatch plans with canonical JSON and SHA-256."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -54,7 +55,9 @@ class DispatchPlan:
             raise DispatchPlanError("run_mode muss ein RunMode sein")
         if not isinstance(self.storage_backend, StorageBackend):
             raise DispatchPlanError("storage_backend muss ein StorageBackend sein")
-        if type(self.tasks) is not tuple or not all(isinstance(task, DueTask) for task in self.tasks):
+        if type(self.tasks) is not tuple or not all(
+            isinstance(task, DueTask) for task in self.tasks
+        ):
             raise DispatchPlanError("tasks muss ein DueTask-Tupel sein")
         task_ids(self.tasks)
         if self.tasks != tuple(sorted(self.tasks, key=_task_key)):

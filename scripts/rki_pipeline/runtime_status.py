@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Strict run lifecycle, recovery, public-status projection, and redaction."""
+
 from __future__ import annotations
 
 from copy import deepcopy
@@ -14,7 +15,14 @@ from scripts.rki_pipeline.io_utils import atomic_write_text, stable_json_dumps
 from scripts.rki_pipeline.schema_registry import validate_document
 
 RUN_STATUSES = {
-    "created", "running", "success", "no_op", "blocked", "failed", "recovering", "recovered"
+    "created",
+    "running",
+    "success",
+    "no_op",
+    "blocked",
+    "failed",
+    "recovering",
+    "recovered",
 }
 FINAL_STATUSES = {"success", "no_op", "blocked", "failed", "recovered"}
 PHASES = {"initialize", "plan", "materialize", "validate", "apply", "verify", "complete"}
@@ -32,7 +40,9 @@ _TOKEN_PATTERNS = (
     re.compile(r"(?i)\b(?:github_pat_|gh[pousr]_)[A-Za-z0-9_]{12,}\b"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b"),
     re.compile(r"(?i)(authorization\s*:\s*bearer\s+)\S+"),
-    re.compile(r"(?i)\b(token|password|passwd|secret|api[_-]?key|access[_-]?key)\s*[:=]\s*([^\s,;]+)"),
+    re.compile(
+        r"(?i)\b(token|password|passwd|secret|api[_-]?key|access[_-]?key)\s*[:=]\s*([^\s,;]+)"
+    ),
     re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"),
 )
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -117,8 +127,13 @@ def redact_text(value: Any, *, limit: int = 2000) -> tuple[str, bool]:
 
 
 def _context(
-    *, trigger_source: str, run_mode: str, storage_backend: str,
-    branch: str | None = None, commit_sha: str | None = None, pr_number: int | None = None,
+    *,
+    trigger_source: str,
+    run_mode: str,
+    storage_backend: str,
+    branch: str | None = None,
+    commit_sha: str | None = None,
+    pr_number: int | None = None,
 ) -> dict[str, Any]:
     return {
         "repository": "H234598/desinfect",
@@ -132,9 +147,17 @@ def _context(
 
 
 def new_run(
-    *, workflow: str, trigger_source: str, run_mode: str, storage_backend: str,
-    tasks: Iterable[str] = (), run_id: str, now: str | None = None,
-    branch: str | None = None, commit_sha: str | None = None, pr_number: int | None = None,
+    *,
+    workflow: str,
+    trigger_source: str,
+    run_mode: str,
+    storage_backend: str,
+    tasks: Iterable[str] = (),
+    run_id: str,
+    now: str | None = None,
+    branch: str | None = None,
+    commit_sha: str | None = None,
+    pr_number: int | None = None,
 ) -> dict[str, Any]:
     """Create and validate a new revision-one run manifest."""
 
@@ -193,7 +216,9 @@ def _redacted_error(error: dict[str, Any] | None, *, phase: str, now: str) -> di
 def _redacted_recovery(recovery: dict[str, Any] | None) -> dict[str, Any] | None:
     if recovery is None:
         return None
-    action, _changed = redact_text(recovery.get("action", "Manuelle Prüfung erforderlich"), limit=1000)
+    action, _changed = redact_text(
+        recovery.get("action", "Manuelle Prüfung erforderlich"), limit=1000
+    )
     return {
         "level": recovery.get("level", "manual_intervention"),
         "action": action or "[REDACTED]",
@@ -204,10 +229,17 @@ def _redacted_recovery(recovery: dict[str, Any] | None) -> dict[str, Any] | None
 
 
 def update_run(
-    manifest: dict[str, Any], *, expected_revision: int, status: str, phase: str,
-    now: str | None = None, completed_phases: Iterable[str] | None = None,
-    metrics: dict[str, Any] | None = None, artifacts: list[dict[str, Any]] | None = None,
-    error: dict[str, Any] | None = None, recovery: dict[str, Any] | None = None,
+    manifest: dict[str, Any],
+    *,
+    expected_revision: int,
+    status: str,
+    phase: str,
+    now: str | None = None,
+    completed_phases: Iterable[str] | None = None,
+    metrics: dict[str, Any] | None = None,
+    artifacts: list[dict[str, Any]] | None = None,
+    error: dict[str, Any] | None = None,
+    recovery: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Advance a run using optimistic revision and a strict state machine."""
 
@@ -254,7 +286,10 @@ def update_run(
 
 
 def project_public_status(
-    current: dict[str, Any], run: dict[str, Any], *, content_changed: bool,
+    current: dict[str, Any],
+    run: dict[str, Any],
+    *,
+    content_changed: bool,
     last_main_commit_at: str | None = None,
 ) -> dict[str, Any]:
     """Project one validated run without ever falsifying the three clocks."""
@@ -284,13 +319,17 @@ def project_public_status(
     else:
         result["pipeline"]["consecutive_failures"] += 1
         error = run.get("error")
-        result["pipeline"]["last_error"] = None if error is None else {
-            "code": error["code"],
-            "phase": error["phase"],
-            "occurred_at": error["occurred_at"],
-            "message": error["message"][:500],
-            "redacted": True,
-        }
+        result["pipeline"]["last_error"] = (
+            None
+            if error is None
+            else {
+                "code": error["code"],
+                "phase": error["phase"],
+                "occurred_at": error["occurred_at"],
+                "message": error["message"][:500],
+                "redacted": True,
+            }
+        )
         result["status"] = "blocked" if run["status"] == "blocked" else "degraded"
 
     # ADR-014=B: analysis readiness and public mirror completeness remain separate.

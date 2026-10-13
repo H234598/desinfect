@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Validate P04 run modes, storage contracts, LFS rules, and offline boundaries."""
+
 from __future__ import annotations
 
 import ast
@@ -78,8 +79,7 @@ def _import_roots(tree: ast.AST) -> tuple[tuple[int, str, str | None], ...]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             imports.extend(
-                (node.lineno, alias.name.split(".", 1)[0], alias.asname)
-                for alias in node.names
+                (node.lineno, alias.name.split(".", 1)[0], alias.asname) for alias in node.names
             )
         elif isinstance(node, ast.ImportFrom) and node.module:
             imports.append((node.lineno, node.module.split(".", 1)[0], None))
@@ -104,10 +104,14 @@ def _validate_git_only_subprocess(path: Path, tree: ast.AST) -> None:
                 raise ValueError(f"{path}:{node.lineno}: nur subprocess.run für git ist erlaubt")
             command = node.args[0]
             if not isinstance(command, (ast.List, ast.Tuple)) or not command.elts:
-                raise ValueError(f"{path}:{node.lineno}: Git-Befehl muss eine literale Argumentliste sein")
+                raise ValueError(
+                    f"{path}:{node.lineno}: Git-Befehl muss eine literale Argumentliste sein"
+                )
             first = command.elts[0]
             if not isinstance(first, ast.Constant) or first.value != "git":
-                raise ValueError(f"{path}:{node.lineno}: subprocess darf ausschließlich git starten")
+                raise ValueError(
+                    f"{path}:{node.lineno}: subprocess darf ausschließlich git starten"
+                )
         if (
             isinstance(node.func, ast.Attribute)
             and isinstance(node.func.value, ast.Name)
@@ -130,9 +134,7 @@ def _validate_no_network_sdks() -> None:
             }
         )
         if forbidden:
-            raise ValueError(
-                f"{path}: direkte Netzwerk-SDK-/API-Imports verboten: {forbidden}"
-            )
+            raise ValueError(f"{path}: direkte Netzwerk-SDK-/API-Imports verboten: {forbidden}")
         _validate_git_only_subprocess(path, tree)
 
 
@@ -187,10 +189,7 @@ def _validate_behavioral_contracts() -> None:
         verify_lfs_object(repository, oid=oid, size=6)
 
     pointer = parse_lfs_pointer(
-        "version https://git-lfs.github.com/spec/v1\n"
-        + "oid sha256:"
-        + "a" * 64
-        + "\nsize 1\n"
+        "version https://git-lfs.github.com/spec/v1\n" + "oid sha256:" + "a" * 64 + "\nsize 1\n"
     )
     if pointer.oid != "a" * 64 or pointer.size != 1:
         raise ValueError("Git-LFS-Pointervertrag ist nicht stabil")
@@ -255,4 +254,6 @@ def validate() -> None:
 
 if __name__ == "__main__":
     validate()
-    print("P04 storage: ok; modes=plan|materialize|apply; backends=lfs|release|object; ADR-003=A; ADR-014=B")
+    print(
+        "P04 storage: ok; modes=plan|materialize|apply; backends=lfs|release|object; ADR-003=A; ADR-014=B"
+    )

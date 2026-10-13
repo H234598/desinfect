@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Bounded, same-origin, rate-limited HTTP client with fail-closed robots handling."""
+
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
@@ -218,15 +219,11 @@ class PoliteClient:
 
         self.config = config
         self.user_agent = user_agent or config.user_agent
-        self.delay_seconds = (
-            config.delay_seconds if delay_seconds is None else delay_seconds
-        )
+        self.delay_seconds = config.delay_seconds if delay_seconds is None else delay_seconds
         self.timeout_seconds = (
             config.timeout_seconds if timeout_seconds is None else timeout_seconds
         )
-        self.respect_robots = (
-            config.respect_robots if respect_robots is None else respect_robots
-        )
+        self.respect_robots = config.respect_robots if respect_robots is None else respect_robots
         if self.delay_seconds < 0 or self.timeout_seconds <= 0:
             raise HttpConfigurationError("Ungültige Delay-/Timeout-Konfiguration")
         self.transport = transport or RequestsTransport(
@@ -394,9 +391,7 @@ class PoliteClient:
                 parser.parse(body.decode("utf-8", errors="replace").splitlines())
                 self._robots = parser
             else:
-                raise RobotsUnavailableError(
-                    f"robots.txt lieferte HTTP {response.status_code}"
-                )
+                raise RobotsUnavailableError(f"robots.txt lieferte HTTP {response.status_code}")
             self._robots_loaded = True
         except RobotsUnavailableError:
             raise

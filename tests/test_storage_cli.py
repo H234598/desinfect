@@ -1,4 +1,5 @@
 """Regression tests for storage CLI mode and manifest boundaries."""
+
 from __future__ import annotations
 
 import hashlib
@@ -227,9 +228,7 @@ def test_prepared_object_provenance_roundtrips_without_loss(tmp_path: Path) -> N
     assert payload["decision_sha256"] == "c" * 64
     assert payload["document_id"] == "rki-176904-12345-v2"
     assert payload["conversion_id"] == "conv-" + "d" * 64
-    assert _prepared_objects({"schema_version": "1.1.0", "objects": [payload]}) == (
-        prepared,
-    )
+    assert _prepared_objects({"schema_version": "1.1.0", "objects": [payload]}) == (prepared,)
 
 
 @pytest.mark.parametrize("version", (None, "1.0.0", "2.0.0"))
@@ -279,9 +278,13 @@ def test_plan_rejects_malformed_fields_as_value_error(payload: dict[str, object]
         _plan(payload)
 
 
-def test_cli_reports_corrupt_plan_without_traceback(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_reports_corrupt_plan_without_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     corrupt = tmp_path / "plan.json"
-    corrupt.write_text('{"source_backend":null,"target_backend":"lfs","entries":[]}', encoding="utf-8")
+    corrupt.write_text(
+        '{"source_backend":null,"target_backend":"lfs","entries":[]}', encoding="utf-8"
+    )
     source = tmp_path / "source"
     source.mkdir()
     temp_root = tmp_path / "temp"
@@ -321,7 +324,8 @@ def write_rights_register(tmp_path: Path, state: str) -> tuple[Path, str]:
         "      origin_url: https://edoc.rki.de/handle/176904/12345.2\n"
         "      prior_change_history: []\n"
         "      current_change_notice: Unchanged synthetic fixture\n"
-        if approved else "    attribution: null\n"
+        if approved
+        else "    attribution: null\n"
     )
     path.write_text(
         "schema_version: 2\n"
@@ -332,7 +336,7 @@ def write_rights_register(tmp_path: Path, state: str) -> tuple[Path, str]:
         f'    source_sha256: "{SOURCE_SHA256}"\n'
         f'    state: "{state}"\n'
         f'    mode: "{"materialized" if approved else "remove_all"}"\n'
-        f'    allowed_actions: {"[cache, extract_text, fetch, hash, index_text, ocr, publish, thumbnail]" if approved else "[]"}\n'
+        f"    allowed_actions: {'[cache, extract_text, fetch, hash, index_text, ocr, publish, thumbnail]' if approved else '[]'}\n"
         f'    components_state: "{"cleared" if approved else "blocked"}"\n'
         + attribution
         + '    basis: "Synthetic fixture; no external publication rights claim"\n'
@@ -427,18 +431,21 @@ def test_cli_current_provenance_roundtrip_is_authorized(
     target = tmp_path / "target-current"
 
     assert materialize_current_cli(plan, source, temp_root, prepared) == 0
-    assert main(
-        [
-            "apply",
-            "--plan",
-            str(plan),
-            "--prepared",
-            str(prepared),
-            "--target-repo",
-            str(target),
-            "--confirm-apply",
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "apply",
+                "--plan",
+                str(plan),
+                "--prepared",
+                str(prepared),
+                "--target-repo",
+                str(target),
+                "--confirm-apply",
+            ]
+        )
+        == 0
+    )
     assert (target / "rki/Bulletins/Jahre/1994/archive.zip").is_file()
 
 
@@ -456,18 +463,21 @@ def test_cli_revocation_between_materialize_and_apply_blocks_before_lfs_write(
     assert materialize_current_cli(plan, source, temp_root, prepared) == 0
     write_rights_register(tmp_path, "takedown")
 
-    assert main(
-        [
-            "apply",
-            "--plan",
-            str(plan),
-            "--prepared",
-            str(prepared),
-            "--target-repo",
-            str(target),
-            "--confirm-apply",
-        ]
-    ) == 2
+    assert (
+        main(
+            [
+                "apply",
+                "--plan",
+                str(plan),
+                "--prepared",
+                str(prepared),
+                "--target-repo",
+                str(target),
+                "--confirm-apply",
+            ]
+        )
+        == 2
+    )
     assert not (target / "rki").exists()
 
 
@@ -519,15 +529,18 @@ def test_cli_requires_confirmation_before_adapter_construction(
 
     monkeypatch.setattr(storage_cli, "_lfs_adapter", unexpected_adapter)
 
-    assert main(
-        [
-            "apply",
-            "--plan",
-            str(plan),
-            "--prepared",
-            str(tmp_path / "missing-prepared.json"),
-            "--target-repo",
-            str(tmp_path),
-        ]
-    ) == 2
+    assert (
+        main(
+            [
+                "apply",
+                "--plan",
+                str(plan),
+                "--prepared",
+                str(tmp_path / "missing-prepared.json"),
+                "--target-repo",
+                str(tmp_path),
+            ]
+        )
+        == 2
+    )
     assert calls == []

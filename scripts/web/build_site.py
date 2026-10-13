@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html.parser import HTMLParser
 import os
 from pathlib import Path, PurePosixPath
@@ -34,16 +34,20 @@ from scripts.rki_pipeline.io_utils import (
     source_date_epoch,
     validate_tree_no_symlinks_fd,
 )
-from scripts.rki_pipeline.staging import StagingError, preview_directory, staged_directory
+from scripts.rki_pipeline.staging import (
+    StagingError,
+    coordinated_staged_directories,
+    preview_directory,
+)
 from scripts.web.build_docs import (
     BuildDocsError,
     DocsBuildResult,
+    _require_bound_unchanged,
     _regular_files,
     bind_publication_sources,
-    build_docs,
     docs_preview_session,
     load_publication_config,
-    snapshot_sources,
+    render_docs_tree,
 )
 from scripts.web.build_navigation import (
     NavigationError,
@@ -849,7 +853,8 @@ def build_site(
     epoch = source_date_epoch()
     try:
         config = load_publication_config(root)
-        before, content_index = bind_publication_sources(root)
+        bound_sources = bind_publication_sources(root)
+        content_index = bound_sources.content_index
     except (BuildDocsError, OSError, UnsafePathError, ValueError) as exc:
         raise SiteBuildError(str(exc)) from exc
     del check
@@ -859,8 +864,7 @@ def build_site(
             with docs_preview_session(
                 root,
                 only=selected,
-                source_hashes=before,
-                content_index=content_index,
+                bound_sources=bound_sources,
             ) as docs:
                 with site_preview_session(root) as site_stage:
                     site_hashes = _run_site_build(
@@ -873,8 +877,7 @@ def build_site(
                         content_index=content_index,
                         excluded_docs=docs.result.excluded_docs,
                     )
-                    if snapshot_sources(root) != before:
-                        raise SiteBuildError("source-hash drift during site build")
+                    _require_bound_unchanged(root, bound_sources.source_hashes)
         except SiteBuildError:
             raise
         except (BuildDocsError, OSError, StagingError, UnsafePathError, ValueError) as exc:
@@ -882,25 +885,23 @@ def build_site(
         return SiteBuildResult(docs=docs.result, site_hashes=site_hashes, published=False)
 
     try:
-        docs = build_docs(
-            root,
+        with coordinated_staged_directories(
+            (config.site_dir, config.docs_dir),
+            allowed_root=root,
             force=force,
-            source_hashes=before,
-            content_index=content_index,
-        )
-        with _held_generated_directory(config.docs_dir, allowed_root=root) as held_docs:
-            with staged_directory(config.site_dir, allowed_root=root, force=force) as site_stage:
-                site_hashes = _run_site_build(
-                    repo_root=root,
-                    docs_dir=held_docs,
-                    site_dir=site_stage,
-                    site_url=validated_url,
-                    epoch=epoch,
-                    partial=False,
-                    content_index=content_index,
-                )
-                if snapshot_sources(root) != before:
-                    raise SiteBuildError("source-hash drift during site build")
+        ) as (site_stage, docs_stage):
+            docs = render_docs_tree(root, docs_stage, bound_sources=bound_sources)
+            site_hashes = _run_site_build(
+                repo_root=root,
+                docs_dir=docs_stage,
+                site_dir=site_stage,
+                site_url=validated_url,
+                epoch=epoch,
+                partial=False,
+                content_index=content_index,
+            )
+            _require_bound_unchanged(root, bound_sources.source_hashes)
+        docs = replace(docs, published=True)
     except SiteBuildError:
         raise
     except (BuildDocsError, OSError, StagingError, UnsafePathError, ValueError) as exc:

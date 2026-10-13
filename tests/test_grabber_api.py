@@ -1,4 +1,5 @@
 """End-to-end offline API, schema, and compatibility CLI tests for P03."""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -114,9 +115,7 @@ def test_dry_run_is_importable_structured_and_does_not_create_output(tmp_path: P
     assert not output.exists()
     payload = result.to_dict()
     validate_result(payload)
-    assert {record["rights"]["open_access"] for record in payload["records"]} == {
-        True
-    }
+    assert {record["rights"]["open_access"] for record in payload["records"]} == {True}
     assert payload["affected_periods"] == {
         "weeks": ["1996-W12"],
         "months": ["1996-03"],

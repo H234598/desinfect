@@ -1,4 +1,5 @@
 """Pure parser regressions for the modular RKI grabber."""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -38,9 +39,7 @@ def test_year_and_listing_parsers_keep_only_same_origin_numeric_handles() -> Non
         base_url=BASE_URL,
         excluded_handles={"176904/1996"},
     )
-    assert links == [
-        ("176904/12345.2", "https://edoc.rki.de/handle/176904/12345.2")
-    ]
+    assert links == [("176904/12345.2", "https://edoc.rki.de/handle/176904/12345.2")]
     assert parse_listing_bounds("Now showing items 1-1 of 1") == (1, 1, 1)
 
 

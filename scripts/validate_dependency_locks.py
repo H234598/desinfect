@@ -67,9 +67,7 @@ def require_sorted(path: Path, pins: dict[str, str]) -> None:
     for line in effective:
         match = PIN.fullmatch(line)
         assert match is not None
-        normalized.append(
-            f"{canonical_name(match.group('name'))}=={match.group('version')}"
-        )
+        normalized.append(f"{canonical_name(match.group('name'))}=={match.group('version')}")
     if normalized != expected:
         raise ValueError(f"{path}: Pins müssen kanonisch alphabetisch sortiert sein")
 
@@ -178,8 +176,7 @@ def validate_python_locks() -> None:
             raise ValueError(f"python-locks.json: Lock-Hash driftet für {scope}")
         packages = scope_metadata.get("packages")
         if not isinstance(packages, dict) or not all(
-            isinstance(name, str) and isinstance(version, str)
-            for name, version in packages.items()
+            isinstance(name, str) and isinstance(version, str) for name, version in packages.items()
         ):
             raise ValueError(f"python-locks.json: ungültige Paketclosure für {scope}")
         if lock != packages:

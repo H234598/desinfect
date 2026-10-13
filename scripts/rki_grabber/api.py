@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Stable public Python API and deterministic result persistence for the RKI grabber."""
+
 from __future__ import annotations
 
 import csv
@@ -22,29 +23,19 @@ def _effective_config(request: GrabberRequest, config: SourceConfig) -> SourceCo
     return replace(
         config,
         delay_seconds=(
-            config.delay_seconds
-            if request.delay_seconds is None
-            else request.delay_seconds
+            config.delay_seconds if request.delay_seconds is None else request.delay_seconds
         ),
         timeout_seconds=(
-            config.timeout_seconds
-            if request.timeout_seconds is None
-            else request.timeout_seconds
+            config.timeout_seconds if request.timeout_seconds is None else request.timeout_seconds
         ),
         max_html_bytes=(
-            config.max_html_bytes
-            if request.max_html_bytes is None
-            else request.max_html_bytes
+            config.max_html_bytes if request.max_html_bytes is None else request.max_html_bytes
         ),
         max_pdf_bytes=(
-            config.max_pdf_bytes
-            if request.max_pdf_bytes is None
-            else request.max_pdf_bytes
+            config.max_pdf_bytes if request.max_pdf_bytes is None else request.max_pdf_bytes
         ),
         respect_robots=(
-            config.respect_robots
-            if request.respect_robots is None
-            else request.respect_robots
+            config.respect_robots if request.respect_robots is None else request.respect_robots
         ),
         user_agent=request.user_agent or config.user_agent,
     )

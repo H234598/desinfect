@@ -1,4 +1,5 @@
 """Contracts for deterministic staged-tree and commit messages."""
+
 from __future__ import annotations
 
 import pytest

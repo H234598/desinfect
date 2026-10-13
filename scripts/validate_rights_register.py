@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Validate reviewed rights policy and authoritative source decisions offline."""
+
 from __future__ import annotations
 
 from pathlib import Path

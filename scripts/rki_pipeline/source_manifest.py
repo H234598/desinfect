@@ -1,4 +1,5 @@
 """Fail-closed builders for RKI source and document manifests."""
+
 from __future__ import annotations
 
 from datetime import date
@@ -8,7 +9,11 @@ from typing import Iterable, Mapping
 from urllib.parse import urlsplit
 
 from scripts.rki_grabber.models import ArtifactRecord, RecordState, Scope
-from scripts.rki_pipeline.documents import DocumentIdentityError, bitstream_identity, document_identity
+from scripts.rki_pipeline.documents import (
+    DocumentIdentityError,
+    bitstream_identity,
+    document_identity,
+)
 from scripts.rki_pipeline.io_utils import atomic_write_text, stable_json_dumps
 from scripts.rki_pipeline.paths import DocumentPathError, DocumentType, repository_document_paths
 from scripts.rki_pipeline.rights import (
@@ -112,18 +117,13 @@ def build_source_manifest(
         source_sha256=record.sha256,
     )
     if rights_decision.approval_key != expected_key:
-        raise ManifestBuildError(
-            "Rechteentscheidung gehört zu anderer Revision oder anderen Bytes"
-        )
+        raise ManifestBuildError("Rechteentscheidung gehört zu anderer Revision oder anderen Bytes")
     if (
         type(rights_decision) is not RightsDecision
         or type(rights_decision.state) is not RightsState
         or type(rights_decision.mode) is not PublicationMode
         or type(rights_decision.allowed_actions) is not tuple
-        or any(
-            type(action) is not RightsAction
-            for action in rights_decision.allowed_actions
-        )
+        or any(type(action) is not RightsAction for action in rights_decision.allowed_actions)
         or type(rights_decision.components_state) is not ComponentsState
         or (
             rights_decision.attribution is not None
@@ -163,37 +163,27 @@ def build_source_manifest(
         "rights": {
             "state": rights_decision.state.value,
             "mode": rights_decision.mode.value,
-            "allowed_actions": [
-                action.value for action in rights_decision.allowed_actions
-            ],
+            "allowed_actions": [action.value for action in rights_decision.allowed_actions],
             "components_state": rights_decision.components_state.value,
             "attribution": (
                 None
                 if rights_decision.attribution is None
                 else {
                     "creators": list(rights_decision.attribution.creators),
-                    "attribution_parties": list(
-                        rights_decision.attribution.attribution_parties
-                    ),
+                    "attribution_parties": list(rights_decision.attribution.attribution_parties),
                     "copyright_notice": rights_decision.attribution.copyright_notice,
                     "license_notice": rights_decision.attribution.license_notice,
                     "license_url": rights_decision.attribution.license_url,
                     "disclaimer_notice": rights_decision.attribution.disclaimer_notice,
                     "origin_url": rights_decision.attribution.origin_url,
-                    "prior_change_history": list(
-                        rights_decision.attribution.prior_change_history
-                    ),
-                    "current_change_notice": (
-                        rights_decision.attribution.current_change_notice
-                    ),
+                    "prior_change_history": list(rights_decision.attribution.prior_change_history),
+                    "current_change_notice": (rights_decision.attribution.current_change_notice),
                 }
             ),
             "approval_key": {
                 "source_id": rights_decision.approval_key.source_id,
                 "canonical_url": rights_decision.approval_key.canonical_url,
-                "version_or_bitstream": (
-                    rights_decision.approval_key.version_or_bitstream
-                ),
+                "version_or_bitstream": (rights_decision.approval_key.version_or_bitstream),
                 "source_sha256": rights_decision.approval_key.source_sha256,
             },
             "basis": rights_decision.basis,
@@ -221,8 +211,14 @@ def _validated_superseded_by(document_id: str, version: int, value: str | None) 
     if value is None:
         return None
     match = _DOCUMENT_ID.fullmatch(value)
-    if match is None or match.group(1) != document_id.rsplit("-v", 1)[0] or int(match.group(2)) <= version:
-        raise ManifestBuildError("superseded_by muss auf spätere Version desselben Dokuments zeigen")
+    if (
+        match is None
+        or match.group(1) != document_id.rsplit("-v", 1)[0]
+        or int(match.group(2)) <= version
+    ):
+        raise ManifestBuildError(
+            "superseded_by muss auf spätere Version desselben Dokuments zeigen"
+        )
     return value
 
 
@@ -295,7 +291,9 @@ def build_source_manifests(
         payload = build_source_manifest(record, rights_decision=decision)
         previous = by_id.get(bitstream.bitstream_id)
         if previous is not None and previous[1] != payload:
-            raise ManifestBuildError("Gleiche Bitstream-Identität hat widersprüchliche Record-Daten")
+            raise ManifestBuildError(
+                "Gleiche Bitstream-Identität hat widersprüchliche Record-Daten"
+            )
         by_id[bitstream.bitstream_id] = (record, payload)
         hashes.setdefault(record.sha256, []).append(bitstream.bitstream_id)
 

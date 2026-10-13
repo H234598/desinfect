@@ -32,9 +32,7 @@ def test_rights_register_changes_trigger_and_block_both_workflows() -> None:
     baseline_job = baseline["jobs"]["baseline"]
     pipeline_job = pipeline["jobs"]["pipeline"]
     baseline_step = next(
-        step
-        for step in baseline_job["steps"]
-        if step["name"] == "Validate rights register"
+        step for step in baseline_job["steps"] if step["name"] == "Validate rights register"
     )
     pipeline_step = next(
         step
@@ -79,9 +77,7 @@ def test_rights_docs_lock_authority_review_and_publication_contract() -> None:
 
 
 def test_takedown_runbook_preserves_evidence_and_separates_lfs_history() -> None:
-    runbook = (ROOT / "runbooks" / "RIGHTS-TAKEDOWN.md").read_text(
-        encoding="utf-8"
-    )
+    runbook = (ROOT / "runbooks" / "RIGHTS-TAKEDOWN.md").read_text(encoding="utf-8")
 
     for required in (
         "takedown",
@@ -100,9 +96,7 @@ def test_takedown_runbook_preserves_evidence_and_separates_lfs_history() -> None
 
 
 def test_storage_operations_doc_links_rights_policy_and_takedown() -> None:
-    text = (ROOT / "docs" / "Wartung" / "RunModes-und-Storage.md").read_text(
-        encoding="utf-8"
-    )
+    text = (ROOT / "docs" / "Wartung" / "RunModes-und-Storage.md").read_text(encoding="utf-8")
 
     assert "../Rechte-und-Lizenzen.md" in text
     assert "../../runbooks/RIGHTS-TAKEDOWN.md" in text

@@ -1,4 +1,5 @@
 """Regression tests for immutable storage path boundaries."""
+
 from __future__ import annotations
 
 from pathlib import Path

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Workflow-facing P05 transaction, commit-plan, and exact Git writer CLI."""
+
 from __future__ import annotations
 
 import argparse
@@ -203,7 +204,10 @@ def main(argv: list[str] | None = None) -> int:
                     args.output,
                 )
             except (OSError, ValueError) as output_error:
-                print(f"pipeline-cli: Fehler beim Schreiben des Fehlermanifests: {output_error}", file=sys.stderr)
+                print(
+                    f"pipeline-cli: Fehler beim Schreiben des Fehlermanifests: {output_error}",
+                    file=sys.stderr,
+                )
         print(f"pipeline-cli: {exc}", file=sys.stderr)
         return 3
     except (OSError, ValueError, DispatchPlanError, GitWriterError) as exc:

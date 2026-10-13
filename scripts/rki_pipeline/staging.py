@@ -7,9 +7,11 @@ from contextlib import contextmanager
 import ctypes
 from dataclasses import dataclass
 import errno
+from enum import Enum
 import fcntl
 import os
 from pathlib import Path
+from pathlib import PurePosixPath
 import signal
 import stat
 import sys
@@ -23,6 +25,7 @@ from scripts.rki_pipeline.io_utils import (
     entry_exists,
     fd_directory_path,
     fsync_directory_fd,
+    list_directory_fd,
     mark_generated_root_fd,
     open_directory_beneath,
     open_root_directory,
@@ -55,6 +58,57 @@ class StagingState:
     published: bool = False
     no_change: bool = False
     no_change_validated: bool = False
+
+
+@dataclass(slots=True)
+class _CoordinatedTarget:
+    relative: PurePosixPath
+    parent_fd: int
+    target_name: str
+    staging_name: str
+    backup_name: str
+    quarantine_name: str
+    expected_generation: tuple[tuple[object, ...], ...] | None
+    staging_fd: int
+    target_moved: bool = False
+    staging_published: bool = False
+    published_identity: tuple[int, int, int] | None = None
+
+
+class _QuarantineRemnant(Enum):
+    NONE = "none"
+    VERIFIED = "verified"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class _RollbackDiagnostic:
+    target_name: str
+    quarantine_name: str
+    phase: str
+    error: BaseException
+    quarantine_remnant: _QuarantineRemnant
+
+    def render(self) -> str:
+        message = f"target={self.target_name}; phase={self.phase}; error={self.error}"
+        if self.quarantine_remnant is _QuarantineRemnant.VERIFIED:
+            message += f"; sicherer Quarantänerest={self.quarantine_name}"
+        elif self.quarantine_remnant is _QuarantineRemnant.UNKNOWN:
+            message += "; Quarantänereststatus=ungeklärt"
+        return message
+
+
+@dataclass(frozen=True, slots=True)
+class _RollbackOutcome:
+    staging_published: bool
+    target_moved: bool
+    diagnostics: tuple[_RollbackDiagnostic, ...]
+
+
+def _coordinated_publication_checkpoint(relative: PurePosixPath) -> None:
+    """Fault-injection seam after one coordinated target rename."""
+
+    del relative
 
 
 def _rename_noreplace(parent_fd: int, source: str, target: str) -> None:
@@ -91,12 +145,8 @@ def _rename_noreplace(parent_fd: int, source: str, target: str) -> None:
         errno.EINVAL,
         getattr(errno, "EOPNOTSUPP", errno.ENOTSUP),
     }:
-        raise StagingUnsupportedError(
-            "Atomare NOREPLACE-Veröffentlichung wird nicht unterstützt"
-        )
-    raise StagingError(
-        f"Atomare NOREPLACE-Veröffentlichung fehlgeschlagen: {os.strerror(error)}"
-    )
+        raise StagingUnsupportedError("Atomare NOREPLACE-Veröffentlichung wird nicht unterstützt")
+    raise StagingError(f"Atomare NOREPLACE-Veröffentlichung fehlgeschlagen: {os.strerror(error)}")
 
 
 @contextmanager
@@ -188,7 +238,7 @@ def _directory_generation(directory_fd: int, prefix: str = "") -> tuple[tuple[ob
                     raise StagingConflictError("Zielgeneration änderte sich während der Prüfung")
             finally:
                 os.close(child_fd)
-    if tuple(sorted(os.listdir(directory_fd))) != names or not _metadata_matches(
+    if tuple(sorted(list_directory_fd(directory_fd))) != names or not _metadata_matches(
         root_before, os.fstat(directory_fd)
     ):
         raise StagingConflictError("Zielgeneration änderte sich während der Prüfung")
@@ -226,8 +276,18 @@ def _target_generation(parent_fd: int, name: str) -> tuple[tuple[object, ...], .
     target_fd = _open_child_directory(parent_fd, name)
     try:
         metadata = os.fstat(target_fd)
-        return (("", metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_size,
-                 metadata.st_mtime_ns, metadata.st_ctime_ns), *_directory_generation(target_fd))
+        return (
+            (
+                "",
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_mode,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_ctime_ns,
+            ),
+            *_directory_generation(target_fd),
+        )
     finally:
         os.close(target_fd)
 
@@ -251,7 +311,9 @@ def _target_transaction_lock(parent_fd: int, target_name: str) -> Iterator[None]
     key = (metadata.st_dev, metadata.st_ino, target_name)
     with _TARGET_REGISTRY_GUARD:
         if key in _TARGET_REGISTRY:
-            raise StagingConflictError(f"Ziel ist bereits in einer Stagingtransaktion: {target_name}")
+            raise StagingConflictError(
+                f"Ziel ist bereits in einer Stagingtransaktion: {target_name}"
+            )
         _TARGET_REGISTRY.add(key)
     locked = False
     try:
@@ -262,9 +324,7 @@ def _target_transaction_lock(parent_fd: int, target_name: str) -> Iterator[None]
             raise StagingConflictError(f"Staging-Parent ist belegt: {target_name}") from exc
         except OSError as exc:
             if exc.errno in {errno.ENOLCK, errno.EOPNOTSUPP}:
-                raise StagingUnsupportedError(
-                    "Staging-Parent-Lock wird nicht unterstützt"
-                ) from exc
+                raise StagingUnsupportedError("Staging-Parent-Lock wird nicht unterstützt") from exc
             raise
         yield
     finally:
@@ -321,8 +381,162 @@ def _claim_owned_target(
         _rename_noreplace(parent_fd, quarantine_name, target_name)
         fsync_directory_fd(parent_fd)
     except StagingError as exc:
-        raise StagingConflictError("Fremdes Ziel konnte nach Quarantäne-Claim nicht zurückgestellt werden") from exc
+        raise StagingConflictError(
+            "Fremdes Ziel konnte nach Quarantäne-Claim nicht zurückgestellt werden"
+        ) from exc
     raise StagingConflictError("Target-Name wurde durch eine fremde Generation ersetzt")
+
+
+def _owned_quarantine_state(
+    parent_fd: int,
+    quarantine_name: str,
+    identity: tuple[int, int, int],
+    *,
+    missing_state: _QuarantineRemnant,
+) -> _QuarantineRemnant:
+    """Classify an exact descriptor-relative quarantine binding."""
+
+    try:
+        if not entry_exists(parent_fd, quarantine_name):
+            return missing_state
+        if _named_identity_matches(parent_fd, quarantine_name, identity):
+            return _QuarantineRemnant.VERIFIED
+    except Exception:
+        return _QuarantineRemnant.UNKNOWN
+    return _QuarantineRemnant.UNKNOWN
+
+
+def _rollback_published_target(
+    *,
+    parent_fd: int,
+    target_name: str,
+    backup_name: str,
+    quarantine_name: str,
+    published_fd: int | None,
+    staging_published: bool,
+    target_moved: bool,
+    remove_quarantine: bool,
+) -> _RollbackOutcome:
+    """Claim own publication, then restore backup regardless of cleanup failures."""
+
+    failures: list[tuple[str, BaseException]] = []
+    quarantine_remnant = _QuarantineRemnant.NONE
+    if staging_published:
+        if published_fd is None:
+            failures.append(
+                (
+                    "claim",
+                    StagingConflictError("Publiziertes Ziel besitzt keinen gehaltenen FD"),
+                )
+            )
+        else:
+            published_identity = _directory_identity(published_fd)
+            try:
+                quarantine_fd = _claim_owned_target(
+                    parent_fd,
+                    target_name,
+                    quarantine_name,
+                    published_fd,
+                )
+            except BaseException as exc:
+                quarantine_remnant = _owned_quarantine_state(
+                    parent_fd,
+                    quarantine_name,
+                    published_identity,
+                    missing_state=_QuarantineRemnant.NONE,
+                )
+                if quarantine_remnant is _QuarantineRemnant.VERIFIED:
+                    staging_published = False
+                elif quarantine_remnant is _QuarantineRemnant.NONE:
+                    try:
+                        if not _named_identity_matches(
+                            parent_fd,
+                            target_name,
+                            published_identity,
+                        ):
+                            quarantine_remnant = _QuarantineRemnant.UNKNOWN
+                    except Exception:
+                        quarantine_remnant = _QuarantineRemnant.UNKNOWN
+                failures.append(("claim", exc))
+            else:
+                staging_published = False
+                if quarantine_fd is not None:
+                    quarantine_identity = _directory_identity(quarantine_fd)
+                    quarantine_remnant = _QuarantineRemnant.VERIFIED
+                    try:
+                        clear_generated_tree_fd(quarantine_fd)
+                        if not _named_identity_matches(
+                            parent_fd,
+                            quarantine_name,
+                            quarantine_identity,
+                        ):
+                            raise StagingConflictError("Eigene Quarantäne wurde parallel ersetzt")
+                        elif remove_quarantine:
+                            os.rmdir(quarantine_name, dir_fd=parent_fd)
+                            quarantine_remnant = _QuarantineRemnant.NONE
+                    except BaseException as exc:
+                        quarantine_remnant = _owned_quarantine_state(
+                            parent_fd,
+                            quarantine_name,
+                            quarantine_identity,
+                            missing_state=_QuarantineRemnant.UNKNOWN,
+                        )
+                        failures.append(("quarantine_cleanup", exc))
+                    finally:
+                        os.close(quarantine_fd)
+
+    if target_moved:
+        try:
+            if not entry_exists(parent_fd, backup_name):
+                raise StagingConflictError(f"Rollback-Backup fehlt: {backup_name}")
+            if entry_exists(parent_fd, target_name):
+                raise StagingConflictError(
+                    f"Concurrent Target verhindert sicheren Rollback: {target_name}"
+                )
+            _rename_noreplace(parent_fd, backup_name, target_name)
+            target_moved = False
+            fsync_directory_fd(parent_fd)
+        except BaseException as exc:
+            failures.append(("backup_restore", exc))
+
+    diagnostics = tuple(
+        _RollbackDiagnostic(
+            target_name=target_name,
+            quarantine_name=quarantine_name,
+            phase=phase,
+            error=error,
+            quarantine_remnant=quarantine_remnant,
+        )
+        for phase, error in failures
+    )
+    return _RollbackOutcome(staging_published, target_moved, diagnostics)
+
+
+def _rollback_failure(
+    label: str,
+    primary: BaseException,
+    diagnostics: tuple[_RollbackDiagnostic, ...],
+) -> StagingError:
+    """Keep primary visible while attaching structured secondary diagnostics."""
+
+    rendered = " | ".join(diagnostic.render() for diagnostic in diagnostics)
+    return StagingError(
+        f"{label}; Primärfehler={type(primary).__name__}: {primary}; Rollbackdiagnostik={rendered}"
+    )
+
+
+def _normal_rollback_failure_or_note(
+    label: str,
+    primary: BaseException,
+    diagnostics: tuple[_RollbackDiagnostic, ...],
+) -> StagingError | None:
+    """Wrap normal failures, but preserve control-flow exception identity."""
+
+    if isinstance(primary, Exception):
+        return _rollback_failure(label, primary, diagnostics)
+    rendered = " | ".join(diagnostic.render() for diagnostic in diagnostics)
+    primary.add_note(f"{label}; Rollbackdiagnostik={rendered}")
+    return None
 
 
 @contextmanager
@@ -393,7 +607,9 @@ def staged_directory(
 
             with _publication_signal_guard():
                 if _target_generation(parent_fd, target_name) != expected_generation:
-                    raise StagingConflictError(f"Zielgeneration wurde parallel geändert: {target_name}")
+                    raise StagingConflictError(
+                        f"Zielgeneration wurde parallel geändert: {target_name}"
+                    )
                 if publication_state.no_change:
                     publication_state.no_change_validated = True
                     return
@@ -442,7 +658,7 @@ def staged_directory(
 
             if entry_exists(parent_fd, backup_name):
                 raise StagingError(f"Backup blieb nach Stagingtransaktion bestehen: {backup_name}")
-        except BaseException:
+        except BaseException as primary:
             if staging_fd is not None:
                 os.close(staging_fd)
                 staging_fd = None
@@ -450,53 +666,27 @@ def staged_directory(
                 # A later backup-cleanup error must never replace the durable new
                 # target with a potentially partially removed old backup.
                 raise
-            try:
-                rollback_error: BaseException | None = None
-                if staging_published and published_fd is not None:
-                    quarantine_fd = _claim_owned_target(
-                        parent_fd,
-                        target_name,
-                        quarantine_name,
-                        published_fd,
-                    )
-                    if quarantine_fd is None:
-                        staging_published = False
-                        publication_state.published = False
-                    else:
-                        try:
-                            clear_generated_tree_fd(quarantine_fd)
-                            if not _named_identity_matches(
-                                parent_fd,
-                                quarantine_name,
-                                published_identity,
-                            ):
-                                rollback_error = StagingConflictError(
-                                    "Eigene Quarantäne wurde parallel ersetzt"
-                                )
-                            staging_published = False
-                            publication_state.published = False
-                        finally:
-                            os.close(quarantine_fd)
-                if target_moved:
-                    if not entry_exists(parent_fd, backup_name):
-                        rollback_error = rollback_error or StagingConflictError(
-                            f"Rollback-Backup fehlt: {backup_name}"
-                        )
-                    elif entry_exists(parent_fd, target_name):
-                        rollback_error = rollback_error or StagingConflictError(
-                            f"Concurrent Target verhindert sicheren Rollback: {target_name}"
-                        )
-                    else:
-                        _rename_noreplace(parent_fd, backup_name, target_name)
-                        target_moved = False
-                        fsync_directory_fd(parent_fd)
-                if rollback_error is not None:
-                    raise rollback_error
-            except BaseException as rollback_failure:
-                raise StagingError(
-                    "Staging fehlgeschlagen und Rollback konnte nicht sicher "
-                    f"abgeschlossen werden: {rollback_failure}"
-                ) from rollback_failure
+            outcome = _rollback_published_target(
+                parent_fd=parent_fd,
+                target_name=target_name,
+                backup_name=backup_name,
+                quarantine_name=quarantine_name,
+                published_fd=published_fd,
+                staging_published=staging_published,
+                target_moved=target_moved,
+                remove_quarantine=False,
+            )
+            staging_published = outcome.staging_published
+            target_moved = outcome.target_moved
+            publication_state.published = staging_published
+            if outcome.diagnostics:
+                failure = _normal_rollback_failure_or_note(
+                    "Staging fehlgeschlagen und Rollbackdiagnostik liegt vor",
+                    primary,
+                    outcome.diagnostics,
+                )
+                if failure is not None:
+                    raise failure from primary
             raise
         finally:
             if staging_fd is not None:
@@ -526,6 +716,229 @@ def staged_directory(
                 else:
                     raise StagingError(
                         f"Stagingverzeichnis konnte nicht bereinigt werden: {cleanup_error}"
+                    ) from cleanup_error
+
+
+@contextmanager
+def coordinated_staged_directories(
+    targets: tuple[Path, ...],
+    *,
+    allowed_root: Path,
+    force: bool = False,
+) -> Iterator[tuple[Path, ...]]:
+    """Stage and publish non-overlapping generated trees as one rollback unit."""
+
+    relatives = tuple(relative_path_beneath(target, allowed_root) for target in targets)
+    if not relatives or len(set(relatives)) != len(relatives):
+        raise StagingError("Koordinierte Publikationsziele müssen eindeutig sein")
+    for index, left in enumerate(relatives):
+        for right in relatives[index + 1 :]:
+            if (
+                left.parts[: len(right.parts)] == right.parts
+                or right.parts[: len(left.parts)] == left.parts
+            ):
+                raise StagingError("Koordinierte Publikationsziele dürfen nicht überlappen")
+
+    transactions: list[_CoordinatedTarget] = []
+    locks: list[object] = []
+    parent_fds: list[int] = []
+    committed = False
+    with open_root_directory(allowed_root, create=True) as root_fd:
+        try:
+            parent_identities: set[tuple[int, int]] = set()
+            for relative in relatives:
+                parent_fd = open_directory_beneath(root_fd, relative.parts[:-1], create=True)
+                metadata = os.fstat(parent_fd)
+                identity = (metadata.st_dev, metadata.st_ino)
+                if identity in parent_identities:
+                    os.close(parent_fd)
+                    raise StagingError(
+                        "Koordinierte Publikationsziele benötigen verschiedene Parentverzeichnisse"
+                    )
+                parent_identities.add(identity)
+                target_name = relative.name
+                lock = _target_transaction_lock(parent_fd, target_name)
+                try:
+                    lock.__enter__()
+                except BaseException:
+                    os.close(parent_fd)
+                    raise
+                locks.append(lock)
+                parent_fds.append(parent_fd)
+                backup_name = f".{target_name}.backup"
+                if entry_exists(parent_fd, backup_name):
+                    _assert_marked_directory(parent_fd, backup_name)
+                    if not force:
+                        raise StagingError(f"Stale Backup existiert: {backup_name}")
+                    remove_tree_at(parent_fd, backup_name, require_sentinel=True)
+                expected = _target_generation(parent_fd, target_name)
+                if expected is not None:
+                    _assert_marked_directory(parent_fd, target_name)
+                staging_name = f".{target_name}.staging-{uuid.uuid4().hex}"
+                os.mkdir(staging_name, mode=0o755, dir_fd=parent_fd)
+                try:
+                    staging_fd = _open_child_directory(parent_fd, staging_name)
+                except BaseException:
+                    remove_tree_at(parent_fd, staging_name, require_sentinel=False)
+                    raise
+                try:
+                    mark_generated_root_fd(staging_fd)
+                    ensure_same_filesystem(staging_fd, parent_fd)
+                except BaseException:
+                    os.close(staging_fd)
+                    remove_tree_at(parent_fd, staging_name, require_sentinel=False)
+                    raise
+                transactions.append(
+                    _CoordinatedTarget(
+                        relative=relative,
+                        parent_fd=parent_fd,
+                        target_name=target_name,
+                        staging_name=staging_name,
+                        backup_name=backup_name,
+                        quarantine_name=f".{target_name}.quarantine-{uuid.uuid4().hex}",
+                        expected_generation=expected,
+                        staging_fd=staging_fd,
+                    )
+                )
+
+            yield tuple(fd_directory_path(item.staging_fd) for item in transactions)
+
+            for item in transactions:
+                assert_generated_root_fd(item.staging_fd)
+                validate_tree_no_symlinks_fd(item.staging_fd)
+                if _target_generation(item.parent_fd, item.target_name) != item.expected_generation:
+                    raise StagingConflictError(
+                        f"Zielgeneration wurde parallel geändert: {item.target_name}"
+                    )
+
+            with _publication_signal_guard():
+                for item in transactions:
+                    if (
+                        _target_generation(item.parent_fd, item.target_name)
+                        != item.expected_generation
+                    ):
+                        raise StagingConflictError(
+                            f"Zielgeneration wurde parallel geändert: {item.target_name}"
+                        )
+                    if item.expected_generation is not None:
+                        _rename_noreplace(
+                            item.parent_fd,
+                            item.target_name,
+                            item.backup_name,
+                        )
+                        item.target_moved = True
+                        if not _claimed_generation_matches(
+                            item.expected_generation,
+                            _target_generation(item.parent_fd, item.backup_name),
+                        ):
+                            _rename_noreplace(
+                                item.parent_fd,
+                                item.backup_name,
+                                item.target_name,
+                            )
+                            item.target_moved = False
+                            raise StagingConflictError(
+                                f"Zielgeneration wurde parallel geändert: {item.target_name}"
+                            )
+                        fsync_directory_fd(item.parent_fd)
+                    _rename_noreplace(
+                        item.parent_fd,
+                        item.staging_name,
+                        item.target_name,
+                    )
+                    item.staging_published = True
+                    item.published_identity = _directory_identity(item.staging_fd)
+                    if not _named_identity_matches(
+                        item.parent_fd,
+                        item.target_name,
+                        item.published_identity,
+                    ):
+                        raise StagingConflictError(
+                            f"Publiziertes Ziel wurde parallel ersetzt: {item.target_name}"
+                        )
+                    fsync_directory_fd(item.parent_fd)
+                    _coordinated_publication_checkpoint(item.relative)
+                for item in transactions:
+                    assert item.published_identity is not None
+                    if not _named_identity_matches(
+                        item.parent_fd,
+                        item.target_name,
+                        item.published_identity,
+                    ):
+                        raise StagingConflictError(
+                            f"Publiziertes Ziel wurde parallel ersetzt: {item.target_name}"
+                        )
+                committed = True
+
+            for item in transactions:
+                if entry_exists(item.parent_fd, item.backup_name):
+                    try:
+                        remove_tree_at(
+                            item.parent_fd,
+                            item.backup_name,
+                            require_sentinel=True,
+                        )
+                    except BaseException as cleanup_error:
+                        raise StagingError(
+                            "Neue Ziele wurden sicher veröffentlicht, aber ein altes Backup "
+                            f"konnte nicht vollständig entfernt werden: {cleanup_error}"
+                        ) from cleanup_error
+                    item.target_moved = False
+        except BaseException as primary:
+            if not committed:
+                rollback_diagnostics: list[_RollbackDiagnostic] = []
+                for item in reversed(transactions):
+                    outcome = _rollback_published_target(
+                        parent_fd=item.parent_fd,
+                        target_name=item.target_name,
+                        backup_name=item.backup_name,
+                        quarantine_name=item.quarantine_name,
+                        published_fd=item.staging_fd,
+                        staging_published=item.staging_published,
+                        target_moved=item.target_moved,
+                        remove_quarantine=True,
+                    )
+                    item.staging_published = outcome.staging_published
+                    item.target_moved = outcome.target_moved
+                    rollback_diagnostics.extend(outcome.diagnostics)
+                if rollback_diagnostics:
+                    failure = _normal_rollback_failure_or_note(
+                        "Koordinierte Publikation fehlgeschlagen und Rollbackdiagnostik liegt vor",
+                        primary,
+                        tuple(rollback_diagnostics),
+                    )
+                    if failure is not None:
+                        raise failure from primary
+            raise
+        finally:
+            cleanup_error: BaseException | None = None
+            for item in transactions:
+                if not item.staging_published and entry_exists(item.parent_fd, item.staging_name):
+                    try:
+                        remove_tree_at(
+                            item.parent_fd,
+                            item.staging_name,
+                            require_sentinel=True,
+                        )
+                    except BaseException as exc:
+                        cleanup_error = cleanup_error or exc
+                os.close(item.staging_fd)
+            active = sys.exc_info()
+            for lock in reversed(locks):
+                try:
+                    lock.__exit__(*active)  # type: ignore[attr-defined]
+                except BaseException as exc:
+                    cleanup_error = cleanup_error or exc
+            for parent_fd in parent_fds:
+                os.close(parent_fd)
+            if cleanup_error is not None:
+                if active[1] is not None:
+                    active[1].add_note(
+                        f"Zusätzlicher koordinierter Staging-Cleanupfehler: {cleanup_error}"
+                    )
+                else:
+                    raise StagingError(
+                        f"Koordiniertes Staging konnte nicht bereinigt werden: {cleanup_error}"
                     ) from cleanup_error
 
 

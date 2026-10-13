@@ -111,7 +111,9 @@ class OcrSettings:
         if type(self.oem) is not int or not 0 <= self.oem <= 3:
             raise EvidenceError("oem ist ungültig")
         languages = _tuple(self.languages, "languages")
-        if not languages or any(type(item) is not str or _LANGUAGE.fullmatch(item) is None for item in languages):
+        if not languages or any(
+            type(item) is not str or _LANGUAGE.fullmatch(item) is None for item in languages
+        ):
             raise EvidenceError("languages muss ISO-639-2-Codes enthalten")
         _sorted_unique(languages, "languages", lambda item: item)
         tessdata = _tuple(self.tessdata, "tessdata")
@@ -188,7 +190,9 @@ class ToolEvidence:
             version_output=payload["version_output"],
             executable_sha256=payload["executable_sha256"],
             argv=tuple(payload["argv"]),
-            environment=tuple(EnvironmentVariable.from_dict(item) for item in payload["environment"]),
+            environment=tuple(
+                EnvironmentVariable.from_dict(item) for item in payload["environment"]
+            ),
             ocr_settings=None if raw_ocr is None else OcrSettings.from_dict(raw_ocr),
         )
 
@@ -275,7 +279,5 @@ def conversion_id(document_id: str, bitstream_id: str, fingerprint_sha256: str) 
     if type(bitstream_id) is not str or _BITSTREAM_ID.fullmatch(bitstream_id) is None:
         raise EvidenceError("bitstream_id ist nicht kanonisch")
     _sha256(fingerprint_sha256, "fingerprint_sha256")
-    digest = sha256_bytes(
-        f"{document_id}\0{bitstream_id}\0{fingerprint_sha256}".encode("utf-8")
-    )
+    digest = sha256_bytes(f"{document_id}\0{bitstream_id}\0{fingerprint_sha256}".encode("utf-8"))
     return f"conv-{digest}"

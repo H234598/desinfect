@@ -1,4 +1,5 @@
 """Contracts for immutable canonical dispatcher plans."""
+
 from __future__ import annotations
 
 from copy import deepcopy

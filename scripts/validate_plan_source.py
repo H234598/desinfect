@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Validate the frozen source-plan identity and canonical execution-control bytes."""
+
 from __future__ import annotations
 
 import hashlib

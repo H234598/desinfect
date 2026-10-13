@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Load the immutable RKI source boundary from TOML without side effects."""
+
 from __future__ import annotations
 
 from math import isfinite
@@ -18,9 +19,7 @@ def _table(data: dict[str, Any], name: str) -> dict[str, Any]:
 
     value = data.get(name, {})
     if not isinstance(value, dict):
-        raise ValueError(
-            f"TOML-Bereich [{name}] muss eine Tabelle sein"
-        )
+        raise ValueError(f"TOML-Bereich [{name}] muss eine Tabelle sein")
     return value
 
 
@@ -30,9 +29,7 @@ def _bool(value: Any, name: str, default: bool) -> bool:
     if value is None:
         return default
     if type(value) is not bool:
-        raise ValueError(
-            f"{name} muss ein boolescher TOML-Wert sein"
-        )
+        raise ValueError(f"{name} muss ein boolescher TOML-Wert sein")
     return value
 
 
@@ -56,9 +53,7 @@ def _float(value: Any, name: str, default: float) -> float:
     try:
         converted = float(value)
     except (OverflowError, ValueError, TypeError) as exc:
-        raise ValueError(
-            f"{name} muss eine endliche Zahl sein"
-        ) from exc
+        raise ValueError(f"{name} muss eine endliche Zahl sein") from exc
     if not isfinite(converted):
         raise ValueError(f"{name} muss eine endliche Zahl sein")
     return converted
@@ -81,9 +76,7 @@ def load_source_config(
 
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     if data.get("schema_version") != 1:
-        raise ValueError(
-            "Unbekannte rki-source.toml-Version"
-        )
+        raise ValueError("Unbekannte rki-source.toml-Version")
     source = _table(data, "source")
     network = _table(data, "network")
     limits = _table(data, "limits")
@@ -93,10 +86,7 @@ def load_source_config(
         ["edoc.rki.de"],
     )
     if allowed_hosts != ["edoc.rki.de"]:
-        raise ValueError(
-            "source.allowed_hosts darf ausschließlich "
-            "edoc.rki.de enthalten"
-        )
+        raise ValueError("source.allowed_hosts darf ausschließlich edoc.rki.de enthalten")
 
     return SourceConfig(
         base_url="https://edoc.rki.de",

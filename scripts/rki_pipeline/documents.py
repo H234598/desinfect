@@ -1,4 +1,5 @@
 """Stable identities for RKI documents and PDF bitstreams."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -47,8 +48,10 @@ def _handle_parts(handle: str) -> tuple[str, str, int | None]:
     if match is None:
         raise DocumentIdentityError(f"Ungültiger RKI-Handle: {handle}")
     version_raw = match.group("version")
-    return match.group("prefix"), match.group("number"), (
-        int(version_raw) if version_raw is not None else None
+    return (
+        match.group("prefix"),
+        match.group("number"),
+        (int(version_raw) if version_raw is not None else None),
     )
 
 

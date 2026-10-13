@@ -1,4 +1,5 @@
 """TDD contract for injected release/object clients without network access."""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -10,7 +11,12 @@ from pathlib import Path
 import pytest
 
 from scripts.rki_pipeline.run_modes import EffectKind, EffectLedger, RunMode
-from scripts.rki_pipeline.storage.base import StorageBackend, StorageError, StorageIntent, StorageReference
+from scripts.rki_pipeline.storage.base import (
+    StorageBackend,
+    StorageError,
+    StorageIntent,
+    StorageReference,
+)
 from scripts.rki_pipeline.storage.config import ObjectConfig, ReleaseConfig
 from scripts.rki_pipeline.storage.object import ObjectStorageAdapter
 from scripts.rki_pipeline.storage.release import ReleaseStorageAdapter
@@ -42,7 +48,11 @@ class MemoryClient:
         if self.head_hook is not None:
             self.head_hook()
         value = self.objects.get(key)
-        return None if value is None else {name: data for name, data in value.items() if name != "payload"}
+        return (
+            None
+            if value is None
+            else {name: data for name, data in value.items() if name != "payload"}
+        )
 
     def put(
         self,
@@ -163,7 +173,10 @@ def test_remote_materialize_has_no_client_calls_and_stays_in_temp(
     assert ledger.events[-1].kind is EffectKind.TEMP_FILE
 
 
-@pytest.mark.parametrize("backend,effect", ((StorageBackend.RELEASE, EffectKind.RELEASE), (StorageBackend.OBJECT, EffectKind.OBJECT)))
+@pytest.mark.parametrize(
+    "backend,effect",
+    ((StorageBackend.RELEASE, EffectKind.RELEASE), (StorageBackend.OBJECT, EffectKind.OBJECT)),
+)
 def test_remote_apply_is_idempotent_and_returns_backend_neutral_reference(
     tmp_path: Path,
     backend: StorageBackend,
@@ -706,6 +719,7 @@ def test_remote_intra_call_revocation_blocks_next_payload_effect(
             return payload
 
         monkeypatch.setattr(remote_storage, "read_verified_payload", read_then_revoke)
+
         def action():
             return adapter.materialize(
                 source_intent,
@@ -725,6 +739,7 @@ def test_remote_intra_call_revocation_blocks_next_payload_effect(
             "NamedTemporaryFile",
             create_part_then_revoke,
         )
+
         def action():
             return adapter.export(
                 reference,
@@ -733,6 +748,7 @@ def test_remote_intra_call_revocation_blocks_next_payload_effect(
             )
     elif operation == "export-before-write":
         client.get_hook = revoke
+
         def action():
             return adapter.export(
                 reference,
@@ -741,10 +757,12 @@ def test_remote_intra_call_revocation_blocks_next_payload_effect(
             )
     elif operation == "apply":
         client.head_hook = revoke
+
         def action():
             return adapter.apply(prepared, ledger=ledger)
     elif operation == "verify":
         client.head_hook = revoke
+
         def action():
             return adapter.verify(reference)
     else:
@@ -757,6 +775,7 @@ def test_remote_intra_call_revocation_blocks_next_payload_effect(
                 revoke()
 
         client.head_hook = revoke_on_verify_head
+
         def action():
             return adapter.apply(prepared, ledger=ledger)
 
@@ -782,6 +801,7 @@ def test_remote_apply_rolls_back_its_upload_when_rights_are_revoked_during_put(
         ledger=EffectLedger(RunMode.MATERIALIZE, temp_root=prepared_root),
     )
     ledger = EffectLedger(RunMode.APPLY)
+
     def revoke_during_put() -> None:
         storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))
 
@@ -902,6 +922,7 @@ def test_remote_apply_reauthorizes_before_prepared_snapshot(
         "_snapshot_prepared",
         staticmethod(mark_snapshot_entry),
     )
+
     def revoke_before_snapshot() -> None:
         storage_rights.set_decisions((SOURCE_ID, SOURCE_SHA256, "takedown"))
 

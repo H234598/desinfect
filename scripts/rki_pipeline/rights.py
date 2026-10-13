@@ -1,4 +1,5 @@
 """Fail-closed rights decisions for exact RKI source revisions and actions."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -26,9 +27,7 @@ MAX_REGISTER_BYTES = 1024 * 1024
 _SOURCE_ID = re.compile(r"^rki:176904/[0-9]+(?:\.(?:[2-9]|[1-9][0-9]+))?$")
 _BITSTREAM_ID = re.compile(r"^rki-bitstream-[0-9a-f]{64}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_REVIEWED_AT = re.compile(
-    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
-)
+_REVIEWED_AT = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 _VISIBILITIES = ("public", "repository_authorized", "internal", "restricted")
 _APPROVED_VISIBILITIES = _VISIBILITIES
 _INTERNAL_VISIBILITIES = ("internal", "restricted")
@@ -159,9 +158,9 @@ class RightsPolicy:
     default_state: RightsState
     approved_visibilities: tuple[str, ...]
     internal_only_visibilities: tuple[str, ...]
-    publication_actions: tuple[
-        tuple[PublicationMode, tuple[RightsAction, ...]], ...
-    ] = _PUBLICATION_ACTIONS
+    publication_actions: tuple[tuple[PublicationMode, tuple[RightsAction, ...]], ...] = (
+        _PUBLICATION_ACTIONS
+    )
 
     def __post_init__(self) -> None:
         _validate_policy_instance(self)
@@ -336,8 +335,7 @@ def _exact_keys(value: Mapping[object, object], expected: frozenset[str], *, lab
     if keys != expected:
         extra = sorted(repr(key) for key in keys - expected)
         raise RightsPolicyError(
-            f"{label} besitzt falsche Schlüssel; missing={sorted(expected - keys)}; "
-            f"extra={extra}"
+            f"{label} besitzt falsche Schlüssel; missing={sorted(expected - keys)}; extra={extra}"
         )
 
 
@@ -347,9 +345,7 @@ def _required_string(value: object, name: str, *, maximum: int) -> str:
     if value != value.strip() or any(
         ord(character) < 32 or ord(character) == 127 for character in value
     ):
-        raise RightsPolicyError(
-            f"{name} muss kanonisch ohne Steuer- oder Randzeichen sein"
-        )
+        raise RightsPolicyError(f"{name} muss kanonisch ohne Steuer- oder Randzeichen sein")
     return value
 
 
@@ -393,11 +389,7 @@ def _reviewed_at(value: object) -> str | None:
 
 def _safe_https_url(value: object, *, name: str, maximum: int = 2000) -> str:
     url = _required_string(value, name, maximum=maximum)
-    if (
-        not url.isascii()
-        or "\\" in url
-        or re.search(r"%(?:0[0-9a-f]|1[0-9a-f]|7f|5c)", url, re.I)
-    ):
+    if not url.isascii() or "\\" in url or re.search(r"%(?:0[0-9a-f]|1[0-9a-f]|7f|5c)", url, re.I):
         raise RightsPolicyError(f"{name} enthält verschleierte oder unsichere Zeichen")
     parsed = urlsplit(url)
     try:
@@ -441,25 +433,18 @@ def _validate_approval_key(key: ApprovalKey) -> None:
         raise RightsPolicyError("ApprovalKey besitzt keinen exakten Typ")
     if type(key.source_id) is not str or _SOURCE_ID.fullmatch(key.source_id) is None:
         raise RightsPolicyError("source_id ist keine kanonische RKI-Quell-ID")
-    if (
-        type(key.source_sha256) is not str
-        or _SHA256.fullmatch(key.source_sha256) is None
-    ):
+    if type(key.source_sha256) is not str or _SHA256.fullmatch(key.source_sha256) is None:
         raise RightsPolicyError("source_sha256 muss ein kleingeschriebener SHA-256 sein")
     if type(key.canonical_url) is not str:
         raise RightsPolicyError("canonical_url muss eine Zeichenkette sein")
     try:
         identity = bitstream_identity(key.canonical_url)
     except DocumentIdentityError as exc:
-        raise RightsPolicyError(
-            "canonical_url ist keine kanonische RKI-Bitstream-URL"
-        ) from exc
+        raise RightsPolicyError("canonical_url ist keine kanonische RKI-Bitstream-URL") from exc
     if identity.canonical_url != key.canonical_url:
         raise RightsPolicyError("canonical_url ist nicht kanonisch")
     handle = key.source_id.removeprefix("rki:")
-    if not urlsplit(key.canonical_url).path.startswith(
-        f"/bitstream/handle/{handle}/"
-    ):
+    if not urlsplit(key.canonical_url).path.startswith(f"/bitstream/handle/{handle}/"):
         raise RightsPolicyError("canonical_url passt nicht zur source_id")
     if (
         type(key.version_or_bitstream) is not str
@@ -496,9 +481,7 @@ def _validate_attribution(attribution: RightsAttribution) -> None:
 
 
 def _validate_actions(value: tuple[RightsAction, ...]) -> None:
-    if type(value) is not tuple or any(
-        type(action) is not RightsAction for action in value
-    ):
+    if type(value) is not tuple or any(type(action) is not RightsAction for action in value):
         raise RightsPolicyError("allowed_actions muss ein exaktes RightsAction-Tupel sein")
     if value != tuple(sorted(set(value), key=lambda action: action.value)):
         raise RightsPolicyError("allowed_actions muss sortiert und eindeutig sein")
@@ -521,9 +504,7 @@ def _validate_decision_instance(
         raise RightsPolicyError("components_state ist nicht kanonisch")
     if decision.attribution is not None:
         _validate_attribution(decision.attribution)
-        expected_origin = (
-            "https://edoc.rki.de/handle/" + decision.source_id.removeprefix("rki:")
-        )
+        expected_origin = "https://edoc.rki.de/handle/" + decision.source_id.removeprefix("rki:")
         if decision.attribution.origin_url != expected_origin:
             raise RightsPolicyError("origin_url passt nicht zur source_id")
     basis = _required_string(decision.basis, "basis", maximum=1000)
@@ -554,13 +535,9 @@ def _validate_decision_instance(
 
     if decision.mode is not PublicationMode.MATERIALIZED:
         if decision.allowed_actions:
-            raise RightsPolicyError(
-                f"mode {decision.mode.value} erlaubt keine allowed_actions"
-            )
+            raise RightsPolicyError(f"mode {decision.mode.value} erlaubt keine allowed_actions")
         if decision.attribution is not None:
-            raise RightsPolicyError(
-                f"mode {decision.mode.value} erlaubt keine Attribution"
-            )
+            raise RightsPolicyError(f"mode {decision.mode.value} erlaubt keine Attribution")
     elif decision.state is not RightsState.APPROVED:
         raise RightsPolicyError("materialized erzwingt state approved")
     if RightsAction.PUBLISH in decision.allowed_actions and decision.attribution is None:
@@ -581,13 +558,9 @@ def _validate_decision_instance(
         type(decision.decision_sha256) is not str
         or _SHA256.fullmatch(decision.decision_sha256) is None
     ):
-        raise RightsPolicyError(
-            "decision_sha256 muss ein kleingeschriebener SHA-256 sein"
-        )
+        raise RightsPolicyError("decision_sha256 muss ein kleingeschriebener SHA-256 sein")
     if decision.decision_sha256 != decision_sha256(decision):
-        raise RightsPolicyError(
-            "decision_sha256 stimmt nicht mit der Entscheidung überein"
-        )
+        raise RightsPolicyError("decision_sha256 stimmt nicht mit der Entscheidung überein")
 
 
 def _attribution_payload(attribution: RightsAttribution | None) -> object:
@@ -641,9 +614,7 @@ def _policy_matrix(data: object) -> tuple[tuple[str, ...], tuple[str, ...]]:
         if not isinstance(data[state], list) or not all(
             type(value) is str for value in data[state]
         ):
-            raise RightsPolicyError(
-                f"fulltext_visibility.{state} muss Stringliste sein"
-            )
+            raise RightsPolicyError(f"fulltext_visibility.{state} muss Stringliste sein")
     values = {state: tuple(data[state]) for state in expected}
     required = {
         RightsState.APPROVED.value: _APPROVED_VISIBILITIES,
@@ -668,15 +639,11 @@ def _action_matrix(
     for mode in PublicationMode:
         raw = data[mode.value]
         if not isinstance(raw, list):
-            raise RightsPolicyError(
-                f"publication_actions.{mode.value} muss Liste sein"
-            )
+            raise RightsPolicyError(f"publication_actions.{mode.value} muss Liste sein")
         try:
             actions = tuple(RightsAction(value) for value in raw)
         except (TypeError, ValueError) as exc:
-            raise RightsPolicyError(
-                "publication_actions enthält unbekannte Aktion"
-            ) from exc
+            raise RightsPolicyError("publication_actions enthält unbekannte Aktion") from exc
         _validate_actions(actions)
         matrix.append((mode, actions))
     result = tuple(matrix)
@@ -723,9 +690,7 @@ def parse_rights_policy(text: str) -> RightsPolicy:
 def load_rights_policy(path: Path = DEFAULT_POLICY_PATH) -> RightsPolicy:
     """Load reviewed rights rules through pure parser."""
 
-    return parse_rights_policy(
-        _read_text(path, maximum=MAX_POLICY_BYTES, label="Rechtepolicy")
-    )
+    return parse_rights_policy(_read_text(path, maximum=MAX_POLICY_BYTES, label="Rechtepolicy"))
 
 
 def _yaml_document(text: str) -> dict[str, Any]:
@@ -737,9 +702,7 @@ def _yaml_document(text: str) -> dict[str, Any]:
     except RightsPolicyError:
         raise
     except yaml.YAMLError as exc:
-        raise RightsPolicyError(
-            "Rights-Register ist kein eindeutiges Safe-YAML"
-        ) from exc
+        raise RightsPolicyError("Rights-Register ist kein eindeutiges Safe-YAML") from exc
     if len(documents) != 1 or not isinstance(documents[0], dict):
         raise RightsPolicyError("Rights-Register muss exakt ein YAML-Objekt enthalten")
     return documents[0]
@@ -761,9 +724,7 @@ def _parse_attribution(value: object, *, source_id: str) -> RightsAttribution | 
         copyright_notice=_required_string(
             value["copyright_notice"], "copyright_notice", maximum=2000
         ),
-        license_notice=_required_string(
-            value["license_notice"], "license_notice", maximum=200
-        ),
+        license_notice=_required_string(value["license_notice"], "license_notice", maximum=200),
         license_url=validate_license_url(
             value["license_url"], license_notice=value["license_notice"]
         ),
@@ -789,15 +750,11 @@ def _register_decision(value: object) -> RightsDecision:
     source_id = _required_string(value["source_id"], "source_id", maximum=200)
     key = ApprovalKey(
         source_id=source_id,
-        canonical_url=_required_string(
-            value["canonical_url"], "canonical_url", maximum=2000
-        ),
+        canonical_url=_required_string(value["canonical_url"], "canonical_url", maximum=2000),
         version_or_bitstream=_required_string(
             value["version_or_bitstream"], "version_or_bitstream", maximum=200
         ),
-        source_sha256=_required_string(
-            value["source_sha256"], "source_sha256", maximum=64
-        ),
+        source_sha256=_required_string(value["source_sha256"], "source_sha256", maximum=64),
     )
     try:
         state = RightsState(value["state"])
@@ -947,10 +904,7 @@ def _validate_authority_instance(authority: RightsAuthority) -> None:
         or authority._token is not _AUTHORITY_TOKEN
         or not isinstance(authority._register_source, Path)
         or type(authority._isolated) is not bool
-        or (
-            not authority._isolated
-            and authority._register_source != _canonical_authority_source()
-        )
+        or (not authority._isolated and authority._register_source != _canonical_authority_source())
     ):
         raise RightsPolicyError(
             "RightsAuthority ist nicht an die kanonische Register-Source gebunden"
@@ -1020,8 +974,7 @@ def evaluate_rights(
     if matches:
         return _compatibility_decision(matches[0])
     placeholder = bitstream_identity(
-        "https://edoc.rki.de/bitstream/handle/"
-        f"{source_id.removeprefix('rki:')}/unknown.pdf"
+        f"https://edoc.rki.de/bitstream/handle/{source_id.removeprefix('rki:')}/unknown.pdf"
     )
     return _missing_decision(
         ApprovalKey(
@@ -1160,9 +1113,7 @@ def is_not_more_permissive(
         return False
     if not set(current.allowed_actions).issubset(previous.allowed_actions):
         return False
-    if not set(current.allowed_actions).issubset(
-        policy.actions_for_mode(current.mode)
-    ):
+    if not set(current.allowed_actions).issubset(policy.actions_for_mode(current.mode)):
         raise RightsPolicyError("Aktionsmenge überschreitet Rechtepolicy")
     if (
         RightsAction.PUBLISH in current.allowed_actions

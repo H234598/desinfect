@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from copy import deepcopy
@@ -9,7 +8,12 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from scripts.rki_pipeline import schema_registry as schema_registry_module
-from scripts.rki_pipeline.schema_registry import SchemaContractError, load_registry, load_schema, validate_document
+from scripts.rki_pipeline.schema_registry import (
+    SchemaContractError,
+    load_registry,
+    load_schema,
+    validate_document,
+)
 from scripts import validate_schemas
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -95,9 +99,12 @@ def test_registered_migration_names_resolve_to_runtime_callables() -> None:
         migration = getattr(schema_registry_module, migration_name)
         assert callable(migration)
         for previous_version in entry["previous_versions"]:
-            assert schema_registry_module.MIGRATIONS[
-                (entry["name"], previous_version, entry["current_version"])
-            ] is migration
+            assert (
+                schema_registry_module.MIGRATIONS[
+                    (entry["name"], previous_version, entry["current_version"])
+                ]
+                is migration
+            )
 
 
 def test_invalid_registered_schema_raises_contract_error(tmp_path: Path) -> None:
@@ -205,17 +212,21 @@ def test_period_archive_manifest_rejects_cross_kind_collections(
     fixture["kind"] = root_kind
     fixture["period"] = period
     fixture["month_manifests"] = month_manifests
-    fixture["archives"] = [] if archive_kind is None else [
-        {
-            "archive_id": "rki-cross-kind-pdf",
-            "kind": archive_kind,
-            "relative_bundle": "rki/Bulletins/Archive",
-            "input_fingerprint": "b" * 64,
-            "output_sha256": "c" * 64,
-            "bytes": 1,
-            "storage_reference": None,
-        }
-    ]
+    fixture["archives"] = (
+        []
+        if archive_kind is None
+        else [
+            {
+                "archive_id": "rki-cross-kind-pdf",
+                "kind": archive_kind,
+                "relative_bundle": "rki/Bulletins/Archive",
+                "input_fingerprint": "b" * 64,
+                "output_sha256": "c" * 64,
+                "bytes": 1,
+                "storage_reference": None,
+            }
+        ]
+    )
 
     with pytest.raises(SchemaContractError, match=r"archives|month_manifests"):
         validate_document("period-archive-manifest", fixture)
@@ -279,9 +290,7 @@ def test_storage_reference_rejects_non_sha256() -> None:
         ("decision_sha256", "bad"),
     ],
 )
-def test_storage_reference_rejects_invalid_provenance_fields(
-    field: str, invalid: str
-) -> None:
+def test_storage_reference_rejects_invalid_provenance_fields(field: str, invalid: str) -> None:
     payload = _storage_reference_payload()
     payload[field] = invalid
 
@@ -347,11 +356,11 @@ def test_schema_validator_checks_every_p06_predecessor(
     fixture_root.mkdir(parents=True)
     (tmp_path / "status.json").write_bytes((ROOT / "status.json").read_bytes())
     for name in (
-            "status-v2.json",
-            "source-manifest-v1.0.json",
-            "source-manifest-v1.1.json",
-            "source-manifest-v1.2.json",
-            "document-manifest-v1.0.json",
+        "status-v2.json",
+        "source-manifest-v1.0.json",
+        "source-manifest-v1.1.json",
+        "source-manifest-v1.2.json",
+        "document-manifest-v1.0.json",
         "storage-reference-v1.0.json",
         "conversion-manifest-v1.0.json",
         "period-archive-manifest.json",

@@ -1,4 +1,5 @@
 """Secure PDF download and resume regressions."""
+
 from __future__ import annotations
 
 import hashlib
@@ -115,7 +116,7 @@ def test_resume_requires_matching_content_range(tmp_path: Path) -> None:
                 PDF[split:],
                 {
                     "content-type": "application/pdf",
-                    "content-range": f"bytes {split}-{len(PDF)-1}/{len(PDF)}",
+                    "content-range": f"bytes {split}-{len(PDF) - 1}/{len(PDF)}",
                 },
             )
         }

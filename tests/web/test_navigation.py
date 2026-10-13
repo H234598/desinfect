@@ -34,6 +34,13 @@ EXPECTED_NAV_PATHS = (
     "Methodik/Bewertung.md",
     "Methodik/Sicherheit.md",
 )
+EXPECTED_NOT_IN_NAV = (
+    "/WARTUNG.md\n"
+    "/Wartung/\n"
+    "/Downloads.md\n"
+    "/Methodik/Historische-Einordnung.md\n"
+    "/Methodik/Rechte.md\n"
+)
 MAINTENANCE_PATHS = (
     "Wartung/Architektur.md",
     "Wartung/Datenmodell.md",
@@ -56,6 +63,11 @@ def repo(tmp_path: Path) -> Path:
         shutil.copytree(source / name, target / name)
     shutil.copy2(source / "mkdocs.yml", target / "mkdocs.yml")
     shutil.copy2(source / "status.json", target / "status.json")
+    (target / "research").mkdir()
+    shutil.copy2(
+        source / "research/rights-register.yml",
+        target / "research/rights-register.yml",
+    )
     return target
 
 
@@ -171,7 +183,7 @@ def test_navigation_is_exact_and_maintenance_is_hidden(repo: Path) -> None:
     assert _flatten_nav(config["nav"]) == EXPECTED_NAV_PATHS
     assert "Projekt" not in _nav_labels(config["nav"])
     assert "Wartung" not in _nav_labels(config["nav"])
-    assert config["not_in_nav"] == "/WARTUNG.md\n/Wartung/\n"
+    assert config["not_in_nav"] == EXPECTED_NOT_IN_NAV
 
 
 @pytest.mark.parametrize(
@@ -302,6 +314,56 @@ def test_accessible_responsive_strict_site_exposes_reader_links_and_local_css(
         (repo / "site" / path.removesuffix(".md") / "index.html").is_file()
         for path in MAINTENANCE_PATHS
     )
+
+
+def test_strict_site_exposes_accessible_local_download_rights_and_history_links(
+    repo: Path,
+) -> None:
+    build_site(
+        repo,
+        check=True,
+        dry_run=False,
+        strict=True,
+        force=False,
+        site_url=None,
+    )
+
+    expected = {
+        "Bulletins/index.html": {
+            "Downloads, Verfügbarkeit und Rechte": "/Downloads/",
+            "Historische Einordnung der Quellen": "/Methodik/Historische-Einordnung/",
+        },
+        "Methodik/Bewertung/index.html": {
+            "Rechte und Publikationsmodi": "/Methodik/Rechte/",
+        },
+    }
+    for relative, links in expected.items():
+        anchors = _anchors(repo / "site" / relative)
+        by_name = {anchor["text"]: anchor for anchor in anchors if anchor["text"] in links}
+        assert set(by_name) == set(links)
+        for name, target in links.items():
+            anchor = by_name[name]
+            parsed = urlsplit(anchor["href"])
+            assert not parsed.scheme and not parsed.netloc
+            assert name.strip()
+            assert urljoin("/" + relative.removesuffix("index.html"), anchor["href"]) == target
+            assert (repo / "site" / target.removeprefix("/") / "index.html").is_file()
+
+    downloads = (repo / "site/Downloads/index.html").read_text(encoding="utf-8")
+    status = re.findall(r'<section[^>]*class="[^"]*publication-status[^"]*"[^>]*>', downloads)
+    assert len(status) == 1
+    assert 'role="status"' in status[0]
+    assert 'aria-live="polite"' in status[0]
+    assert 'aria-labelledby="publication-status-title"' in status[0]
+    reader_pages = downloads + "".join(
+        (repo / "site" / relative).read_text(encoding="utf-8")
+        for relative in (
+            "Methodik/Rechte/index.html",
+            "Methodik/Historische-Einordnung/index.html",
+        )
+    )
+    assert not re.search(r"<(?:iframe|object|embed|img)\b", reader_pages, re.IGNORECASE)
+    assert build_site_module.external_asset_urls(reader_pages) == []
 
 
 def test_semantic_strict_table_has_named_region_headers_caption_and_empty_state(

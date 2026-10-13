@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Deterministic, resumable, non-destructive backend migration."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -59,7 +60,9 @@ class MigrationPlan:
         return hashlib.sha256(stable_json_dumps(self.to_dict()).encode("utf-8")).hexdigest()
 
 
-def _by_artifact(references: tuple[StorageReference, ...], label: str) -> dict[str, StorageReference]:
+def _by_artifact(
+    references: tuple[StorageReference, ...], label: str
+) -> dict[str, StorageReference]:
     result: dict[str, StorageReference] = {}
     for reference in references:
         if reference.artifact_id in result:
@@ -116,7 +119,9 @@ def plan_migration(source: StorageAdapter, target: StorageAdapter) -> MigrationP
 
 
 def _reject_conflicts(plan: MigrationPlan) -> None:
-    conflicts = [entry.artifact_id for entry in plan.entries if entry.state is MigrationState.CONFLICT]
+    conflicts = [
+        entry.artifact_id for entry in plan.entries if entry.state is MigrationState.CONFLICT
+    ]
     if conflicts:
         raise StorageError("Migrations-Konflikt: " + ", ".join(conflicts))
 
@@ -135,14 +140,11 @@ def materialize_migration(
     if source.backend is not plan.source_backend:
         raise StorageError("Quelladapter stimmt nicht mit dem Migrationsplan überein")
     _reject_conflicts(plan)
-    copy_entries = tuple(
-        entry for entry in plan.entries if entry.state is MigrationState.COPY
-    )
+    copy_entries = tuple(entry for entry in plan.entries if entry.state is MigrationState.COPY)
     for entry in copy_entries:
         source.authorize(entry.source, operation="export")
     prepared = [
-        source.export(entry.source, temp_root=temp_root, ledger=ledger)
-        for entry in copy_entries
+        source.export(entry.source, temp_root=temp_root, ledger=ledger) for entry in copy_entries
     ]
     return tuple(sorted(prepared, key=lambda item: item.artifact_id))
 
@@ -186,8 +188,7 @@ def _validate_prepared_objects(
         )
         if actual_contract != expected_contract:
             raise StorageError(
-                "Vorbereitetes Objekt weicht vom Migrationsplan ab: "
-                f"{entry.artifact_id}"
+                f"Vorbereitetes Objekt weicht vom Migrationsplan ab: {entry.artifact_id}"
             )
 
 
@@ -209,9 +210,7 @@ def apply_migration(
     if len(prepared_map) != len(prepared):
         raise StorageError("Doppelte vorbereitete artifact_id")
     expected_copy = {
-        entry.artifact_id
-        for entry in plan.entries
-        if entry.state is MigrationState.COPY
+        entry.artifact_id for entry in plan.entries if entry.state is MigrationState.COPY
     }
     if set(prepared_map) != expected_copy:
         raise StorageError("Vorbereitete Objekte stimmen nicht mit Copy-Einträgen überein")

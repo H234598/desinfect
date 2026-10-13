@@ -20,6 +20,7 @@ from scripts.rki_pipeline.io_utils import (
     GENERATED_ROOT_SENTINEL,
     assert_generated_root_fd,
     detect_path_collisions,
+    list_directory_fd,
     open_directory_beneath,
     open_root_directory,
     stable_json_dumps,
@@ -580,7 +581,7 @@ def _read_catalog_files_fd(root_fd: int) -> dict[str, bytes]:
     expected_directories = {relative.split("/", 1)[0] for _, relative, _ in _COLLECTIONS}
     expected_root = expected_directories | {"catalog.json"}
     allowed_root = expected_root | {GENERATED_ROOT_SENTINEL}
-    root_names = set(os.listdir(root_fd))
+    root_names = set(list_directory_fd(root_fd))
     _reject_symlinks(root_fd, root_names, label=".")
     if GENERATED_ROOT_SENTINEL in root_names:
         assert_generated_root_fd(root_fd)

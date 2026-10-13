@@ -1,4 +1,5 @@
 """Fail-closed Cloudflare routing audit and targeted redirect correction."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -311,7 +312,14 @@ def test_audit_checks_exact_zone_account_and_all_redirect_sources() -> None:
     }
     responses = {
         ("GET", "/client/v4/zones"): envelope(
-            [{"id": ZONE_ID, "name": "telacore.org", "status": "active", "account": {"id": ACCOUNT_ID}}],
+            [
+                {
+                    "id": ZONE_ID,
+                    "name": "telacore.org",
+                    "status": "active",
+                    "account": {"id": ACCOUNT_ID},
+                }
+            ],
             {"page": 1, "total_pages": 1},
         ),
         (
@@ -352,7 +360,10 @@ def test_audit_checks_exact_zone_account_and_all_redirect_sources() -> None:
                         }
                     ],
                     "actions": [
-                        {"id": "forwarding_url", "value": {"url": "https://awsas.de/403-page.html", "status_code": 301}}
+                        {
+                            "id": "forwarding_url",
+                            "value": {"url": "https://awsas.de/403-page.html", "status_code": 301},
+                        }
                     ],
                 },
                 {
@@ -381,9 +392,7 @@ def test_audit_checks_exact_zone_account_and_all_redirect_sources() -> None:
         "legacy_page_rule",
     }
     assert [
-        finding.object_id
-        for finding in report.findings
-        if finding.kind == "legacy_page_rule"
+        finding.object_id for finding in report.findings if finding.kind == "legacy_page_rule"
     ] == [PAGE_RULE_ID]
     zone_request = opener.requests[0]
     query = parse_qs(urlsplit(zone_request.full_url).query)  # type: ignore[attr-defined]
@@ -427,7 +436,14 @@ def test_zone_resolution_rejects_wrong_account_even_with_right_zone_name() -> No
     opener = RecordingOpener(
         {
             ("GET", "/client/v4/zones"): envelope(
-                [{"id": ZONE_ID, "name": "telacore.org", "status": "active", "account": {"id": "9" * 32}}],
+                [
+                    {
+                        "id": ZONE_ID,
+                        "name": "telacore.org",
+                        "status": "active",
+                        "account": {"id": "9" * 32},
+                    }
+                ],
                 {"page": 1, "total_pages": 1},
             )
         }
@@ -455,9 +471,7 @@ def test_apply_reloads_preimage_then_dry_runs_and_repeats_identical_patch() -> N
             routing.AuditFinding(
                 "zone_single_redirect", ZONE_RULE_ID, True, ("awsas.de", "telacore")
             ),
-            routing.AuditFinding(
-                "zone_single_redirect", "9" * 32, False, ("telacore",)
-            ),
+            routing.AuditFinding("zone_single_redirect", "9" * 32, False, ("telacore",)),
         ),
     )
 
@@ -471,9 +485,7 @@ def test_apply_reloads_preimage_then_dry_runs_and_repeats_identical_patch() -> N
     assert urls[1].endswith(
         f"/zones/{ZONE_ID}/rulesets/{ZONE_RULESET_ID}/rules/{ZONE_RULE_ID}?dry_run=true"
     )
-    assert urls[2].endswith(
-        f"/zones/{ZONE_ID}/rulesets/{ZONE_RULESET_ID}/rules/{ZONE_RULE_ID}"
-    )
+    assert urls[2].endswith(f"/zones/{ZONE_ID}/rulesets/{ZONE_RULESET_ID}/rules/{ZONE_RULE_ID}")
     assert urls[3] == urls[0]
     assert opener.requests[1].data == opener.requests[2].data  # type: ignore[attr-defined]
 
@@ -582,7 +594,9 @@ def test_workflow_is_manual_main_only_staging_audit_with_explicit_apply() -> Non
     assert "production" not in json.dumps(data).lower()
     steps = job["steps"]
     audit = next(step for step in steps if step["name"] == "Audit routing without mutation")
-    apply = next(step for step in steps if step["name"] == "Apply one verified zone redirect correction")
+    apply = next(
+        step for step in steps if step["name"] == "Apply one verified zone redirect correction"
+    )
     assert audit["if"] == "!inputs.apply"
     assert audit["run"] == "python3 scripts/cloudflare_routing_audit.py"
     assert apply["if"] == "inputs.apply"

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """All-or-nothing task orchestration with one validation and one write set."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Plan and apply one repository-scoped rolling pipeline incident issue."""
+
 from __future__ import annotations
 
 import argparse
@@ -111,9 +112,7 @@ def _validate_incident_plan(plan: IncidentIssuePlan) -> None:
     if plan.repository != REPOSITORY or plan.labels != (LABEL,):
         raise IncidentIssueError("Incident-Plan verletzt feste Repository-Felder")
 
-    issue_number_valid = (
-        type(plan.issue_number) is int and plan.issue_number > 0
-    )
+    issue_number_valid = type(plan.issue_number) is int and plan.issue_number > 0
     if plan.action in {"update", "reopen", "heal"} and not issue_number_valid:
         raise IncidentIssueError("Incident-Plan enthält keine gültige Issue-Nummer")
     if plan.action == "create" and plan.issue_number is not None:
@@ -243,7 +242,12 @@ def plan_incident_issue(
             issue_number=None if match is None else match.number,
         )
 
-    if match is not None and match.state == "open" and current["status"] == "operational" and failures == 0:
+    if (
+        match is not None
+        and match.state == "open"
+        and current["status"] == "operational"
+        and failures == 0
+    ):
         return IncidentIssuePlan(
             action="heal",
             repository=REPOSITORY,
@@ -304,9 +308,8 @@ class GitHubRestClient:
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
                 status = getattr(response, "status", 200)
         except HTTPError as exc:
-            expected_error = (
-                (allow_not_found and exc.code == 404)
-                or (allow_label_already_exists and exc.code == 422)
+            expected_error = (allow_not_found and exc.code == 404) or (
+                allow_label_already_exists and exc.code == 422
             )
             if not expected_error:
                 raise IncidentIssueError("GitHub-Anfrage fehlgeschlagen") from exc
@@ -350,10 +353,7 @@ class GitHubRestClient:
         matches: list[IssueMatch] = []
         marker_hits = 0
         for page_number in range(1, MAX_PAGES + 1):
-            path = (
-                f"{_ISSUES_PATH}?state=all"
-                f"&per_page={PAGE_SIZE}&page={page_number}"
-            )
+            path = f"{_ISSUES_PATH}?state=all&per_page={PAGE_SIZE}&page={page_number}"
             page = self._request("GET", path)
             if not isinstance(page, list) or len(page) > PAGE_SIZE:
                 raise IncidentIssueError("GitHub-Issue-Liste ist ungültig")
@@ -364,9 +364,7 @@ class GitHubRestClient:
                 occurrences = body.count(MARKER) if isinstance(body, str) else 0
                 marker_hits += occurrences
                 if occurrences:
-                    matches.append(
-                        IssueMatch(number=issue.get("number"), state=issue.get("state"))
-                    )
+                    matches.append(IssueMatch(number=issue.get("number"), state=issue.get("state")))
                 if marker_hits > 1:
                     raise IncidentIssueError("Mehr als ein Incident-Marker-Treffer; Abbruch")
             if len(page) < PAGE_SIZE:
@@ -613,9 +611,7 @@ def main(
     try:
         status = _load_json(args.status)
         manifest = (
-            None
-            if args.run_manifest is None
-            else _run_manifest(_load_json(args.run_manifest))
+            None if args.run_manifest is None else _run_manifest(_load_json(args.run_manifest))
         )
         current = _decision_status(status, manifest, args.job_status)
         if args.mode == "plan":

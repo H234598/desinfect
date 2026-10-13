@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Typed, serializable contracts for the modular RKI bulletin grabber."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -18,9 +19,7 @@ CANONICAL_RKI_BASE_URL = "https://edoc.rki.de"
 CANONICAL_RKI_HOSTS = ("edoc.rki.de",)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _MD5_RE = re.compile(r"^[0-9a-f]{32}$")
-_HANDLE_RE = re.compile(
-    r"^(?P<prefix>[0-9]+)/(?P<number>[0-9]+)(?:\.(?P<version>[0-9]+))?$"
-)
+_HANDLE_RE = re.compile(r"^(?P<prefix>[0-9]+)/(?P<number>[0-9]+)(?:\.(?P<version>[0-9]+))?$")
 
 
 class Scope(StrEnum):
@@ -85,41 +84,28 @@ class SourceConfig:
 
         if self.base_url != CANONICAL_RKI_BASE_URL:
             raise ValueError(
-                f"base_url muss die kanonische RKI-Basis-URL "
-                f"{CANONICAL_RKI_BASE_URL} sein"
+                f"base_url muss die kanonische RKI-Basis-URL {CANONICAL_RKI_BASE_URL} sein"
             )
         if self.allowed_hosts != CANONICAL_RKI_HOSTS:
             raise ValueError(
-                "allowed_hosts muss exakt den kanonischen RKI-Host "
-                "('edoc.rki.de',) enthalten"
+                "allowed_hosts muss exakt den kanonischen RKI-Host ('edoc.rki.de',) enthalten"
             )
         if type(self.issues_root_handle) is not str or not _HANDLE_RE.fullmatch(
             self.issues_root_handle
         ):
             raise ValueError("issues_root_handle muss ein gültiger RKI-Handle sein")
-        if type(self.articles_handle) is not str or not _HANDLE_RE.fullmatch(
-            self.articles_handle
-        ):
+        if type(self.articles_handle) is not str or not _HANDLE_RE.fullmatch(self.articles_handle):
             raise ValueError("articles_handle muss ein gültiger RKI-Handle sein")
         if type(self.user_agent) is not str or not self.user_agent.strip():
             raise ValueError("user_agent muss eine nichtleere Zeichenkette sein")
         delay = _finite_number(self.delay_seconds, "delay_seconds")
         timeout = _finite_number(self.timeout_seconds, "timeout_seconds")
         if delay < 0 or timeout <= 0:
-            raise ValueError(
-                "Delay darf nicht negativ und Timeout muss positiv sein"
-            )
+            raise ValueError("Delay darf nicht negativ und Timeout muss positiv sein")
         if type(self.max_redirects) is not int or not 0 <= self.max_redirects <= 10:
-            raise ValueError(
-                "max_redirects liegt außerhalb des sicheren Bereichs"
-            )
-        if (
-            type(self.max_listing_pages) is not int
-            or not 1 <= self.max_listing_pages <= 100_000
-        ):
-            raise ValueError(
-                "max_listing_pages liegt außerhalb des sicheren Bereichs"
-            )
+            raise ValueError("max_redirects liegt außerhalb des sicheren Bereichs")
+        if type(self.max_listing_pages) is not int or not 1 <= self.max_listing_pages <= 100_000:
+            raise ValueError("max_listing_pages liegt außerhalb des sicheren Bereichs")
         for name in (
             "max_html_bytes",
             "max_pdf_bytes",
@@ -169,12 +155,8 @@ class PdfCandidate:
     def __post_init__(self) -> None:
         """Validate repository checksum syntax when provided."""
 
-        if self.expected_md5 is not None and not _MD5_RE.fullmatch(
-            self.expected_md5
-        ):
-            raise ValueError(
-                "expected_md5 muss ein kleingeschriebener MD5-Wert sein"
-            )
+        if self.expected_md5 is not None and not _MD5_RE.fullmatch(self.expected_md5):
+            raise ValueError("expected_md5 muss ein kleingeschriebener MD5-Wert sein")
 
     def to_dict(self) -> dict[str, str | None]:
         """Return stable JSON data."""
@@ -260,17 +242,10 @@ class GrabberRequest:
             raise ValueError("scope muss ein Scope-Wert sein")
         if type(self.from_year) is not int or type(self.to_year) is not int:
             raise ValueError("Jahresgrenzen müssen Ganzzahlen sein")
-        if (
-            not 1900 <= self.from_year <= 9999
-            or not 1900 <= self.to_year <= 9999
-        ):
-            raise ValueError(
-                "Jahresgrenzen müssen zwischen 1900 und 9999 liegen"
-            )
+        if not 1900 <= self.from_year <= 9999 or not 1900 <= self.to_year <= 9999:
+            raise ValueError("Jahresgrenzen müssen zwischen 1900 und 9999 liegen")
         if self.from_year > self.to_year:
-            raise ValueError(
-                "from_year darf nicht größer als to_year sein"
-            )
+            raise ValueError("from_year darf nicht größer als to_year sein")
         if type(self.dry_run) is not bool or type(self.force) is not bool:
             raise ValueError("dry_run und force müssen Boolean-Werte sein")
         if self.max_items is not None:
@@ -291,12 +266,8 @@ class GrabberRequest:
                 raise ValueError("timeout_seconds muss positiv sein")
         for name in ("max_html_bytes", "max_pdf_bytes"):
             value = getattr(self, name)
-            if value is not None and (
-                type(value) is not int or value <= 0
-            ):
-                raise ValueError(
-                    f"{name} muss eine positive Ganzzahl sein"
-                )
+            if value is not None and (type(value) is not int or value <= 0):
+                raise ValueError(f"{name} muss eine positive Ganzzahl sein")
         if not isinstance(self.output_root, Path):
             raise ValueError("output_root muss ein pathlib.Path sein")
         if self.result_path is not None and not isinstance(
@@ -417,11 +388,7 @@ class ArtifactRecord:
             "etag": self.etag,
             "last_modified": self.last_modified,
             "error_code": self.error_code,
-            "error_message": (
-                None
-                if self.error_message is None
-                else self.error_message[:1000]
-            ),
+            "error_message": (None if self.error_message is None else self.error_message[:1000]),
         }
 
 
@@ -497,14 +464,16 @@ class GrabberResult:
             "record_errors": states.count(RecordState.ERROR),
             "issues": len(self.issues),
             "downloads_occurred": any(
-                state in {
+                state
+                in {
                     RecordState.DOWNLOADED,
                     RecordState.RESUMED,
                 }
                 for state in states
             ),
             "content_changed": any(
-                state in {
+                state
+                in {
                     RecordState.DOWNLOADED,
                     RecordState.RESUMED,
                 }
@@ -549,11 +518,7 @@ class GrabberResult:
 def utc_now() -> str:
     """Return a canonical UTC timestamp with second precision."""
 
-    return (
-        datetime.now(timezone.utc)
-        .isoformat(timespec="seconds")
-        .replace("+00:00", "Z")
-    )
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def result_outcome(
@@ -570,13 +535,7 @@ def result_outcome(
         return Outcome.BLOCKED
     if materialized_issues:
         successful_records = tuple(
-            record
-            for record in materialized_records
-            if record.state is not RecordState.ERROR
+            record for record in materialized_records if record.state is not RecordState.ERROR
         )
-        return (
-            Outcome.PARTIAL
-            if successful_records
-            else Outcome.FAILED
-        )
+        return Outcome.PARTIAL if successful_records else Outcome.FAILED
     return Outcome.SUCCESS

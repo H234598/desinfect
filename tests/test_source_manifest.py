@@ -1,4 +1,5 @@
 """Fail-closed source and document manifest builders."""
+
 from __future__ import annotations
 
 from copy import deepcopy
@@ -30,10 +31,7 @@ def _record(
     *,
     item_handle: str = "176904/12345.2",
     item_url: str = "https://edoc.rki.de/handle/176904/12345.2",
-    pdf_url: str = (
-        "https://edoc.rki.de/bitstream/handle/176904/12345.2/"
-        "issue.pdf?sequence=2"
-    ),
+    pdf_url: str = ("https://edoc.rki.de/bitstream/handle/176904/12345.2/issue.pdf?sequence=2"),
     sha256: str = "a" * 64,
     doi: str | None = None,
 ) -> ArtifactRecord:
@@ -76,9 +74,9 @@ def _decision(
     reviewed_at: str | None = None,
     decision_sha256: str | None = None,
 ) -> RightsDecision:
-    identity = bitstream_identity(record.pdf_url or (
-        "https://edoc.rki.de/bitstream/handle/176904/12345.2/missing.pdf"
-    ))
+    identity = bitstream_identity(
+        record.pdf_url or ("https://edoc.rki.de/bitstream/handle/176904/12345.2/missing.pdf")
+    )
     mode = (
         rights.PublicationMode.MATERIALIZED
         if state is RightsState.APPROVED
@@ -186,8 +184,7 @@ def test_builders_produce_fail_closed_valid_manifests() -> None:
         "approval_key": {
             "source_id": "rki:176904/12345.2",
             "canonical_url": (
-                "https://edoc.rki.de/bitstream/handle/176904/12345.2/"
-                "issue.pdf?sequence=2"
+                "https://edoc.rki.de/bitstream/handle/176904/12345.2/issue.pdf?sequence=2"
             ),
             "version_or_bitstream": (
                 "rki-bitstream-ca16f3bf368deddef0cc580b31c0105db58edcfd486fa689a8860cb8aea67176"
@@ -320,9 +317,7 @@ def test_source_manifest_rejects_authorization_without_review_hash() -> None:
     (
         _unchecked_decision(_decision(_record()), mode="invalid"),
         _unchecked_decision(_decision(_record()), basis=""),
-        _unchecked_decision(
-            _decision(_record()), decision_sha256="not-a-sha256"
-        ),
+        _unchecked_decision(_decision(_record()), decision_sha256="not-a-sha256"),
     ),
 )
 def test_source_manifest_rejects_noncanonical_decision_fields(
@@ -408,7 +403,9 @@ def test_builders_reject_incomplete_or_unmaterialized_records(record: ArtifactRe
         ("rki-bitstream-ca16f3bf368deddef0cc580b31c0105db58edcfd486fa689a8860cb8aea67176",),
     ],
 )
-def test_source_builder_rejects_unsorted_duplicate_or_self_aliases(aliases: tuple[str, ...]) -> None:
+def test_source_builder_rejects_unsorted_duplicate_or_self_aliases(
+    aliases: tuple[str, ...],
+) -> None:
     """Alias lists must remain sorted, unique, and external to their own bitstream."""
 
     with pytest.raises(ManifestBuildError):
@@ -427,26 +424,17 @@ def test_source_manifests_link_same_content_to_sorted_canonical_bitstream() -> N
     """Equal hashes must form one explicit alias relation to lowest bitstream ID."""
 
     first = _record(
-        pdf_url=(
-            "https://edoc.rki.de/bitstream/handle/176904/12345.2/"
-            "first.pdf?sequence=1"
-        ),
+        pdf_url=("https://edoc.rki.de/bitstream/handle/176904/12345.2/first.pdf?sequence=1"),
     )
     second = replace(
         _record(
-            pdf_url=(
-                "https://edoc.rki.de/bitstream/handle/176904/12345.2/"
-                "second.pdf?sequence=2"
-            ),
+            pdf_url=("https://edoc.rki.de/bitstream/handle/176904/12345.2/second.pdf?sequence=2"),
         ),
         source_filename="second.pdf",
     )
     unrelated = replace(
         _record(
-            pdf_url=(
-                "https://edoc.rki.de/bitstream/handle/176904/12345.2/"
-                "third.pdf?sequence=3"
-            ),
+            pdf_url=("https://edoc.rki.de/bitstream/handle/176904/12345.2/third.pdf?sequence=3"),
             sha256="b" * 64,
         ),
         source_filename="third.pdf",
@@ -461,10 +449,17 @@ def test_source_manifests_link_same_content_to_sorted_canonical_bitstream() -> N
         manifest["bitstream_id"] for manifest in manifests
     )
     by_id = {manifest["bitstream_id"]: manifest for manifest in manifests}
-    shared = sorted(manifest["bitstream_id"] for manifest in manifests if manifest["sha256"] == "a" * 64)
+    shared = sorted(
+        manifest["bitstream_id"] for manifest in manifests if manifest["sha256"] == "a" * 64
+    )
     assert by_id[shared[0]]["same_content_as"] == []
     assert by_id[shared[1]]["same_content_as"] == [shared[0]]
-    assert next(manifest for manifest in manifests if manifest["sha256"] == "b" * 64)["same_content_as"] == []
+    assert (
+        next(manifest for manifest in manifests if manifest["sha256"] == "b" * 64)[
+            "same_content_as"
+        ]
+        == []
+    )
 
 
 @pytest.mark.parametrize("builder", (build_source_manifest, build_document_manifest))
@@ -483,10 +478,7 @@ def test_builders_reject_nonconcrete_scope(builder: object) -> None:
     "record",
     [
         _record(
-            pdf_url=(
-                "https://edoc.rki.de/bitstream/handle/176904/99999.1/"
-                "issue.pdf?sequence=2"
-            )
+            pdf_url=("https://edoc.rki.de/bitstream/handle/176904/99999.1/issue.pdf?sequence=2")
         ),
         _record(item_url="https://edoc.rki.de/handle/176904/99999.1"),
     ],

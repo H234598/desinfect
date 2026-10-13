@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Validate the offline P00 governance baseline."""
+
 from __future__ import annotations
 
 import json
@@ -28,15 +29,15 @@ def require_unique_records(
     """Return records keyed by ``key`` after rejecting missing or duplicate identifiers."""
     materialized = list(records)
     if len(materialized) != expected_count:
-        raise ValueError(f"{label}: erwartet {expected_count} Einträge, erhalten {len(materialized)}")
+        raise ValueError(
+            f"{label}: erwartet {expected_count} Einträge, erhalten {len(materialized)}"
+        )
     identifiers = [entry.get(key) for entry in materialized]
     if any(not isinstance(identifier, str) or not identifier for identifier in identifiers):
         raise ValueError(f"{label}: leerer oder ungültiger Schlüssel {key}")
     if len(set(identifiers)) != len(identifiers):
         duplicates = sorted(
-            identifier
-            for identifier, count in Counter(identifiers).items()
-            if count > 1
+            identifier for identifier, count in Counter(identifiers).items() if count > 1
         )
         raise ValueError(f"{label}: doppelte Schlüssel: {', '.join(duplicates)}")
     return {str(entry[key]): entry for entry in materialized}
@@ -55,7 +56,9 @@ def validate_revisions() -> None:
     if set(repos) != expected:
         raise ValueError("Revisionsregister enthält nicht exakt die drei geplanten Repositories")
     for name, entry in repos.items():
-        if not SHA40.fullmatch(entry["frozen_sha"]) or not SHA40.fullmatch(entry["observed_head_sha"]):
+        if not SHA40.fullmatch(entry["frozen_sha"]) or not SHA40.fullmatch(
+            entry["observed_head_sha"]
+        ):
             raise ValueError(f"{name}: vollständiger 40-stelliger SHA fehlt")
         changed = entry["frozen_sha"] != entry["observed_head_sha"]
         expected_status = "advanced_after_freeze" if changed else "unchanged"

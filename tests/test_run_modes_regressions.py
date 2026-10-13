@@ -1,4 +1,5 @@
 """Regression tests for exact repository side-effect validation."""
+
 from __future__ import annotations
 
 import subprocess

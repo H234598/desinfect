@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Canonical, portable repository paths for RKI documents."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

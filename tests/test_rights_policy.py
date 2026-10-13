@@ -1,4 +1,5 @@
 """Fail-closed rights policy and authoritative-register contracts."""
+
 from __future__ import annotations
 
 import os
@@ -15,7 +16,7 @@ from scripts.rki_pipeline import rights
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ID = "rki:176904/12345.2"
 SOURCE_SHA256 = "a" * 64
-POLICY_TEXT = '''schema_version = 1
+POLICY_TEXT = """schema_version = 1
 default_state = "metadata_only"
 
 [fulltext_visibility]
@@ -30,7 +31,7 @@ remove_all = []
 origin_link = []
 source_only = []
 materialized = ["cache", "extract_text", "fetch", "hash", "index_text", "ocr", "publish", "thumbnail"]
-'''
+"""
 
 
 def write_policy(tmp_path: Path, text: str = POLICY_TEXT) -> Path:
@@ -68,8 +69,10 @@ def decision_yaml(
     reviewed_at: str | None = "2026-08-03T08:00:00Z",
 ) -> str:
     handle = source_id.removeprefix("rki:")
-    canonical_url = EXACT_CANONICAL_URL if handle.endswith(".1") else (
-        f"https://edoc.rki.de/bitstream/handle/{handle}/issue.pdf?sequence=2"
+    canonical_url = (
+        EXACT_CANONICAL_URL
+        if handle.endswith(".1")
+        else (f"https://edoc.rki.de/bitstream/handle/{handle}/issue.pdf?sequence=2")
     )
     bitstream_id = rights.bitstream_identity(canonical_url).bitstream_id
     mode = "materialized" if state == "approved" else "origin_link"
@@ -200,8 +203,7 @@ def test_rights_decision_constructor_rejects_noncanonical_fields(
         write_exact_register(tmp_path, exact_decision_yaml())
     ).entries[0]
     values: dict[str, object] = {
-        name: getattr(original, name)
-        for name in original.__dataclass_fields__
+        name: getattr(original, name) for name in original.__dataclass_fields__
     }
     values.update(override)
 
@@ -347,28 +349,35 @@ def test_lookup_requires_exact_source_id_and_sha256(tmp_path: Path) -> None:
     """Catch source-only or hash-only authorization wildcards."""
 
     policy = rights.load_rights_policy(write_policy(tmp_path))
-    register = rights.load_rights_register(
-        write_register(tmp_path, decision_yaml("approved"))
-    )
+    register = rights.load_rights_register(write_register(tmp_path, decision_yaml("approved")))
 
-    assert rights.evaluate_rights(
-        SOURCE_ID,
-        SOURCE_SHA256,
-        register=register,
-        policy=policy,
-    ).state is rights.RightsState.METADATA_ONLY
-    assert rights.evaluate_rights(
-        "rki:176904/12346",
-        SOURCE_SHA256,
-        register=register,
-        policy=policy,
-    ).state is rights.RightsState.UNKNOWN
-    assert rights.evaluate_rights(
-        SOURCE_ID,
-        "b" * 64,
-        register=register,
-        policy=policy,
-    ).state is rights.RightsState.UNKNOWN
+    assert (
+        rights.evaluate_rights(
+            SOURCE_ID,
+            SOURCE_SHA256,
+            register=register,
+            policy=policy,
+        ).state
+        is rights.RightsState.METADATA_ONLY
+    )
+    assert (
+        rights.evaluate_rights(
+            "rki:176904/12346",
+            SOURCE_SHA256,
+            register=register,
+            policy=policy,
+        ).state
+        is rights.RightsState.UNKNOWN
+    )
+    assert (
+        rights.evaluate_rights(
+            SOURCE_ID,
+            "b" * 64,
+            register=register,
+            policy=policy,
+        ).state
+        is rights.RightsState.UNKNOWN
+    )
 
 
 def test_legacy_pair_apis_project_single_materialized_match_metadata_only(
@@ -425,9 +434,7 @@ def test_legacy_pair_apis_project_single_materialized_match_metadata_only(
 def test_legacy_pair_lookup_for_other_bitstream_never_grants_action(tmp_path: Path) -> None:
     """A pair-only caller cannot select canonical URL or bitstream authority."""
 
-    other_url = (
-        "https://edoc.rki.de/bitstream/handle/176904/12345.2/other.pdf?sequence=3"
-    )
+    other_url = "https://edoc.rki.de/bitstream/handle/176904/12345.2/other.pdf?sequence=3"
     register = rights.load_rights_register(
         write_exact_register(
             tmp_path,
@@ -481,9 +488,7 @@ def test_explicit_unknown_stays_fail_closed(tmp_path: Path) -> None:
 def test_reviewed_decision_hash_is_canonical_and_source_bound(tmp_path: Path) -> None:
     """Catch omission of identity, bytes, policy, or provenance from decision hashing."""
 
-    register = rights.load_rights_register(
-        write_register(tmp_path, decision_yaml("approved"))
-    )
+    register = rights.load_rights_register(write_register(tmp_path, decision_yaml("approved")))
     decision = register.entries[0]
 
     changed_key = replace(decision.approval_key, source_sha256="b" * 64)
@@ -625,12 +630,15 @@ def test_forged_constructed_register_cannot_authorize_payload(
         schema_version=2,
         entries=(decision,),
     )
-    assert rights.evaluate_rights(
-        SOURCE_ID,
-        SOURCE_SHA256,
-        register=constructed_register,
-        policy=policy,
-    ).state is rights.RightsState.METADATA_ONLY
+    assert (
+        rights.evaluate_rights(
+            SOURCE_ID,
+            SOURCE_SHA256,
+            register=constructed_register,
+            policy=policy,
+        ).state
+        is rights.RightsState.METADATA_ONLY
+    )
 
     with pytest.raises(rights.RightsPolicyError, match="Authority"):
         rights.publication_policy(
@@ -884,9 +892,7 @@ def test_repository_rights_files_validate_offline() -> None:
     assert completed.returncode == 0, (completed.stdout, completed.stderr)
 
 
-EXACT_CANONICAL_URL = (
-    "https://edoc.rki.de/bitstream/handle/176904/12345.2/issue.pdf?sequence=2"
-)
+EXACT_CANONICAL_URL = "https://edoc.rki.de/bitstream/handle/176904/12345.2/issue.pdf?sequence=2"
 EXACT_BITSTREAM_ID = (
     "rki-bitstream-ca16f3bf368deddef0cc580b31c0105db58edcfd486fa689a8860cb8aea67176"
 )
@@ -921,7 +927,7 @@ def exact_decision_yaml(
 
     action_lines = "\n".join(f'      - "{action}"' for action in allowed_actions)
     if attribution is None:
-        attribution = f'''
+        attribution = f"""
       creators:
         - "Synthetic Creator"
       attribution_parties:
@@ -930,10 +936,10 @@ def exact_decision_yaml(
       license_notice: "CC BY 4.0"
       license_url: "https://creativecommons.org/licenses/by/4.0/"
       disclaimer_notice: "Synthetic fixture only"
-      origin_url: "https://edoc.rki.de/handle/{source_id.removeprefix('rki:')}"
+      origin_url: "https://edoc.rki.de/handle/{source_id.removeprefix("rki:")}"
       prior_change_history: []
       current_change_notice: "Unchanged synthetic fixture"
-'''.rstrip()
+""".rstrip()
     rendered_attribution = "null" if attribution == "null" else attribution
     reviewer = "null" if reviewed_by is None else f'"{reviewed_by}"'
     reviewed = "null" if reviewed_at is None else f'"{reviewed_at}"'
@@ -1021,9 +1027,7 @@ def test_domain_year_and_authority_labels_never_grant_publish(tmp_path: Path) ->
 def test_byte_or_bitstream_change_resets_exact_approval(tmp_path: Path) -> None:
     """Any exact-key drift must stop matching the reviewed publication decision."""
 
-    register = rights.load_rights_register(
-        write_exact_register(tmp_path, exact_decision_yaml())
-    )
+    register = rights.load_rights_register(write_exact_register(tmp_path, exact_decision_yaml()))
     policy = rights.parse_rights_policy(POLICY_V2_TEXT)
     approved = rights.resolve_action(
         exact_key(),
@@ -1034,9 +1038,7 @@ def test_byte_or_bitstream_change_resets_exact_approval(tmp_path: Path) -> None:
     changed_bytes = replace(exact_key(), source_sha256="b" * 64)
     changed_bitstream = rights.ApprovalKey(
         source_id=SOURCE_ID,
-        canonical_url=(
-            "https://edoc.rki.de/bitstream/handle/176904/12345.2/other.pdf?sequence=2"
-        ),
+        canonical_url=("https://edoc.rki.de/bitstream/handle/176904/12345.2/other.pdf?sequence=2"),
         version_or_bitstream=(
             "rki-bitstream-62e864b6bfea1514a40d031d26ce4696e1db4e5a0736904d0d76b8cc7c4a88d7"
         ),
@@ -1045,12 +1047,15 @@ def test_byte_or_bitstream_change_resets_exact_approval(tmp_path: Path) -> None:
 
     assert approved.mode is rights.PublicationMode.MATERIALIZED
     for changed in (changed_bytes, changed_bitstream):
-        assert rights.resolve_action(
-            changed,
-            action=rights.RightsAction.PUBLISH,
-            register=register,
-            policy=policy,
-        ).mode is rights.PublicationMode.ORIGIN_LINK
+        assert (
+            rights.resolve_action(
+                changed,
+                action=rights.RightsAction.PUBLISH,
+                register=register,
+                policy=policy,
+            ).mode
+            is rights.PublicationMode.ORIGIN_LINK
+        )
 
 
 @pytest.mark.parametrize(
@@ -1147,15 +1152,15 @@ def test_every_attribution_field_is_required_and_hash_bound(
     }
     changed_attribution = object.__new__(rights.RightsAttribution)
     for item in fields(original.attribution):
-        value = changed_values[field] if item.name == field else getattr(
-            original.attribution, item.name
+        value = (
+            changed_values[field]
+            if item.name == field
+            else getattr(original.attribution, item.name)
         )
         object.__setattr__(changed_attribution, item.name, value)
     changed = object.__new__(rights.RightsDecision)
     for item in fields(original):
-        value = changed_attribution if item.name == "attribution" else getattr(
-            original, item.name
-        )
+        value = changed_attribution if item.name == "attribution" else getattr(original, item.name)
         object.__setattr__(changed, item.name, value)
     assert rights.decision_sha256(changed) != rights.decision_sha256(original)
 
@@ -1181,10 +1186,13 @@ def test_cc_by_license_url_rejects_noncanonical_or_unsafe_values(value: str) -> 
 
 
 def test_cc_by_license_url_accepts_only_canonical_origin() -> None:
-    assert rights.validate_license_url(
-        "https://creativecommons.org/licenses/by/4.0/",
-        license_notice="CC BY 4.0",
-    ) == "https://creativecommons.org/licenses/by/4.0/"
+    assert (
+        rights.validate_license_url(
+            "https://creativecommons.org/licenses/by/4.0/",
+            license_notice="CC BY 4.0",
+        )
+        == "https://creativecommons.org/licenses/by/4.0/"
+    )
 
 
 @pytest.mark.parametrize(

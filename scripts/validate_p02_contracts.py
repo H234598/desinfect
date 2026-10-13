@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Run every P02 data-contract, status, and write-boundary validator."""
+
 from __future__ import annotations
 
 from pathlib import Path

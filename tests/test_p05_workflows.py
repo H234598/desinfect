@@ -1,4 +1,5 @@
 """Repository-level contracts for P05 dispatcher, pipeline, and backfill workflows."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -69,7 +70,9 @@ def test_app_token_is_repository_scoped_and_created_after_validation() -> None:
     writer = names.index("Commit and push safely")
     assert validation < token < writer
     token_step = steps[token]
-    assert re.fullmatch(r"actions/create-github-app-token@[0-9a-f]{40}", token_step["uses"].split(" #", 1)[0])
+    assert re.fullmatch(
+        r"actions/create-github-app-token@[0-9a-f]{40}", token_step["uses"].split(" #", 1)[0]
+    )
     assert token_step["with"]["owner"] == "H234598"
     assert token_step["with"]["repositories"] == "desinfect"
     assert token_step["with"]["permission-contents"] == "write"
@@ -79,12 +82,12 @@ def test_app_token_is_repository_scoped_and_created_after_validation() -> None:
 def test_writer_email_is_passed_via_environment() -> None:
     _path, data = load("rki-pipeline.yml")
     writer = next(
-        step for step in data["jobs"]["pipeline"]["steps"]
+        step
+        for step in data["jobs"]["pipeline"]["steps"]
         if step["name"] == "Commit and push safely"
     )
     assert writer["env"]["BOT_EMAIL"] == (
-        "${{ vars.WACHHUND_BOT_EMAIL || "
-        "'41898282+github-actions[bot]@users.noreply.github.com' }}"
+        "${{ vars.WACHHUND_BOT_EMAIL || '41898282+github-actions[bot]@users.noreply.github.com' }}"
     )
     assert "vars.WACHHUND_BOT_EMAIL" not in writer["run"]
     assert 'git config user.email "$BOT_EMAIL"' in writer["run"]
@@ -142,8 +145,7 @@ def test_incident_issue_uses_separate_minimal_app_token_when_enabled() -> None:
     _path, data = load("rki-pipeline.yml")
     steps = data["jobs"]["pipeline"]["steps"]
     token = next(
-        step for step in steps
-        if step["name"] == "Create repository-scoped incident issue token"
+        step for step in steps if step["name"] == "Create repository-scoped incident issue token"
     )
     maintain = next(step for step in steps if step["name"] == "Maintain rolling incident issue")
 
@@ -165,9 +167,7 @@ def test_incident_issue_uses_separate_minimal_app_token_when_enabled() -> None:
     assert maintain["env"] == {
         "ACTIONS_TOKEN": "${{ github.token }}",
         "GH_TOKEN": "${{ steps.incident-token.outputs.token }}",
-        "INCIDENT_FAILURE_THRESHOLD": (
-            "${{ vars.INCIDENT_FAILURE_THRESHOLD || '2' }}"
-        ),
+        "INCIDENT_FAILURE_THRESHOLD": ("${{ vars.INCIDENT_FAILURE_THRESHOLD || '2' }}"),
     }
     assert "scripts.rki_pipeline.incident_issue" in maintain["run"]
     assert "--mode apply" in maintain["run"]

@@ -19,10 +19,13 @@
     "@cloudflare/vitest-pool-workers": "0.20.1",
     "@types/node": "24.13.3",
     "typescript": "7.0.2",
-    "vitest": "4.1.10",
+    "vitest": "4.1.11",
     "wrangler": "4.118.0"
   },
   "overrides": {
-    "undici": "7.29.0"
+    "undici": "7.29.1",
+    "miniflare@5.20260730.0-alpha": {
+      "sharp": "0.35.5"
+    }
   }
 }

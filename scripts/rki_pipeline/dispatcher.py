@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Read-only CLI and API for daily and bounded backfill dispatch plans."""
+
 from __future__ import annotations
 
 import argparse
@@ -72,9 +73,7 @@ def build_backfill_plan(
 
     config = load_dispatcher_config(config_path)
     if type(max_tasks) is not int or not 1 <= max_tasks <= config.backfill.max_tasks:
-        raise DueTaskError(
-            f"max_tasks muss zwischen 1 und {config.backfill.max_tasks} liegen"
-        )
+        raise DueTaskError(f"max_tasks muss zwischen 1 und {config.backfill.max_tasks} liegen")
     effective_limits = type(config.backfill)(
         max_tasks=max_tasks,
         minimum_year=config.backfill.minimum_year,

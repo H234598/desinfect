@@ -206,11 +206,14 @@ def test_conversion_fingerprint_changes_for_every_reproducibility_input() -> Non
 def test_conversion_identity_binds_document_bitstream_and_fingerprint() -> None:
     base = _base_module()
 
-    assert base.conversion_id(
-        "rki-176904-12345-v2",
-        "rki-bitstream-" + "1" * 64,
-        FINGERPRINT_SHA256,
-    ) == "conv-a7632e1e638770f8420f94dca8d7e842bd4ab0845a78a5ad9e05d73090f0980b"
+    assert (
+        base.conversion_id(
+            "rki-176904-12345-v2",
+            "rki-bitstream-" + "1" * 64,
+            FINGERPRINT_SHA256,
+        )
+        == "conv-a7632e1e638770f8420f94dca8d7e842bd4ab0845a78a5ad9e05d73090f0980b"
+    )
 
 
 def test_evidence_is_immutable_sorted_and_contains_no_machine_paths() -> None:
@@ -239,7 +242,7 @@ def test_evidence_is_immutable_sorted_and_contains_no_machine_paths() -> None:
     "argument",
     (
         "--input=/absolute/input.pdf",
-        '-I/usr/include',
+        "-I/usr/include",
         "file:///absolute/input.pdf",
     ),
 )
@@ -395,8 +398,7 @@ def test_pdftotext_uses_fixed_argv_and_exact_page_markers(tmp_path: Path) -> Non
 
     assert result.pages == ("First page\n", "Second page\n")
     assert result.markdown == (
-        "<!-- rki-page: 1 -->\nFirst page\n\n"
-        "<!-- rki-page: 2 -->\nSecond page\n"
+        "<!-- rki-page: 1 -->\nFirst page\n\n<!-- rki-page: 2 -->\nSecond page\n"
     )
     assert runner.calls == [
         ("pdftotext", ("-v",), tmp_path),

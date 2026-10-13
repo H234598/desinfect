@@ -1,4 +1,5 @@
 """Offline reconciliation CLI contract."""
+
 from __future__ import annotations
 
 import hashlib
@@ -19,7 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/fixtures/reconciliation"
 
 
-def run_cli(mode: str, fixture: Path = FIXTURE, *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[bytes]:
+def run_cli(
+    mode: str, fixture: Path = FIXTURE, *, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[bytes]:
     values = os.environ.copy()
     values.update(env or {})
     return subprocess.run(
@@ -86,7 +89,8 @@ def test_cli_is_deterministic_across_hostile_environment(mode: str) -> None:
             "code": "ok",
             "message": "Quelle stimmt mit allen Prüfungen überein",
             "relative_path": None,
-            "subject_id": "rki:176904/900000001#" + bitstream_identity(
+            "subject_id": "rki:176904/900000001#"
+            + bitstream_identity(
                 "https://edoc.rki.de/bitstream/handle/176904/900000001/source.pdf?sequence=1"
             ).bitstream_id,
             "subject_kind": "source",
@@ -117,7 +121,17 @@ def test_cli_rejects_missing_mode_without_traceback() -> None:
 
 @pytest.mark.parametrize(
     "mutation",
-    ("unknown", "oversized", "symlink", "noncanonical", "as_of", "malformed", "duplicate", "float", "bool"),
+    (
+        "unknown",
+        "oversized",
+        "symlink",
+        "noncanonical",
+        "as_of",
+        "malformed",
+        "duplicate",
+        "float",
+        "bool",
+    ),
 )
 def test_cli_rejects_invalid_fixture_with_fixed_stderr(tmp_path: Path, mutation: str) -> None:
     fixture = tmp_path / "fixture"
@@ -136,7 +150,9 @@ def test_cli_rejects_invalid_fixture_with_fixed_stderr(tmp_path: Path, mutation:
         path.symlink_to(target)
     elif mutation == "noncanonical":
         value = json.loads(path.read_text(encoding="utf-8"))
-        value["source"]["pdf_url"] = value["source"]["pdf_url"].replace("?sequence=1", "?sequence=01")
+        value["source"]["pdf_url"] = value["source"]["pdf_url"].replace(
+            "?sequence=1", "?sequence=01"
+        )
         path.write_text(json.dumps(value), encoding="utf-8")
     else:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -180,7 +196,12 @@ def test_fixture_authority_never_mutates_process_default(monkeypatch: pytest.Mon
 
     monkeypatch.setattr(reconciliation, "load_fixture_rights_authority", assert_default_then_load)
 
-    assert reconciliation._reconcile_fixture(reconciliation._fixture_payload(FIXTURE), mode="plan")["conclusion"] == "success"
+    assert (
+        reconciliation._reconcile_fixture(reconciliation._fixture_payload(FIXTURE), mode="plan")[
+            "conclusion"
+        ]
+        == "success"
+    )
     assert calls == 1
     assert rights.DEFAULT_REGISTER_PATH == original
 
@@ -221,7 +242,11 @@ def test_fixture_loader_rejects_root_swap_during_read(
 
 
 def test_cli_does_not_normalize_unrelated_value_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(reconciliation, "_reconcile_fixture", lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bug")))
+    monkeypatch.setattr(
+        reconciliation,
+        "_reconcile_fixture",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bug")),
+    )
 
     with pytest.raises(ValueError, match="bug"):
         reconciliation.main(["--fixture", str(FIXTURE), "--mode", "plan"])

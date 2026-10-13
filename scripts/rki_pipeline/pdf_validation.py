@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Shared PDF byte validation and bounded no-shell tool execution."""
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -110,11 +111,7 @@ class PdfLimits:
     def __post_init__(self) -> None:
         for name in self.__dataclass_fields__:
             value = getattr(self, name)
-            valid = (
-                type(value) in {int, float}
-                if name == "wall_seconds"
-                else type(value) is int
-            )
+            valid = type(value) in {int, float} if name == "wall_seconds" else type(value) is int
             if not valid or value <= 0:
                 raise ValueError(f"{name} muss eine positive Zahl sein")
 
@@ -194,15 +191,11 @@ def validate_pdf_fd(
     except OSError as exc:
         raise PdfByteValidationError("PDF-Deskriptor ist nicht lesbar") from exc
     if not stat.S_ISREG(before.st_mode):
-        raise PdfByteValidationError(
-            "PDF-Deskriptor verweist nicht auf eine reguläre Datei"
-        )
+        raise PdfByteValidationError("PDF-Deskriptor verweist nicht auf eine reguläre Datei")
     if before.st_size == 0:
         raise PdfEmptyError("PDF ist leer")
     if before.st_size > max_bytes:
-        raise PdfSizeLimitError(
-            f"PDF-Größe {before.st_size} überschreitet {max_bytes} Bytes"
-        )
+        raise PdfSizeLimitError(f"PDF-Größe {before.st_size} überschreitet {max_bytes} Bytes")
     try:
         prefix = os.pread(descriptor, 5, 0)
     except OSError as exc:
@@ -367,20 +360,14 @@ def _capture_bounded(
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 _kill_process_group(process)
-                raise ProcessTimeoutError(
-                    f"Tool überschritt {limits.wall_seconds} Sekunden"
-                )
+                raise ProcessTimeoutError(f"Tool überschritt {limits.wall_seconds} Sekunden")
             _validate_output_tree(
                 cwd,
                 limits,
                 before=before,
                 captured_bytes=sum(map(len, buffers.values())),
             )
-            events = (
-                selector.select(min(remaining, 0.05))
-                if selector.get_map()
-                else ()
-            )
+            events = selector.select(min(remaining, 0.05)) if selector.get_map() else ()
             if not events:
                 if not selector.get_map() and process.poll() is None:
                     time.sleep(min(remaining, 0.05))
@@ -424,9 +411,7 @@ def _capture_bounded(
         process.wait(timeout=remaining)
     except subprocess.TimeoutExpired as exc:
         _kill_process_group(process)
-        raise ProcessTimeoutError(
-            f"Tool überschritt {limits.wall_seconds} Sekunden"
-        ) from exc
+        raise ProcessTimeoutError(f"Tool überschritt {limits.wall_seconds} Sekunden") from exc
     return bytes(buffers["stdout"]), bytes(buffers["stderr"])
 
 
@@ -461,10 +446,7 @@ def _bounded_output_walk(
                 f"Tool-Arbeitsbaum überschreitet {limits.tree_depth} Ebenen"
             )
         yield root, directories, files
-        stack.extend(
-            (root / name, depth + 1)
-            for name in reversed(directories)
-        )
+        stack.extend((root / name, depth + 1) for name in reversed(directories))
 
 
 def _snapshot_output_tree(
@@ -503,9 +485,7 @@ def _validate_output_tree(
                 f"Tool entfernte vorhandenen Arbeitsbaum-Eintrag: {relative}"
             ) from exc
         unchanged = (
-            current[:3] == expected[:3]
-            if stat.S_ISDIR(expected[2])
-            else current == expected
+            current[:3] == expected[:3] if stat.S_ISDIR(expected[2]) else current == expected
         )
         if not unchanged:
             raise ProcessOutputLimitError(
@@ -556,10 +536,7 @@ class ProcessRunner:
         try:
             workdir_fd = os.open(
                 workdir_path,
-                os.O_RDONLY
-                | getattr(os, "O_DIRECTORY", 0)
-                | _CLOEXEC
-                | _NOFOLLOW,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _CLOEXEC | _NOFOLLOW,
             )
         except OSError as exc:
             raise ProcessRunnerError("Tool-Arbeitsverzeichnis fehlt") from exc
@@ -666,11 +643,7 @@ def _remove_owned_contents(directory_fd: int) -> None:
                     os.close(parent_fd)
             continue
 
-        current_fd = (
-            directory_fd
-            if not parts
-            else open_directory_beneath(directory_fd, parts)
-        )
+        current_fd = directory_fd if not parts else open_directory_beneath(directory_fd, parts)
         try:
             names = os.listdir(current_fd)
             stack.append((parts, True))
@@ -891,9 +864,7 @@ def validated_pdf(
                     max_bytes=limits.source_bytes,
                 )
             except PdfByteValidationError as exc:
-                raise PdfByteValidationError(
-                    "Tool veränderte stabile PDF-Tempkopie"
-                ) from exc
+                raise PdfByteValidationError("Tool veränderte stabile PDF-Tempkopie") from exc
             finally:
                 os.close(post_tool_fd)
             if post_tool_validation != byte_validation:

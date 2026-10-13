@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Verify exact Worker health with bounded Linux GitHub Actions process isolation."""
+
 from __future__ import annotations
 
 import argparse
@@ -190,7 +191,11 @@ def _check_once(
             payload = json.loads(response.read())
         except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
             return Failure("json", response.status)
-        if not isinstance(payload, dict) or payload.get("service") != "desinfect-watchdog" or payload.get("status") != "ok":
+        if (
+            not isinstance(payload, dict)
+            or payload.get("service") != "desinfect-watchdog"
+            or payload.get("status") != "ok"
+        ):
             return Failure("json", response.status)
         if payload.get("version") != expected_version:
             return Failure("version", response.status)
@@ -306,6 +311,7 @@ def verify_health(
 
     host, port = _target(url)
     if connection_factory is None:
+
         def connection_factory(
             requested_host: str,
             port: int | None = None,
@@ -318,6 +324,7 @@ def verify_health(
                 resolved_address=resolved_address,
                 bind_device=bind_device,
             )
+
     failure: Failure | None = None
     for attempt in range(MAX_ATTEMPTS):
         failure = _check_with_deadline(host, port, expected_version, connection_factory)
@@ -337,13 +344,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bind-device")
     args = parser.parse_args(argv)
     if args.resolve_addresses:
-        if args.expected_version is not None or args.resolved_address is not None or args.bind_device is not None:
+        if (
+            args.expected_version is not None
+            or args.resolved_address is not None
+            or args.bind_device is not None
+        ):
             parser.error("--resolve-addresses cannot be combined with health verification options")
         try:
             for family, address in resolve_target_addresses(args.url):
                 print(f"{family} {address}")
         except (HealthCheckError, ValueError, socket.gaierror) as exc:
-            print(Failure("dns").render() if isinstance(exc, socket.gaierror) else exc, file=sys.stderr)
+            print(
+                Failure("dns").render() if isinstance(exc, socket.gaierror) else exc,
+                file=sys.stderr,
+            )
             return 1
         return 0
     if args.expected_version is None:

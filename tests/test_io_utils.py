@@ -23,6 +23,112 @@ from scripts.rki_pipeline.io_utils import (
 )
 
 
+def test_held_directory_guard_sees_symlink_created_after_open(tmp_path: Path) -> None:
+    """A guard must reject entries added after its safety root was opened."""
+
+    root = tmp_path / "root"
+    root.mkdir()
+    with io_utils.open_root_directory(root) as descriptor:
+        (root / "regular").write_bytes(b"data")
+        (root / "link").symlink_to(tmp_path / "outside")
+        with pytest.raises(UnsafePathError, match="Symlink"):
+            io_utils.validate_tree_no_symlinks_fd(descriptor)
+
+
+def test_held_directory_cleanup_sees_files_created_after_open(tmp_path: Path) -> None:
+    """Clearing a borrowed root must remove all subsequently generated entries."""
+
+    root = tmp_path / "root"
+    root.mkdir()
+    with io_utils.open_root_directory(root) as descriptor:
+        io_utils.mark_generated_root_fd(descriptor)
+        (root / "regular").write_bytes(b"data")
+        io_utils.clear_generated_tree_fd(descriptor)
+        assert list(root.iterdir()) == []
+        assert os.fstat(descriptor).st_ino == root.stat().st_ino
+
+
+def test_held_directory_guard_uses_original_root_after_swap(tmp_path: Path) -> None:
+    """Refreshing enumeration must not resolve the replaced outside pathname."""
+
+    root = tmp_path / "root"
+    root.mkdir()
+    with io_utils.open_root_directory(root) as descriptor:
+        retained = tmp_path / "retained"
+        root.rename(retained)
+        root.mkdir()
+        (root / "safe").write_bytes(b"replacement")
+        (retained / "link").symlink_to(tmp_path / "outside")
+        with pytest.raises(UnsafePathError, match="Symlink"):
+            io_utils.validate_tree_no_symlinks_fd(descriptor)
+        assert (root / "safe").read_bytes() == b"replacement"
+
+
+def test_list_directory_fd_refreshes_each_read_and_keeps_caller_fd(tmp_path: Path) -> None:
+    """Every read must include new siblings without closing the held root."""
+
+    with io_utils.open_root_directory(tmp_path) as descriptor:
+        (tmp_path / "first").write_bytes(b"one")
+        assert io_utils.list_directory_fd(descriptor) == ["first"]
+        (tmp_path / "second").write_bytes(b"two")
+        (tmp_path / "link").symlink_to(tmp_path / "outside")
+        assert set(io_utils.list_directory_fd(descriptor)) == {"first", "second", "link"}
+        assert os.fstat(descriptor).st_ino == tmp_path.stat().st_ino
+
+
+@pytest.mark.parametrize("failure", ["identity", "fstat", "listdir"])
+def test_list_directory_fd_closes_fresh_fd_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """Enumeration faults must fail closed, closing only the temporary FD."""
+
+    other = tmp_path / "other"
+    other.mkdir()
+    opened: list[int] = []
+    real_open = os.open
+    real_fstat = os.fstat
+    with io_utils.open_root_directory(tmp_path) as held:
+
+        def capture_open(name: str, flags: int, *, dir_fd: int | None = None) -> int:
+            descriptor = real_open(other if failure == "identity" else name, flags, dir_fd=dir_fd)
+            opened.append(descriptor)
+            return descriptor
+
+        def fail_fstat(descriptor: int) -> os.stat_result:
+            if opened and descriptor == opened[-1]:
+                raise OSError("injected fstat failure")
+            return real_fstat(descriptor)
+
+        def fail_listdir(_descriptor: int) -> list[str]:
+            raise OSError("injected enumeration failure")
+
+        monkeypatch.setattr(io_utils.os, "open", capture_open)
+        if failure == "fstat":
+            monkeypatch.setattr(io_utils.os, "fstat", fail_fstat)
+        elif failure == "listdir":
+            monkeypatch.setattr(io_utils.os, "listdir", fail_listdir)
+        with pytest.raises(UnsafePathError if failure == "identity" else OSError):
+            io_utils.list_directory_fd(held)
+        assert len(opened) == 1
+        with pytest.raises(OSError):
+            real_fstat(opened[0])
+        assert real_fstat(held).st_ino == tmp_path.stat().st_ino
+
+
+def test_list_directory_fd_rejects_regular_file(tmp_path: Path) -> None:
+    """A non-directory safety root must never be enumerated."""
+
+    source = tmp_path / "file"
+    source.write_bytes(b"file")
+    descriptor = os.open(source, os.O_RDONLY)
+    try:
+        with pytest.raises(UnsafePathError, match="kein Verzeichnis"):
+            io_utils.list_directory_fd(descriptor)
+        assert os.fstat(descriptor).st_ino == source.stat().st_ino
+    finally:
+        os.close(descriptor)
+
+
 def test_normalize_posix_path_rejects_unsafe_forms() -> None:
     """Reject absolute, traversal, Windows, NUL, and backslash syntax."""
 

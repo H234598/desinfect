@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Shared offline-testable implementation for injected remote storage ports."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -82,9 +83,7 @@ class RemoteStorageAdapter:
         self.prefix = normalize_posix_path(prefix)
         self.object_prefix = object_prefix
         if type(authorizer) is not RightsStorageAuthorizer:
-            raise StorageError(
-                "authorizer muss ein exakter RightsStorageAuthorizer sein"
-            )
+            raise StorageError("authorizer muss ein exakter RightsStorageAuthorizer sein")
         self.authorizer = authorizer
 
     def authorize(
@@ -227,7 +226,9 @@ class RemoteStorageAdapter:
             raise StorageError(f"Remote-Konflikt für {key}")
         return reference
 
-    def materialize(self, intent: StorageIntent, *, temp_root: Path, ledger: EffectLedger) -> PreparedObject:
+    def materialize(
+        self, intent: StorageIntent, *, temp_root: Path, ledger: EffectLedger
+    ) -> PreparedObject:
         if ledger.mode is not RunMode.MATERIALIZE:
             raise StorageError("Remote-Materialisierung benötigt RunMode materialize")
         self.authorize(intent, operation="materialize")
@@ -239,7 +240,12 @@ class RemoteStorageAdapter:
         target = Path(temp_root) / normalize_posix_path(intent.logical_key)
         self.authorize(intent, operation="materialize")
         atomic_write_bytes(target, payload, allowed_root=Path(temp_root))
-        ledger.record(EffectKind.TEMP_FILE, target.absolute().as_posix(), sha256=intent.sha256, size=intent.size)
+        ledger.record(
+            EffectKind.TEMP_FILE,
+            target.absolute().as_posix(),
+            sha256=intent.sha256,
+            size=intent.size,
+        )
         return PreparedObject(
             artifact_id=intent.artifact_id,
             logical_key=intent.logical_key,
@@ -256,7 +262,9 @@ class RemoteStorageAdapter:
             rights_state=intent.rights_state,
         )
 
-    def export(self, reference: StorageReference, *, temp_root: Path, ledger: EffectLedger) -> PreparedObject:
+    def export(
+        self, reference: StorageReference, *, temp_root: Path, ledger: EffectLedger
+    ) -> PreparedObject:
         """Download one verified reference only into the explicit temp root."""
 
         if ledger.mode is not RunMode.MATERIALIZE:
@@ -319,9 +327,7 @@ class RemoteStorageAdapter:
         atomic_write_bytes(snapshot, payload, allowed_root=directory)
         size, sha256 = hash_file(snapshot)
         if (size, sha256) != (prepared.size, prepared.sha256):
-            raise StorageError(
-                "Vorbereitetes Remote-Objekt besitzt falsche Größe/SHA-256"
-            )
+            raise StorageError("Vorbereitetes Remote-Objekt besitzt falsche Größe/SHA-256")
         return snapshot, size, sha256
 
     def apply(self, prepared: PreparedObject, *, ledger: EffectLedger) -> StorageReference:
@@ -420,9 +426,7 @@ class RemoteStorageAdapter:
             self.client.get(reference.relative_path, target)
             measured_size, measured_hash = hash_file(target)
         if (measured_hash, measured_size) != (reference.sha256, reference.size):
-            raise StorageError(
-                f"Remote-Objektintegrität weicht ab: {reference.relative_path}"
-            )
+            raise StorageError(f"Remote-Objektintegrität weicht ab: {reference.relative_path}")
 
     def list_references(self) -> tuple[StorageReference, ...]:
         references: list[StorageReference] = []

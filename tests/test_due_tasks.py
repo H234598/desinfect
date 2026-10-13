@@ -1,4 +1,5 @@
 """Contracts for pure dispatcher watermarks and catch-up calculation."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -41,7 +42,12 @@ def status(
 
 def test_week_catchup_stops_at_last_closed_iso_week() -> None:
     tasks = calculate_due_tasks(
-        status(last_week="2026-W29", last_month="2026-06", last_year=2025, reconciliation="2026-07-01T00:00:00Z"),
+        status(
+            last_week="2026-W29",
+            last_month="2026-06",
+            last_year=2025,
+            reconciliation="2026-07-01T00:00:00Z",
+        ),
         "2026-07-31T12:00:00Z",
         limits(),
     )
@@ -58,19 +64,39 @@ def test_missing_watermarks_do_not_start_1994_backfill() -> None:
 
 def test_iso_year_rollover_is_ordered_oldest_first() -> None:
     tasks = calculate_due_tasks(
-        status(last_week="2025-W52", last_month="2025-11", last_year=2024, reconciliation="2025-12-31T00:00:00Z"),
+        status(
+            last_week="2025-W52",
+            last_month="2025-11",
+            last_year=2024,
+            reconciliation="2025-12-31T00:00:00Z",
+        ),
         "2026-01-12T01:00:00Z",
         limits(),
     )
     weeks = [task.period for task in tasks if task.kind is TaskKind.WEEK]
     assert weeks == ["2026-W01", "2026-W02"]
-    assert tuple(task.kind for task in tasks) == tuple(sorted((task.kind for task in tasks), key=lambda kind: {TaskKind.WEEK: 0, TaskKind.MONTH: 1, TaskKind.YEAR: 2, TaskKind.RECONCILIATION: 3}[kind]))
+    assert tuple(task.kind for task in tasks) == tuple(
+        sorted(
+            (task.kind for task in tasks),
+            key=lambda kind: {
+                TaskKind.WEEK: 0,
+                TaskKind.MONTH: 1,
+                TaskKind.YEAR: 2,
+                TaskKind.RECONCILIATION: 3,
+            }[kind],
+        )
+    )
 
 
 def test_catchup_is_bounded() -> None:
     bounded = DispatchLimits(2, 1, 1, 1, 92)
     tasks = calculate_due_tasks(
-        status(last_week="2025-W01", last_month="2025-01", last_year=2020, reconciliation="2026-07-30T00:00:00Z"),
+        status(
+            last_week="2025-W01",
+            last_month="2025-01",
+            last_year=2020,
+            reconciliation="2026-07-30T00:00:00Z",
+        ),
         "2026-07-31T12:00:00Z",
         bounded,
     )
@@ -81,12 +107,22 @@ def test_catchup_is_bounded() -> None:
 
 def test_reconciliation_uses_complete_utc_days() -> None:
     before = calculate_due_tasks(
-        status(last_week="2026-W30", last_month="2026-06", last_year=2025, reconciliation="2026-05-01T12:00:01Z"),
+        status(
+            last_week="2026-W30",
+            last_month="2026-06",
+            last_year=2025,
+            reconciliation="2026-05-01T12:00:01Z",
+        ),
         "2026-08-01T12:00:00Z",
         limits(),
     )
     after = calculate_due_tasks(
-        status(last_week="2026-W30", last_month="2026-06", last_year=2025, reconciliation="2026-05-01T12:00:00Z"),
+        status(
+            last_week="2026-W30",
+            last_month="2026-06",
+            last_year=2025,
+            reconciliation="2026-05-01T12:00:00Z",
+        ),
         "2026-08-01T12:00:00Z",
         limits(),
     )

@@ -1,4 +1,5 @@
 """Workflow-facing pipeline CLI regression tests."""
+
 from __future__ import annotations
 
 import json
@@ -17,12 +18,22 @@ from scripts.rki_pipeline import cli
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_domain_router_keeps_existing_commands_and_adds_reconcile(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_domain_router_keeps_existing_commands_and_adds_reconcile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[tuple[str, list[str]]] = []
-    monkeypatch.setattr(cli.conversion_cli, "main", lambda args: calls.append(("convert", args)) or 10)
-    monkeypatch.setattr(cli.archive, "main", lambda args: calls.append(("build-archive", args)) or 11)
-    monkeypatch.setattr(cli.aggregation, "main", lambda args: calls.append(("aggregate", args)) or 12)
-    monkeypatch.setattr(cli.reconciliation, "main", lambda args: calls.append(("reconcile", args)) or 13)
+    monkeypatch.setattr(
+        cli.conversion_cli, "main", lambda args: calls.append(("convert", args)) or 10
+    )
+    monkeypatch.setattr(
+        cli.archive, "main", lambda args: calls.append(("build-archive", args)) or 11
+    )
+    monkeypatch.setattr(
+        cli.aggregation, "main", lambda args: calls.append(("aggregate", args)) or 12
+    )
+    monkeypatch.setattr(
+        cli.reconciliation, "main", lambda args: calls.append(("reconcile", args)) or 13
+    )
 
     assert cli.main(["convert", "--fixture", "a"]) == 10
     assert cli.main(["build-archive", "--fixture", "b"]) == 11
@@ -188,7 +199,9 @@ def test_execute_preserves_transaction_exit_when_failure_output_cannot_write(
     assert result == 3
 
 
-def test_validate_plan_rejects_corrupt_hash(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_validate_plan_rejects_corrupt_hash(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     repository = tmp_path / "repo"
     repository.mkdir()
     head = init_repo(repository)
@@ -210,26 +223,31 @@ def test_execute_blocks_base_drift_before_materialization(tmp_path: Path) -> Non
     git(repository, "commit", "-qm", "move head")
     temp_root = tmp_path / "temp"
     output = tmp_path / "result.json"
-    assert main(
-        [
-            "execute",
-            "--plan",
-            str(dispatch),
-            "--repository-root",
-            str(repository),
-            "--temp-root",
-            str(temp_root),
-            "--now",
-            "2026-07-31T12:00:00Z",
-            "--output",
-            str(output),
-        ]
-    ) == 3
+    assert (
+        main(
+            [
+                "execute",
+                "--plan",
+                str(dispatch),
+                "--repository-root",
+                str(repository),
+                "--temp-root",
+                str(temp_root),
+                "--now",
+                "2026-07-31T12:00:00Z",
+                "--output",
+                str(output),
+            ]
+        )
+        == 3
+    )
     assert not temp_root.exists()
     assert not output.exists()
 
 
-def test_commit_push_requires_confirmation_and_app_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_commit_push_requires_confirmation_and_app_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     invalid = tmp_path / "commit.json"
     invalid.write_text("{}\n", encoding="utf-8")
     monkeypatch.delenv("GH_TOKEN", raising=False)

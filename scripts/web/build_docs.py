@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
+import hashlib
+import json
+import os
 from pathlib import Path, PurePosixPath
 import stat
 import sys
+from types import MappingProxyType
 
 import yaml
 
@@ -17,9 +22,47 @@ from scripts.rki_pipeline.io_utils import (
     atomic_write_text,
     ensure_within,
     normalize_posix_path,
+    open_directory_beneath,
+    open_root_directory,
+    read_bounded_utf8_text_beneath,
     relative_path_beneath,
     sha256_file,
 )
+from scripts.rki_pipeline.documents import bitstream_identity, document_identity
+from scripts.rki_pipeline.manifests import (
+    LoadedManifestCatalog,
+    ManifestCatalogError,
+    ManifestGraph,
+    ManifestGraphError,
+    _index,
+    _load_jsonl,
+    _read_catalog_files_fd,
+    _validate_catalog,
+    _validate_conversions,
+    _validate_documents,
+    _validate_storage,
+    _validated,
+    render_manifest_catalog,
+)
+from scripts.rki_pipeline.rights import (
+    MAX_POLICY_BYTES,
+    MAX_REGISTER_BYTES,
+    ApprovalKey,
+    ComponentsState,
+    PublicationMode,
+    RightsAction,
+    RightsAttribution,
+    RightsDecision,
+    RightsPolicy,
+    RightsPolicyError,
+    RightsRegister,
+    RightsState,
+    decision_sha256,
+    is_monotone_restriction,
+    parse_rights_policy,
+    parse_rights_register,
+)
+from scripts.rki_pipeline.schema_registry import validate_document
 from scripts.rki_pipeline.staging import StagingError, preview_directory, staged_directory
 from scripts.web.callouts import convert_obsidian_callouts_for_web
 from scripts.web.content_index import ContentIndex, build_content_index
@@ -29,6 +72,13 @@ from scripts.web.build_tables import (
     load_table_inputs,
     render_table_page,
     write_table_data_assets,
+)
+from scripts.web.build_downloads import (
+    DownloadInputs,
+    DownloadProjectionError,
+    DownloadTombstone,
+    project_downloads,
+    render_download_page,
 )
 
 
@@ -47,6 +97,7 @@ _PATH_KEYS = ("content_root", "build_root", "docs_dir", "site_dir")
 _RESERVED_SOURCE_ROOTS = (PurePosixPath("config"), PurePosixPath("web"))
 _GENERATED_SENTINEL = ".desinfect-generated"
 _TABLE_PAGE = PurePosixPath("Tabelle.md")
+_DOWNLOADS_PAGE = PurePosixPath("Downloads.md")
 _RAW_TABLE_PROJECTIONS = frozenset(
     {
         PurePosixPath("generated-data/corpus-table.json"),
@@ -54,9 +105,23 @@ _RAW_TABLE_PROJECTIONS = frozenset(
     }
 )
 _EXACT_PUBLICATION_INPUTS = (
-    (PurePosixPath("status.json"), True),
     (PurePosixPath("research/corpus-readiness.json"), False),
     (PurePosixPath("research/taxonomy.yml"), False),
+)
+_BOUNDED_PUBLICATION_INPUTS = MappingProxyType(
+    {
+        PurePosixPath("status.json"): 256 * 1024,
+        PurePosixPath("research/rights-register.yml"): MAX_REGISTER_BYTES,
+        PurePosixPath("config/rights-policy.toml"): MAX_POLICY_BYTES,
+    }
+)
+_MANIFEST_ROOT = PurePosixPath("rki/Bulletins/Manifeste")
+_DOWNLOAD_MANIFEST_PATHS = (
+    PurePosixPath("Quellen/manifest.jsonl"),
+    PurePosixPath("Dokumente/manifest.jsonl"),
+    PurePosixPath("Konvertierungen/manifest.jsonl"),
+    PurePosixPath("Storage/manifest.jsonl"),
+    PurePosixPath("catalog.json"),
 )
 
 
@@ -86,6 +151,26 @@ class DocsBuildResult:
 class DocsPreview:
     docs_dir: Path
     result: DocsBuildResult
+
+
+@dataclass(frozen=True, slots=True)
+class CapturedPublicationInputs:
+    """One descriptor-bound byte capture of every exact publication authority."""
+
+    status_bytes: bytes
+    rights_register_bytes: bytes
+    rights_policy_bytes: bytes
+    manifest_files: tuple[tuple[str, bytes], ...]
+    hashes: Mapping[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class BoundPublicationSources:
+    """Immutable build model shared by docs and site phases."""
+
+    source_hashes: Mapping[str, str]
+    content_index: ContentIndex
+    download_inputs: DownloadInputs
 
 
 def _repo_root(repo_root: Path) -> Path:
@@ -234,11 +319,84 @@ def _source_roots(repo_root: Path) -> tuple[tuple[PurePosixPath, Path, bool], ..
     )
 
 
-def snapshot_sources(repo_root: Path) -> Mapping[str, str]:
+def _manifest_capture(repo_root: Path) -> tuple[tuple[str, bytes], ...]:
+    manifest_fd: int | None = None
+    try:
+        with open_root_directory(repo_root) as repo_fd:
+            current_fd = os.dup(repo_fd)
+            try:
+                for component in _MANIFEST_ROOT.parts:
+                    try:
+                        metadata = os.stat(
+                            component,
+                            dir_fd=current_fd,
+                            follow_symlinks=False,
+                        )
+                    except FileNotFoundError:
+                        return ()
+                    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                        raise BuildDocsError("Manifestroot muss komponentenweise unverlinkt sein")
+                    next_fd = open_directory_beneath(current_fd, (component,))
+                    os.close(current_fd)
+                    current_fd = next_fd
+                manifest_fd = current_fd
+                current_fd = -1
+                files = _read_catalog_files_fd(manifest_fd)
+            finally:
+                if current_fd >= 0:
+                    os.close(current_fd)
+    except BuildDocsError:
+        raise
+    except (ManifestCatalogError, OSError, UnsafePathError) as exc:
+        raise BuildDocsError(f"Manifest-Capture fehlgeschlagen: {exc}") from exc
+    finally:
+        if manifest_fd is not None:
+            os.close(manifest_fd)
+    if set(files) != {path.as_posix() for path in _DOWNLOAD_MANIFEST_PATHS}:
+        raise BuildDocsError("Manifest-Capture besitzt nicht exakt die kanonischen Pfade")
+    return tuple((path.as_posix(), files[path.as_posix()]) for path in _DOWNLOAD_MANIFEST_PATHS)
+
+
+def capture_publication_inputs(repo_root: Path) -> CapturedPublicationInputs:
+    """Read every exact publication input once through bounded no-follow descriptors."""
+
+    root = _repo_root(repo_root)
+    payloads: dict[PurePosixPath, bytes] = {}
+    try:
+        for relative, maximum in _BOUNDED_PUBLICATION_INPUTS.items():
+            text = read_bounded_utf8_text_beneath(root, relative, max_bytes=maximum)
+            payloads[relative] = text.encode("utf-8")
+        manifest_files = _manifest_capture(root)
+    except BuildDocsError:
+        raise
+    except (OSError, UnsafePathError, UnicodeDecodeError, ValueError) as exc:
+        raise BuildDocsError(f"gebundener Publikationsinput ist ungültig: {exc}") from exc
+    hashes = {
+        relative.as_posix(): hashlib.sha256(payload).hexdigest()
+        for relative, payload in payloads.items()
+    }
+    hashes.update(
+        {
+            (_MANIFEST_ROOT / relative).as_posix(): hashlib.sha256(payload).hexdigest()
+            for relative, payload in manifest_files
+        }
+    )
+    return CapturedPublicationInputs(
+        status_bytes=payloads[PurePosixPath("status.json")],
+        rights_register_bytes=payloads[PurePosixPath("research/rights-register.yml")],
+        rights_policy_bytes=payloads[PurePosixPath("config/rights-policy.toml")],
+        manifest_files=manifest_files,
+        hashes=MappingProxyType(dict(sorted(hashes.items()))),
+    )
+
+
+def snapshot_sources(repo_root: Path, *, captured: CapturedPublicationInputs) -> Mapping[str, str]:
     """Hash all publication inputs without changing source bytes."""
 
     root = _repo_root(repo_root)
-    hashes: dict[str, str] = {}
+    if type(captured) is not CapturedPublicationInputs:
+        raise BuildDocsError("Publikationssnapshot benötigt exakten Capturewert")
+    hashes: dict[str, str] = dict(captured.hashes)
     for relative, required in _EXACT_PUBLICATION_INPUTS:
         path = root / relative
         try:
@@ -262,8 +420,367 @@ def snapshot_sources(repo_root: Path) -> Mapping[str, str]:
             hashes[prefix.as_posix()] = sha256_file(source)
             continue
         for relative, path in _regular_files(source, required=required):
-            hashes[(prefix / relative).as_posix()] = sha256_file(path)
-    return dict(sorted(hashes.items()))
+            repository_relative = prefix / relative
+            if repository_relative in _BOUNDED_PUBLICATION_INPUTS:
+                continue
+            hashes[repository_relative.as_posix()] = sha256_file(path)
+    return MappingProxyType(dict(sorted(hashes.items())))
+
+
+def _freeze(value: object) -> object:
+    if isinstance(value, Mapping):
+        return MappingProxyType({str(key): _freeze(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(item) for item in value)
+    return value
+
+
+def freeze_download_inputs(
+    inputs: DownloadInputs, input_hashes: Mapping[str, str]
+) -> DownloadInputs:
+    """Return projection with recursively immutable status and hash mappings."""
+
+    if type(inputs) is not DownloadInputs:
+        raise BuildDocsError("Downloadprojektion besitzt keinen exakten Typ")
+    frozen_status = _freeze(inputs.public_status)
+    frozen_hashes = _freeze(input_hashes)
+    assert isinstance(frozen_status, Mapping)
+    assert isinstance(frozen_hashes, Mapping)
+    return replace(inputs, public_status=frozen_status, input_hashes=frozen_hashes)
+
+
+def _strict_status(payload: bytes) -> Mapping[str, object]:
+    def object_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in pairs:
+            if key in value:
+                raise BuildDocsError(f"status.json enthält doppelten Schlüssel: {key}")
+            value[key] = item
+        return value
+
+    def reject_constant(value: str) -> None:
+        raise BuildDocsError(f"status.json enthält nichtendlichen Wert: {value}")
+
+    try:
+        parsed = json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=object_pairs,
+            parse_constant=reject_constant,
+        )
+        validate_document("status", parsed)
+    except BuildDocsError:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise BuildDocsError(f"status.json ist ungültig: {exc}") from exc
+    if type(parsed) is not dict:
+        raise BuildDocsError("status.json muss ein exaktes Objekt sein")
+    frozen = _freeze(parsed)
+    assert isinstance(frozen, Mapping)
+    return frozen
+
+
+def _historical_decision(source: Mapping[str, object]) -> RightsDecision:
+    rights = source.get("rights")
+    if type(rights) is not dict or type(rights.get("approval_key")) is not dict:
+        raise ManifestCatalogError("Source enthält keine eingebettete Rechteentscheidung")
+    approval = rights["approval_key"]
+    attribution_value = rights.get("attribution")
+    attribution = None
+    if attribution_value is not None:
+        if type(attribution_value) is not dict:
+            raise ManifestCatalogError("eingebettete Attribution ist ungültig")
+        attribution = RightsAttribution(
+            creators=tuple(attribution_value["creators"]),
+            attribution_parties=tuple(attribution_value["attribution_parties"]),
+            copyright_notice=attribution_value["copyright_notice"],
+            license_notice=attribution_value["license_notice"],
+            license_url=attribution_value["license_url"],
+            disclaimer_notice=attribution_value["disclaimer_notice"],
+            origin_url=attribution_value["origin_url"],
+            prior_change_history=tuple(attribution_value["prior_change_history"]),
+            current_change_notice=attribution_value["current_change_notice"],
+        )
+    try:
+        draft = RightsDecision(
+            approval_key=ApprovalKey(
+                approval["source_id"],
+                approval["canonical_url"],
+                approval["version_or_bitstream"],
+                approval["source_sha256"],
+            ),
+            state=RightsState(rights["state"]),
+            mode=PublicationMode(rights["mode"]),
+            allowed_actions=tuple(RightsAction(action) for action in rights["allowed_actions"]),
+            components_state=ComponentsState(rights["components_state"]),
+            attribution=attribution,
+            basis=rights["basis"],
+            reviewed_by=rights["reviewed_by"],
+            reviewed_at=rights["reviewed_at"],
+            decision_sha256=None,
+        )
+        decision = replace(draft, decision_sha256=decision_sha256(draft))
+    except (KeyError, TypeError, ValueError, RightsPolicyError) as exc:
+        raise ManifestCatalogError("eingebettete Rechteentscheidung ist ungültig") from exc
+    if source.get("decision_sha256") != decision.decision_sha256:
+        raise ManifestCatalogError("eingebetteter Entscheidungshash driftet")
+    return decision
+
+
+def _validate_source_structure(sources: dict[str, dict[str, object]]) -> None:
+    by_sha256: dict[str, list[str]] = defaultdict(list)
+    for bitstream_id, source in sources.items():
+        identity = document_identity(source["handle"])
+        bitstream = bitstream_identity(source["bitstream_url"])
+        if (
+            source["source_id"] != identity.source_id
+            or source["version"] != identity.version
+            or bitstream_id != bitstream.bitstream_id
+            or source["bitstream_version"] != bitstream.version
+            or source["bitstream_url"] != bitstream.canonical_url
+            or not bitstream.canonical_url.startswith(
+                f"https://edoc.rki.de/bitstream/handle/{identity.handle}/"
+            )
+            or source["source_url"] != f"https://edoc.rki.de/handle/{identity.handle}"
+        ):
+            raise ManifestGraphError("Source-Identität oder Bitstream ist nicht kanonisch")
+        decision = _historical_decision(source)
+        if decision.approval_key != ApprovalKey(
+            source["source_id"], source["bitstream_url"], bitstream_id, source["sha256"]
+        ):
+            raise ManifestGraphError("Source-ApprovalKey widerspricht Source")
+        by_sha256[source["sha256"]].append(bitstream_id)
+    for ids in by_sha256.values():
+        ordered = sorted(ids)
+        canonical = ordered[0]
+        for bitstream_id in ordered:
+            expected = [] if bitstream_id == canonical else [canonical]
+            if sources[bitstream_id]["same_content_as"] != expected:
+                raise ManifestGraphError("Source-Alias ist nicht kanonisch")
+
+
+def _structural_manifest_graph(files: dict[str, bytes]) -> ManifestGraph:
+    collections = {
+        "sources": _load_jsonl(files["Quellen/manifest.jsonl"], label="Quellen/manifest.jsonl"),
+        "documents": _load_jsonl(
+            files["Dokumente/manifest.jsonl"], label="Dokumente/manifest.jsonl"
+        ),
+        "conversions": _load_jsonl(
+            files["Konvertierungen/manifest.jsonl"], label="Konvertierungen/manifest.jsonl"
+        ),
+        "storage": _load_jsonl(files["Storage/manifest.jsonl"], label="Storage/manifest.jsonl"),
+    }
+    _validate_catalog(files["catalog.json"], files)
+    source_values = _validated(collections["sources"], contract="source-manifest")
+    document_values = _validated(collections["documents"], contract="document-manifest")
+    conversion_values = _validated(collections["conversions"], contract="conversion-manifest")
+    storage_values = _validated(collections["storage"], contract="storage-reference")
+    sources = _index(source_values, key=lambda value: value["bitstream_id"], label="Source")
+    documents = _index(
+        document_values,
+        key=lambda value: (value["document_id"], value["bitstream_id"]),
+        label="Dokument",
+    )
+    conversions = _index(
+        conversion_values, key=lambda value: value["conversion_id"], label="Conversion"
+    )
+    storage = _index(storage_values, key=lambda value: value["artifact_id"], label="Storage")
+    _validate_source_structure(sources)
+    _validate_documents(documents, sources)
+    _validate_conversions(conversions, documents, sources)
+    _validate_storage(storage, sources, documents, conversions, None)  # type: ignore[arg-type]
+    return ManifestGraph(
+        sources=tuple(sources[key] for key in sorted(sources)),
+        documents=tuple(documents[key] for key in sorted(documents)),
+        conversions=tuple(conversions[key] for key in sorted(conversions)),
+        storage_references=tuple(storage[key] for key in sorted(storage)),
+    )
+
+
+def _attribution_only_revision(previous: RightsDecision, current: RightsDecision) -> bool:
+    if (
+        previous.approval_key != current.approval_key
+        or previous.mode != current.mode
+        or previous.state != current.state
+        or previous.components_state != current.components_state
+        or previous.allowed_actions != current.allowed_actions
+        or previous.basis != current.basis
+        or previous.attribution is None
+        or current.attribution is None
+    ):
+        return False
+    if previous.attribution == current.attribution:
+        return (previous.reviewed_by, previous.reviewed_at) != (
+            current.reviewed_by,
+            current.reviewed_at,
+        )
+    return current.attribution.prior_change_history == (
+        *previous.attribution.prior_change_history,
+        previous.attribution.current_change_notice,
+    )
+
+
+def _quarantine_decision(current: RightsDecision) -> RightsDecision:
+    draft = RightsDecision(
+        approval_key=current.approval_key,
+        state=RightsState.METADATA_ONLY,
+        mode=PublicationMode.ORIGIN_LINK,
+        allowed_actions=(),
+        components_state=ComponentsState.UNKNOWN,
+        attribution=None,
+        basis="attribution_revision_requires_manifest_refresh",
+        reviewed_by=None,
+        reviewed_at=None,
+        decision_sha256=None,
+    )
+    return replace(draft, decision_sha256=decision_sha256(draft))
+
+
+def _register_with(
+    register: RightsRegister, replacements: Mapping[ApprovalKey, RightsDecision]
+) -> RightsRegister:
+    entries = tuple(
+        sorted(
+            (replacements.get(entry.approval_key, entry) for entry in register.entries),
+            key=lambda entry: (
+                entry.approval_key.source_id,
+                entry.approval_key.canonical_url,
+                entry.approval_key.version_or_bitstream,
+                entry.approval_key.source_sha256,
+            ),
+        )
+    )
+    return RightsRegister(schema_version=2, entries=entries)
+
+
+def _without_sources(graph: ManifestGraph, bitstreams: set[str]) -> ManifestGraph:
+    documents = tuple(
+        document for document in graph.documents if document["bitstream_id"] not in bitstreams
+    )
+    document_ids = {document["document_id"] for document in documents}
+    conversions = tuple(
+        conversion
+        for conversion in graph.conversions
+        if conversion["bitstream_id"] not in bitstreams
+    )
+    conversion_ids = {conversion["conversion_id"] for conversion in conversions}
+    return ManifestGraph(
+        sources=tuple(
+            source for source in graph.sources if source["bitstream_id"] not in bitstreams
+        ),
+        documents=documents,
+        conversions=conversions,
+        storage_references=tuple(
+            reference
+            for reference in graph.storage_references
+            if reference["document_id"] in document_ids
+            and (reference["conversion_id"] is None or reference["conversion_id"] in conversion_ids)
+        ),
+    )
+
+
+def _storage_reference_bitstreams(graph: ManifestGraph) -> Mapping[str, str]:
+    """Resolve each structurally validated storage owner to one exact bitstream."""
+
+    conversion_owners = {
+        conversion["conversion_id"]: conversion["bitstream_id"] for conversion in graph.conversions
+    }
+    pdf_owners = {
+        (document["document_id"], document["paths"]["pdf"]): document["bitstream_id"]
+        for document in graph.documents
+    }
+    owners: dict[str, str] = {}
+    for reference in graph.storage_references:
+        conversion_id = reference["conversion_id"]
+        try:
+            bitstream_id = (
+                conversion_owners[conversion_id]
+                if conversion_id is not None
+                else pdf_owners[(reference["document_id"], reference["relative_path"])]
+            )
+        except KeyError as exc:
+            raise ManifestCatalogError("Storage-Owner löst nicht exakt auf") from exc
+        owners[reference["artifact_id"]] = bitstream_id
+    return owners
+
+
+def load_publication_manifest_catalog(
+    captured: CapturedPublicationInputs,
+    *,
+    register: RightsRegister,
+    policy: RightsPolicy,
+) -> tuple[
+    LoadedManifestCatalog | None,
+    ManifestGraph,
+    RightsRegister,
+    tuple[DownloadTombstone, ...],
+]:
+    """Load captured manifests with web-only fail-closed rights drift handling."""
+
+    if not captured.manifest_files:
+        empty = ManifestGraph((), (), (), ())
+        return None, empty, register, ()
+    files = dict(captured.manifest_files)
+    try:
+        graph = _structural_manifest_graph(files)
+        rendered = render_manifest_catalog(graph)
+        if dict(rendered.files) != files:
+            raise ManifestCatalogError("Manifestgraph oder stabile Reihenfolge driftet")
+        loaded = LoadedManifestCatalog(graph=graph, rendered=rendered)
+        current_by_key = {entry.approval_key: entry for entry in register.entries}
+        quarantines: dict[ApprovalKey, RightsDecision] = {}
+        missing_bitstreams: set[str] = set()
+        for source in graph.sources:
+            historical = _historical_decision(source)
+            current = current_by_key.get(historical.approval_key)
+            if current is not None and current.decision_sha256 == historical.decision_sha256:
+                continue
+            if current is None:
+                missing_bitstreams.add(source["bitstream_id"])
+                continue
+            if is_monotone_restriction(historical, current, policy=policy, visibility="public"):
+                continue
+            if _attribution_only_revision(historical, current):
+                quarantines[current.approval_key] = _quarantine_decision(current)
+                continue
+            raise ManifestCatalogError("aktuelle Rechteentscheidung driftet lateral oder permissiv")
+        effective_graph = _without_sources(graph, missing_bitstreams)
+        effective_register = _register_with(register, quarantines)
+        effective_by_key = {entry.approval_key: entry for entry in effective_register.entries}
+        nonmaterialized_bitstreams = {
+            source["bitstream_id"]
+            for source in effective_graph.sources
+            if effective_by_key[_historical_decision(source).approval_key].mode
+            is not PublicationMode.MATERIALIZED
+        }
+        removed_bitstreams = nonmaterialized_bitstreams | missing_bitstreams
+        storage_owners = _storage_reference_bitstreams(graph)
+        tombstones = tuple(
+            DownloadTombstone(reference["source_id"], reference["artifact_id"])
+            for reference in graph.storage_references
+            if storage_owners[reference["artifact_id"]] in removed_bitstreams
+        )
+        effective_graph = replace(
+            effective_graph,
+            storage_references=tuple(
+                reference
+                for reference in effective_graph.storage_references
+                if storage_owners[reference["artifact_id"]] not in removed_bitstreams
+            ),
+        )
+        projected_sources = []
+        for source in effective_graph.sources:
+            key = _historical_decision(source).approval_key
+            effective = effective_by_key.get(key)
+            if effective is None or effective.decision_sha256 is None:
+                raise ManifestCatalogError("effektive Rechteentscheidung fehlt")
+            projected_sources.append({**source, "decision_sha256": effective.decision_sha256})
+        effective_graph = replace(
+            effective_graph,
+            sources=tuple(projected_sources),
+        )
+        return loaded, effective_graph, effective_register, tombstones
+    except (ManifestCatalogError, ManifestGraphError, RightsPolicyError, ValueError) as exc:
+        raise BuildDocsError(f"Manifest-Publikationskatalog ist ungültig: {exc}") from exc
 
 
 def require_unchanged(current: Mapping[str, str], before: Mapping[str, str]) -> None:
@@ -380,15 +897,52 @@ def _require_index_matches_snapshot(index: ContentIndex, source_hashes: Mapping[
         raise BuildDocsError("source-hash drift: content index does not match source snapshot")
 
 
-def bind_publication_sources(repo_root: Path) -> tuple[Mapping[str, str], ContentIndex]:
-    """Bind one immutable content index to one stable publication-source snapshot."""
+def _require_bound_unchanged(repo_root: Path, before: Mapping[str, str]) -> None:
+    captured = capture_publication_inputs(repo_root)
+    require_unchanged(snapshot_sources(repo_root, captured=captured), before)
+
+
+def bind_publication_sources(repo_root: Path) -> BoundPublicationSources:
+    """Bind content, status, rights, and manifests between one snapshot pair."""
 
     root = _repo_root(repo_root)
-    before = snapshot_sources(root)
-    index = build_content_index(load_publication_config(root).content_root)
-    _require_index_matches_snapshot(index, before)
-    require_unchanged(snapshot_sources(root), before)
-    return before, index
+    captured = capture_publication_inputs(root)
+    before = snapshot_sources(root, captured=captured)
+    try:
+        config = load_publication_config(root)
+        index = build_content_index(config.content_root)
+        _require_index_matches_snapshot(index, before)
+        register = parse_rights_register(captured.rights_register_bytes.decode("utf-8"))
+        policy = parse_rights_policy(captured.rights_policy_bytes.decode("utf-8"))
+        status = _strict_status(captured.status_bytes)
+        _loaded, graph, effective_register, catalog_tombstones = load_publication_manifest_catalog(
+            captured,
+            register=register,
+            policy=policy,
+        )
+        projected_downloads = project_downloads(
+            graph,
+            status,
+            register=effective_register,
+            policy=policy,
+        )
+        downloads = freeze_download_inputs(
+            replace(
+                projected_downloads,
+                tombstones=tuple((*projected_downloads.tombstones, *catalog_tombstones)),
+            ),
+            before,
+        )
+    except BuildDocsError:
+        raise
+    except (DownloadProjectionError, RightsPolicyError, UnicodeDecodeError, ValueError) as exc:
+        raise BuildDocsError(f"Publikationsinputs sind ungültig: {exc}") from exc
+    _require_bound_unchanged(root, before)
+    return BoundPublicationSources(
+        source_hashes=MappingProxyType(dict(before)),
+        content_index=index,
+        download_inputs=downloads,
+    )
 
 
 def render_docs_tree(
@@ -396,24 +950,20 @@ def render_docs_tree(
     stage: Path,
     *,
     only: tuple[PurePosixPath, ...] = (),
-    source_hashes: Mapping[str, str] | None = None,
-    content_index: ContentIndex | None = None,
+    bound_sources: BoundPublicationSources | None = None,
 ) -> DocsBuildResult:
     """Render validated source content into an unpublished generated stage."""
 
     root = _repo_root(repo_root)
     config = load_publication_config(root)
     try:
-        if (source_hashes is None) != (content_index is None):
-            raise BuildDocsError("source snapshot and content index must be bound together")
-        if source_hashes is None:
-            before, index = bind_publication_sources(root)
-        else:
-            before = dict(source_hashes)
-            assert content_index is not None
-            index = content_index
-            _require_index_matches_snapshot(index, before)
-            require_unchanged(snapshot_sources(root), before)
+        bound = bind_publication_sources(root) if bound_sources is None else bound_sources
+        if type(bound) is not BoundPublicationSources:
+            raise BuildDocsError("Renderer benötigt exakt gebundene Publikationsinputs")
+        before = bound.source_hashes
+        index = bound.content_index
+        _require_index_matches_snapshot(index, before)
+        _require_bound_unchanged(root, before)
         selected = select_pages(index, only)
         selected_paths = {page.relative_path for page in selected}
         excluded_pages = (
@@ -422,8 +972,13 @@ def render_docs_tree(
             else ()
         )
         table_inputs = (
-            load_table_inputs(root)
+            load_table_inputs(root, captured_status=bound.download_inputs.public_status)
             if any(page.relative_path == _TABLE_PAGE for page in selected)
+            else None
+        )
+        download_inputs = (
+            bound.download_inputs
+            if any(page.relative_path == _DOWNLOADS_PAGE for page in selected)
             else None
         )
         for page in selected:
@@ -439,6 +994,17 @@ def render_docs_tree(
             if page.relative_path == _TABLE_PAGE:
                 assert table_inputs is not None
                 rendered = render_table_page(rendered, table_inputs)
+            if page.relative_path == _DOWNLOADS_PAGE:
+                assert download_inputs is not None
+                if not download_inputs.rows:
+                    rendered = rendered.replace(
+                        "<!-- DESINFECT:DOWNLOADS -->",
+                        "Noch keine validierten Downloads.\n\n<!-- DESINFECT:DOWNLOADS -->",
+                    )
+                rendered = rendered.replace(
+                    "<!-- DESINFECT:DOWNLOADS -->", "<!-- DESINFECT_DOWNLOADS -->"
+                )
+                rendered = render_download_page(rendered, download_inputs)
             write_generated_markdown(stage / page.relative_path, rendered, stage=stage)
         for page in excluded_pages:
             write_generated_markdown(
@@ -464,8 +1030,7 @@ def render_docs_tree(
         docs_hashes = {
             path: digest for path, digest in rendered_hashes.items() if path not in omitted_paths
         }
-        current = snapshot_sources(root)
-        require_unchanged(current, before)
+        _require_bound_unchanged(root, before)
     except BuildDocsError:
         raise
     except (OSError, UnsafePathError, ValueError, yaml.YAMLError) as exc:
@@ -483,8 +1048,7 @@ def build_docs(
     repo_root: Path,
     *,
     force: bool,
-    source_hashes: Mapping[str, str] | None = None,
-    content_index: ContentIndex | None = None,
+    bound_sources: BoundPublicationSources | None = None,
 ) -> DocsBuildResult:
     """Atomically publish a complete generated docs tree."""
 
@@ -495,8 +1059,7 @@ def build_docs(
             result = render_docs_tree(
                 root,
                 stage,
-                source_hashes=source_hashes,
-                content_index=content_index,
+                bound_sources=bound_sources,
             )
     except BuildDocsError:
         raise
@@ -510,8 +1073,7 @@ def docs_preview_session(
     repo_root: Path,
     *,
     only: tuple[PurePosixPath, ...] = (),
-    source_hashes: Mapping[str, str] | None = None,
-    content_index: ContentIndex | None = None,
+    bound_sources: BoundPublicationSources | None = None,
 ) -> Iterator[DocsPreview]:
     """Yield a validated disposable docs tree without publishing it."""
 
@@ -526,8 +1088,7 @@ def docs_preview_session(
                 root,
                 preview_path,
                 only=only,
-                source_hashes=source_hashes,
-                content_index=content_index,
+                bound_sources=bound_sources,
             )
         except BuildDocsError:
             raise

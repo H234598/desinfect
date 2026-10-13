@@ -1,4 +1,5 @@
 """Shared PDF validation and bounded subprocess regressions."""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -366,9 +367,7 @@ def test_process_runner_uses_fixed_env_absolute_tool_hash_and_rlimits(
         ("stderr", "import sys;sys.stderr.write('12345');sys.stderr.flush()"),
     ),
 )
-def test_process_runner_kills_on_bounded_capture(
-    tmp_path: Path, stream: str, code: str
-) -> None:
+def test_process_runner_kills_on_bounded_capture(tmp_path: Path, stream: str, code: str) -> None:
     limits = replace(DEFAULT_PDF_LIMITS, stdout_bytes=4, stderr_bytes=4)
     with pytest.raises(ProcessOutputLimitError, match=stream):
         ProcessRunner().run(sys.executable, ("-c", code), cwd=tmp_path, limits=limits)
@@ -568,10 +567,7 @@ def test_process_runner_enforces_disk_total_before_tool_can_continue(tmp_path: P
 
 def test_process_runner_nonzero_exit_kills_remaining_group(tmp_path: Path) -> None:
     marker = tmp_path / "nonzero-grandchild-survived"
-    grandchild = (
-        "import pathlib,time;time.sleep(0.3);"
-        f"pathlib.Path({str(marker)!r}).touch()"
-    )
+    grandchild = f"import pathlib,time;time.sleep(0.3);pathlib.Path({str(marker)!r}).touch()"
     parent = (
         "import os,subprocess,sys;"
         f"subprocess.Popen([sys.executable,'-c',{grandchild!r}],"
@@ -593,10 +589,7 @@ def test_process_runner_nonzero_exit_kills_remaining_group(tmp_path: Path) -> No
 
 def test_process_runner_output_failure_kills_remaining_group(tmp_path: Path) -> None:
     marker = tmp_path / "output-grandchild-survived"
-    grandchild = (
-        "import pathlib,time;time.sleep(0.3);"
-        f"pathlib.Path({str(marker)!r}).touch()"
-    )
+    grandchild = f"import pathlib,time;time.sleep(0.3);pathlib.Path({str(marker)!r}).touch()"
     parent = (
         "import pathlib,subprocess,sys,time;"
         f"subprocess.Popen([sys.executable,'-c',{grandchild!r}],"
@@ -648,8 +641,7 @@ def test_process_runner_cwd_stays_on_held_directory_after_path_swap(
 def test_process_runner_timeout_kills_entire_process_group(tmp_path: Path) -> None:
     marker = tmp_path / "grandchild-survived"
     grandchild = (
-        "import pathlib,time;time.sleep(0.4);"
-        f"pathlib.Path({str(marker)!r}).write_text('leaked')"
+        f"import pathlib,time;time.sleep(0.4);pathlib.Path({str(marker)!r}).write_text('leaked')"
     )
     parent = (
         "import subprocess,sys,time;"

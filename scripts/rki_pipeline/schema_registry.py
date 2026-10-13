@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Versioned JSON-Schema registry and deterministic one-version migrations."""
+
 from __future__ import annotations
 
 from copy import deepcopy
@@ -76,7 +77,9 @@ def validate_document(name: str, payload: dict[str, Any]) -> None:
             for error in errors[:8]
         )
         raise SchemaContractError(f"{name}: {rendered}")
-    if name == "source-manifest" and payload["same_content_as"] != sorted(payload["same_content_as"]):
+    if name == "source-manifest" and payload["same_content_as"] != sorted(
+        payload["same_content_as"]
+    ):
         raise SchemaContractError("source-manifest: same_content_as muss lexikalisch sortiert sein")
     if name == "source-manifest":
         rights = payload["rights"]
@@ -85,24 +88,16 @@ def validate_document(name: str, payload: dict[str, Any]) -> None:
             raise SchemaContractError(
                 "source-manifest: rights.allowed_actions muss sortiert und eindeutig sein"
             )
-        if rights["mode"] != "materialized" and (
-            actions or rights["attribution"] is not None
-        ):
+        if rights["mode"] != "materialized" and (actions or rights["attribution"] is not None):
             raise SchemaContractError(
                 "source-manifest: nicht-materialized darf keine Aktionen/Attribution tragen"
             )
         if rights["mode"] == "materialized" and rights["state"] != "approved":
-            raise SchemaContractError(
-                "source-manifest: materialized erfordert approved"
-            )
+            raise SchemaContractError("source-manifest: materialized erfordert approved")
         if "publish" in actions and rights["attribution"] is None:
-            raise SchemaContractError(
-                "source-manifest: publish erfordert Attribution"
-            )
+            raise SchemaContractError("source-manifest: publish erfordert Attribution")
         if "publish" in actions and rights["components_state"] != "cleared":
-            raise SchemaContractError(
-                "source-manifest: publish erfordert components_state cleared"
-            )
+            raise SchemaContractError("source-manifest: publish erfordert components_state cleared")
         approval = rights["approval_key"]
         if approval is not None:
             expected = {
@@ -116,9 +111,7 @@ def validate_document(name: str, payload: dict[str, Any]) -> None:
                     "source-manifest: ApprovalKey driftet von Source-/Bitstreamfeldern"
                 )
         if payload["provenance_state"] == "current" and approval is None:
-            raise SchemaContractError(
-                "source-manifest: current-Provenienz erfordert ApprovalKey"
-            )
+            raise SchemaContractError("source-manifest: current-Provenienz erfordert ApprovalKey")
     if name == "conversion-manifest" and payload["provenance_state"] == "current":
         try:
             toolchain = tuple(ToolEvidence.from_dict(item) for item in payload["toolchain"])
@@ -139,9 +132,13 @@ def validate_document(name: str, payload: dict[str, Any]) -> None:
         except (EvidenceError, KeyError, TypeError) as exc:
             raise SchemaContractError(f"conversion-manifest: {exc}") from exc
         if payload["fingerprint_sha256"] != expected_fingerprint:
-            raise SchemaContractError("conversion-manifest: Fingerprint stimmt nicht mit Evidenz überein")
+            raise SchemaContractError(
+                "conversion-manifest: Fingerprint stimmt nicht mit Evidenz überein"
+            )
         if payload["conversion_id"] != expected_conversion_id:
-            raise SchemaContractError("conversion-manifest: conversion_id stimmt nicht mit Identität überein")
+            raise SchemaContractError(
+                "conversion-manifest: conversion_id stimmt nicht mit Identität überein"
+            )
     if name == "storage-reference":
         try:
             validate_storage_provenance_relationship(
@@ -173,9 +170,10 @@ def migrate_status_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
         "schema_version": "3.0.0",
         "project": "desinfect",
         "repository": "H234598/desinfect",
-        "status": source.get("status") if source.get("status") in {
-            "not_initialized", "operational", "degraded", "blocked", "unknown"
-        } else "unknown",
+        "status": source.get("status")
+        if source.get("status")
+        in {"not_initialized", "operational", "degraded", "blocked", "unknown"}
+        else "unknown",
         "updated_at": source.get("updated_at"),
         "runtime": {
             "storage_backend": runtime.get("storage_backend", "lfs"),
@@ -197,10 +195,15 @@ def migrate_status_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
         },
         "corpus": {
             "inventory_complete_through_year": _nullable_year(
-                corpus.get("inventory_complete_through_year", corpus.get("pdf_complete_through_year"))
+                corpus.get(
+                    "inventory_complete_through_year", corpus.get("pdf_complete_through_year")
+                )
             ),
             "analysis_corpus_complete_through_year": _nullable_year(
-                corpus.get("analysis_corpus_complete_through_year", corpus.get("markdown_complete_through_year"))
+                corpus.get(
+                    "analysis_corpus_complete_through_year",
+                    corpus.get("markdown_complete_through_year"),
+                )
             ),
             "public_mirror_complete_through_year": _nullable_year(
                 corpus.get("public_mirror_complete_through_year")
@@ -224,7 +227,9 @@ def migrate_source_manifest_v1_0_to_v1_2(payload: dict[str, Any]) -> dict[str, A
     """Migrate source-manifest 1.0.0 without inventing missing evidence."""
 
     if payload.get("schema_version") != "1.0.0":
-        raise SchemaContractError(f"Nicht unterstützte Source-Manifest-Migration: {payload.get('schema_version')!r}")
+        raise SchemaContractError(
+            f"Nicht unterstützte Source-Manifest-Migration: {payload.get('schema_version')!r}"
+        )
     result = deepcopy(payload)
     result.update(
         {
@@ -277,8 +282,7 @@ def migrate_source_manifest_v1_2_to_v1_3(
 
     if payload.get("schema_version") != "1.2.0":
         raise SchemaContractError(
-            "Nicht unterstützte Source-Manifest-Migration: "
-            f"{payload.get('schema_version')!r}"
+            f"Nicht unterstützte Source-Manifest-Migration: {payload.get('schema_version')!r}"
         )
     result = deepcopy(payload)
     bitstream_url = result.get("bitstream_url")
@@ -319,25 +323,21 @@ def migrate_source_manifest_to_v1_3(payload: dict[str, Any]) -> dict[str, Any]:
 
     version = payload.get("schema_version")
     if version == "1.0.0":
-        return migrate_source_manifest_v1_2_to_v1_3(
-            migrate_source_manifest_v1_0_to_v1_2(payload)
-        )
+        return migrate_source_manifest_v1_2_to_v1_3(migrate_source_manifest_v1_0_to_v1_2(payload))
     if version == "1.1.0":
-        return migrate_source_manifest_v1_2_to_v1_3(
-            migrate_source_manifest_v1_1_to_v1_2(payload)
-        )
+        return migrate_source_manifest_v1_2_to_v1_3(migrate_source_manifest_v1_1_to_v1_2(payload))
     if version == "1.2.0":
         return migrate_source_manifest_v1_2_to_v1_3(payload)
-    raise SchemaContractError(
-        f"Nicht unterstützte Source-Manifest-Migration: {version!r}"
-    )
+    raise SchemaContractError(f"Nicht unterstützte Source-Manifest-Migration: {version!r}")
 
 
 def migrate_document_manifest_v1_0_to_v1_1(payload: dict[str, Any]) -> dict[str, Any]:
     """Migrate exactly document-manifest 1.0.0 and derive calendar periods."""
 
     if payload.get("schema_version") != "1.0.0":
-        raise SchemaContractError(f"Nicht unterstützte Document-Manifest-Migration: {payload.get('schema_version')!r}")
+        raise SchemaContractError(
+            f"Nicht unterstützte Document-Manifest-Migration: {payload.get('schema_version')!r}"
+        )
     result = deepcopy(payload)
     try:
         published = date.fromisoformat(result["publication_date"])
@@ -367,8 +367,7 @@ def migrate_conversion_manifest_v1_0_to_v1_1(payload: dict[str, Any]) -> dict[st
 
     if payload.get("schema_version") != "1.0.0":
         raise SchemaContractError(
-            "Nicht unterstützte Conversion-Manifest-Migration: "
-            f"{payload.get('schema_version')!r}"
+            f"Nicht unterstützte Conversion-Manifest-Migration: {payload.get('schema_version')!r}"
         )
     result = deepcopy(payload)
     result.update(
