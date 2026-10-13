@@ -348,13 +348,19 @@ def project_downloads(
         source = _mapping(raw_source, "source")
         key, decision = _decision_for(source, register=register, policy=policy)
         if decision.mode is PublicationMode.REMOVE_ALL:
-            tombstones.extend(
-                DownloadTombstone(
-                    key.source_id,
-                    _require_string(reference.get("artifact_id"), "artifact_id"),
+            document = documents.get((key.source_id, key.version_or_bitstream))
+            if document is not None:
+                paths = _mapping(document.get("paths"), "document.paths")
+                artifact_paths = {paths.get("pdf"), paths.get("markdown")} - {None}
+                tombstones.extend(
+                    DownloadTombstone(
+                        key.source_id,
+                        _require_string(reference.get("artifact_id"), "artifact_id"),
+                    )
+                    for reference in references_by_source.get(key.source_id, ())
+                    if reference.get("document_id") == document.get("document_id")
+                    and reference.get("relative_path") in artifact_paths
                 )
-                for reference in references_by_source.get(key.source_id, ())
-            )
             continue
         origin_url = validate_origin_url(
             _require_string(source.get("source_url"), "source_url"), source_id=key.source_id
@@ -443,7 +449,9 @@ def _status_fragment(status: Mapping[str, object]) -> str:
     if state in {"degraded", "blocked"}:
         if not has_success:
             parts.append("<p>Kein erfolgreicher Lauf dokumentiert.</p>")
-        parts.append('<p><a href="/Wartung/Wiederherstellung/">Wiederherstellungshinweise</a></p>')
+        parts.append(
+            '<p><a href="../Wartung/Wiederherstellung/">Wiederherstellungshinweise</a></p>'
+        )
     return "".join(parts) + "</section>"
 
 

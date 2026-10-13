@@ -3356,7 +3356,7 @@ def test_attribution_quarantine_removes_graph_storage_and_carries_tombstones(rep
     assert tombstones
 
 
-@pytest.mark.parametrize("first_state", ("source_only", "missing"))
+@pytest.mark.parametrize("first_state", ("source_only", "remove_all", "missing"))
 def test_tombstones_resolve_storage_owner_for_same_document_bitstreams(
     repo: Path,
     first_state: str,
@@ -3375,11 +3375,11 @@ def test_tombstones_resolve_storage_owner_for_same_document_bitstreams(
                     "bitstream_id": first.approval_key.version_or_bitstream,
                     "sha256": first.approval_key.source_sha256,
                 },
-                mode=PublicationMode.SOURCE_ONLY,
+                mode=PublicationMode(first_state),
             ),
             second,
         )
-        if first_state == "source_only"
+        if first_state != "missing"
         else (second,)
     )
     _write_register_decisions(repo, current)

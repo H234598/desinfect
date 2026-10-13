@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 import shutil
 from types import MappingProxyType
+from urllib.parse import urljoin
 
 import pytest
 import yaml
@@ -620,6 +621,53 @@ def test_remove_all_has_no_row_or_public_presence(tmp_path: Path) -> None:
         assert forbidden not in rendered
 
 
+def test_remove_all_tombstones_only_exact_bitstream_artifact_paths(tmp_path: Path) -> None:
+    removed = _decision(mode=PublicationMode.REMOVE_ALL, state=RightsState.TAKEDOWN)
+    sibling = _decision(bitstream_url="https://edoc.rki.de/bitstream/handle/176904/7/sibling.pdf")
+    register, policy, _ = _fixture_register(tmp_path, removed, sibling)
+    graph = _graph(removed)
+    sibling_source = {
+        **graph.sources[0],
+        "bitstream_url": sibling.approval_key.canonical_url,
+        "bitstream_id": sibling.approval_key.version_or_bitstream,
+        "decision_sha256": sibling.decision_sha256,
+    }
+    sibling_document = {
+        **graph.documents[0],
+        "bitstream_id": sibling.approval_key.version_or_bitstream,
+        "paths": {"pdf": "rki/7-sibling.pdf", "markdown": "rki/7-sibling.md"},
+    }
+    sibling_storage = tuple(
+        {
+            **reference,
+            "artifact_id": kind + "-" + digest * 64,
+            "relative_path": f"rki/7-sibling.{extension}",
+            "public_reference": f"https://downloads.example.test/sibling.{extension}",
+            "decision_sha256": sibling.decision_sha256,
+        }
+        for reference, kind, digest, extension in zip(
+            graph.storage_references, ("pdf", "markdown"), ("c", "d"), ("pdf", "md"), strict=True
+        )
+    )
+    inputs = project_downloads(
+        ManifestGraph(
+            (*graph.sources, sibling_source),
+            (*graph.documents, sibling_document),
+            graph.conversions,
+            (*graph.storage_references, *sibling_storage),
+        ),
+        register=register,
+        policy=policy,
+    )
+
+    assert {item.artifact_id for item in inputs.tombstones} == {
+        "pdf-" + "a" * 64,
+        "markdown-" + "b" * 64,
+    }
+    assert {row.artifact_id for row in inputs.rows} == {"pdf-" + "c" * 64, "markdown-" + "d" * 64}
+    assert all(row.approval_key == sibling.approval_key for row in inputs.rows)
+
+
 @pytest.mark.parametrize(
     "public_reference",
     (
@@ -855,7 +903,37 @@ def test_degraded_and_blocked_show_last_success_and_recovery_link(state: str) ->
         ),
     )
     assert "Letzter erfolgreicher Lauf: 2026-08-01T00:00:00Z" in rendered
-    assert 'href="/Wartung/Wiederherstellung/"' in rendered
+    assert 'href="../Wartung/Wiederherstellung/"' in rendered
+
+
+@pytest.mark.parametrize("state", ("degraded", "blocked"))
+@pytest.mark.parametrize(
+    ("site_url", "recovery_url"),
+    (
+        ("https://example.test/", "https://example.test/Wartung/Wiederherstellung/"),
+        (
+            "https://example.test/desinfect/",
+            "https://example.test/desinfect/Wartung/Wiederherstellung/",
+        ),
+    ),
+)
+def test_strict_recovery_link_preserves_site_prefix(
+    strict_repo: Path, state: str, site_url: str, recovery_url: str
+) -> None:
+    status = json.loads((strict_repo / "status.json").read_text(encoding="utf-8"))
+    status["status"] = state
+    status["pipeline"]["last_successful_run_at"] = "2026-08-01T00:00:00Z"
+    (strict_repo / "status.json").write_text(json.dumps(status), encoding="utf-8")
+    build_site(strict_repo, check=True, dry_run=False, strict=True, force=False, site_url=site_url)
+    parser = _PublishedDownloadParser()
+    parser.feed((strict_repo / "site/Downloads/index.html").read_text(encoding="utf-8"))
+    parser.close()
+    recovery_links = [href for href in parser.hrefs if href.endswith("Wartung/Wiederherstellung/")]
+
+    assert len(recovery_links) == 1
+    assert urljoin(site_url + "Downloads/", recovery_links[0]) == recovery_url
+    assert (strict_repo / "site/Wartung/Wiederherstellung/index.html").is_file()
+    assert "Letzter erfolgreicher Lauf: 2026-08-01T00:00:00Z" in "".join(parser.text)
 
 
 def test_render_escapes_title_and_never_uses_raw_license_input(fixture_register) -> None:

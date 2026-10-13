@@ -154,8 +154,9 @@ und keine remote geladenen Browserressourcen.
 
 Die Seite `Downloads.md` bleibt vollständig außerhalb des Suchindex. Dadurch gelangen auch
 sichtbare `source_only`-Titel und bibliografische Angaben nicht in
-`site/search/search_index.json`. Die HTML-Seite bleibt direkt über die Links der Bulletin-
-und Bewertungsseiten erreichbar. Payloadtext, OCR-Text, interne Hashes, Storagepfade,
+`site/search/search_index.json`. Die HTML-Seite bleibt direkt über den Downloadslink der
+Bulletinübersicht erreichbar. Die Bewertungsseite verweist auf `Rechte.md`, nicht auf die
+Downloadseite. Payloadtext, OCR-Text, interne Hashes, Storagepfade,
 Objekt-IDs und Tokenqueries sind weder HTML- noch Suchinhalt.
 
 ### Abnahmegrenze P11.4
